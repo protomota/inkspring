@@ -1,0 +1,26 @@
+node_modules/
+.DS_Store
+dist/
+release/
+release-preview/
+test-output/
+*.log
+website/
+review-previews/
+.env*
+!.env.example
+.vercel/
+.playwright-mcp/
+xcuserdata/
+
+# Local Xcode and Swift builds
+.build/
+DerivedData/
+*.xcresult
+*.xcarchive
+*.ipa
+*.dmg
+*.mobileprovision
+*.provisionprofile
+*.p8
+*.p12

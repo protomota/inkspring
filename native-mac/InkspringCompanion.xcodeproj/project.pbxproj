@@ -1,0 +1,277 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		FA291A600001000000000001 /* PlatformIcons in Resources */ = {isa = PBXBuildFile; fileRef = FA291A600001000000000002 /* PlatformIcons */; };
+		A00000000000000000000031 /* InkspringCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* InkspringCompanion.swift */; };
+		A00000000000000000000032 /* CompanionSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000022 /* CompanionSchedule.swift */; };
+		A00000000000000000000033 /* CloudScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000023 /* CloudScheduleStore.swift */; };
+		A00000000000000000000034 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000026 /* Assets.xcassets */; };
+		A00000000000000000000035 /* MobileLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000027 /* MobileLibrary.swift */; };
+		A00000000000000000000036 /* MobileIdeas.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000028 /* MobileIdeas.swift */; };
+		A00000000000000000000037 /* CompanionLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000029 /* CompanionLibrary.swift */; };
+		A00000000000000000000038 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002A /* PrivacyInfo.xcprivacy */; };
+		A00000000000000000000039 /* MobileSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002B /* MobileSettings.swift */; };
+		A0000000000000000000003A /* Sources/Inkspring/StudioAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002C /* Sources/Inkspring/StudioAppearance.swift */; };
+		A0000000000000000000003B /* Sources/Inkspring/InkspringCommunity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002D /* Sources/Inkspring/InkspringCommunity.swift */; };
+		A0000000000000000000003C /* MobileTips.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002E /* MobileTips.swift */; };
+		A0000000000000000000003D = {isa = PBXBuildFile; fileRef = A0000000000000000000002F; };
+		B00000000000000000000040 = {isa = PBXBuildFile; fileRef = A00000000000000000000040; };
+		B00000000000000000000041 = {isa = PBXBuildFile; fileRef = A00000000000000000000041; };
+		B00000000000000000000042 = {isa = PBXBuildFile; fileRef = A00000000000000000000042; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		FA291A600001000000000002 /* PlatformIcons */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/PlatformIcons; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000020 /* Inkspring.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Inkspring.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000021 /* InkspringCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkspringCompanion.swift; sourceTree = "<group>"; };
+		A00000000000000000000022 /* CompanionSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionSchedule.swift; sourceTree = "<group>"; };
+		A00000000000000000000023 /* CloudScheduleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudScheduleStore.swift; sourceTree = "<group>"; };
+		A00000000000000000000024 /* CloudKit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CloudKit.entitlements; sourceTree = "<group>"; };
+		A00000000000000000000025 /* iPhone settings */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = "iPhone settings"; path = iPhone/Companion.xcconfig; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000026 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A00000000000000000000027 /* MobileLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileLibrary.swift; sourceTree = "<group>"; };
+		A00000000000000000000028 /* MobileIdeas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileIdeas.swift; sourceTree = "<group>"; };
+		A00000000000000000000029 /* CompanionLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionLibrary.swift; sourceTree = "<group>"; };
+		A0000000000000000000002A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A0000000000000000000002B /* MobileSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSettings.swift; sourceTree = "<group>"; };
+		A0000000000000000000002C /* Sources/Inkspring/StudioAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/StudioAppearance.swift; sourceTree = SOURCE_ROOT; };
+		A0000000000000000000002D /* Sources/Inkspring/InkspringCommunity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/InkspringCommunity.swift; sourceTree = SOURCE_ROOT; };
+		A0000000000000000000002E /* MobileTips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTips.swift; sourceTree = "<group>"; };
+		A233B3E230A8FE0100BCE10F /* InkspringTips.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; name = InkspringTips.storekit; path = iPhone/InkspringTips.storekit; sourceTree = "<group>"; };
+		A0000000000000000000002F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSupporter.swift; sourceTree = "<group>"; };
+		A00000000000000000000040 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTechnicalSupportStore.swift; sourceTree = "<group>"; };
+		A00000000000000000000041 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTechnicalSupportView.swift; sourceTree = "<group>"; };
+		A00000000000000000000042 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportContracts.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000003 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000004 /* iPhone */,
+				A00000000000000000000005 /* Shared schedule */,
+				A00000000000000000000006 /* Products */,
+				A233B3E130A8FCFB00BCE10F /* Recovered References */,
+				A233B3E230A8FE0100BCE10F /* InkspringTips.storekit */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000004 /* iPhone */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000021 /* InkspringCompanion.swift */,
+				A00000000000000000000024 /* CloudKit.entitlements */,
+				A00000000000000000000026 /* Assets.xcassets */,
+				A00000000000000000000027 /* MobileLibrary.swift */,
+				A00000000000000000000028 /* MobileIdeas.swift */,
+				A0000000000000000000002A /* PrivacyInfo.xcprivacy */,
+				A0000000000000000000002B /* MobileSettings.swift */,
+				A0000000000000000000002C /* Sources/Inkspring/StudioAppearance.swift */,
+				A0000000000000000000002D /* Sources/Inkspring/InkspringCommunity.swift */,
+				A0000000000000000000002E /* MobileTips.swift */,
+				A0000000000000000000002F,
+				A00000000000000000000041,
+				A00000000000000000000040,
+			);
+			path = iPhone;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000005 /* Shared schedule */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000022 /* CompanionSchedule.swift */,
+				A00000000000000000000023 /* CloudScheduleStore.swift */,
+				A00000000000000000000029 /* CompanionLibrary.swift */,
+				A00000000000000000000042 /* SupportContracts.swift */,
+			);
+			name = "Shared schedule";
+			path = Sources/InkspringSchedule;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000006 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000020 /* Inkspring.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A233B3E130A8FCFB00BCE10F /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000025 /* iPhone settings */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000002 /* InkspringCompanion */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000011 /* Build configuration list for PBXNativeTarget "InkspringCompanion" */;
+			buildPhases = (
+				A00000000000000000000007 /* Sources */,
+				A00000000000000000000008 /* Frameworks */,
+				A00000000000000000000009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = InkspringCompanion;
+			productName = Inkspring;
+			productReference = A00000000000000000000020 /* Inkspring.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A00000000000000000000002 = {
+						CreatedOnToolsVersion = 27.2;
+						SystemCapabilities = {
+							com.apple.InAppPurchase = {
+								enabled = 1;
+							};
+							com.apple.iCloud = {
+								enabled = 1;
+							};
+						};
+					};
+				};
+			};
+			buildConfigurationList = A00000000000000000000010 /* Build configuration list for PBXProject "InkspringCompanion" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000003;
+			productRefGroup = A00000000000000000000006 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000002 /* InkspringCompanion */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000034 /* Assets.xcassets in Resources */,
+				FA291A600001000000000001 /* PlatformIcons in Resources */,
+				A00000000000000000000038 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000031 /* InkspringCompanion.swift in Sources */,
+				A00000000000000000000032 /* CompanionSchedule.swift in Sources */,
+				A00000000000000000000033 /* CloudScheduleStore.swift in Sources */,
+				A00000000000000000000035 /* MobileLibrary.swift in Sources */,
+				A00000000000000000000036 /* MobileIdeas.swift in Sources */,
+				A00000000000000000000037 /* CompanionLibrary.swift in Sources */,
+				B00000000000000000000042 /* SupportContracts.swift in Sources */,
+				A00000000000000000000039 /* MobileSettings.swift in Sources */,
+				A0000000000000000000003A /* Sources/Inkspring/StudioAppearance.swift in Sources */,
+				A0000000000000000000003B /* Sources/Inkspring/InkspringCommunity.swift in Sources */,
+				A0000000000000000000003C /* MobileTips.swift in Sources */,
+				A0000000000000000000003D,
+				B00000000000000000000041,
+				B00000000000000000000040,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000012 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_TESTABILITY = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A00000000000000000000013 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		A00000000000000000000014 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000025 /* iPhone settings */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		A00000000000000000000015 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000025 /* iPhone settings */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000010 /* Build configuration list for PBXProject "InkspringCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000012 /* Debug */,
+				A00000000000000000000013 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000011 /* Build configuration list for PBXNativeTarget "InkspringCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000014 /* Debug */,
+				A00000000000000000000015 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

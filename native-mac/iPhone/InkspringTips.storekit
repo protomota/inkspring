@@ -1,0 +1,79 @@
+{
+  "identifier": "d3bc609f-1f40-4fe1-b10b-ceb6977a7ad1",
+  "nonRenewingSubscriptions": [],
+  "products": [
+    {
+      "displayPrice": "0.99",
+      "familyShareable": false,
+      "internalID": "d6815731-2161-41d9-8b06-b0869fdd1f4b",
+      "localizations": [
+        {
+          "description": "An optional tip. Every Inkspring feature stays free.",
+          "displayName": "Small Tip",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.protomota.inkspring.tip.small",
+      "referenceName": "Small Tip",
+      "type": "Consumable"
+    },
+    {
+      "displayPrice": "2.99",
+      "familyShareable": false,
+      "internalID": "7e4130c1-fafd-4043-ba35-acb455ecf228",
+      "localizations": [
+        {
+          "description": "An optional tip. Every Inkspring feature stays free.",
+          "displayName": "Medium Tip",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.protomota.inkspring.tip.medium",
+      "referenceName": "Medium Tip",
+      "type": "Consumable"
+    },
+    {
+      "displayPrice": "5.99",
+      "familyShareable": false,
+      "internalID": "ac388c2d-07ae-409f-9bae-e9d85535c4c8",
+      "localizations": [
+        {
+          "description": "An optional tip. Every Inkspring feature stays free.",
+          "displayName": "Large Tip",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.protomota.inkspring.tip.large",
+      "referenceName": "Large Tip",
+      "type": "Consumable"
+    },
+    {
+      "displayPrice": "9.99",
+      "familyShareable": false,
+      "internalID": "72915321-0117-4149-bcdf-88ac00dc9119",
+      "localizations": [
+        {
+          "description": "One issue across Mac, iPhone and iPad. Includes follow-up replies.",
+          "displayName": "Personal Technical Support",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.protomota.inkspring.support.ticket",
+      "referenceName": "Personal Technical Support",
+      "type": "Consumable"
+    }
+  ],
+  "settings": {
+    "_applicationInternalID": "6834006000",
+    "_developerTeamID": "",
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": []
+  },
+  "subscriptionGroups": [],
+  "version": {
+    "major": 3,
+    "minor": 0
+  }
+}
