@@ -2,7 +2,7 @@ import SwiftUI
 
 extension MobileLibrary {
     func planText(_ item: CompanionLibrary.Item) -> String {
-        let current = ((snapshot?.items ?? []) + (snapshot?.newsletters ?? [])).first { $0.id == item.id } ?? item
+        let current = ((snapshot?.items ?? []) + (snapshot?.newsletters ?? []) + (snapshot?.scripts ?? []) + (snapshot?.articles ?? [])).first { $0.id == item.id } ?? item
         return pendingChanges(for: item.id).last(where: { $0.contentOperation == .savePlan })?.text ?? current.planMarkdown ?? ""
     }
     func savePlan(_ text: String, base: String, item: CompanionLibrary.Item, workspaceID: UUID) throws {

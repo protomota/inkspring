@@ -326,13 +326,16 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var valid: Bool {
             if let initialPlan {
                 guard initialPlan.utf16.count <= ContentPlan.limit, !initialPlan.contains("\0"),
-                      action == .addIdea && generatesXDraft != true || contentOperation.map({ [.createDraft, .createNewsletter].contains($0) }) == true else { return false }
+                      (action == .addIdea && generatesXDraft != true && createsScript != true || contentOperation.map({ [.createDraft, .createNewsletter].contains($0) }) == true) else { return false }
             }
             if let operation = contentOperation {
                 guard action == .editDraft, !itemID.isEmpty, itemID.utf8.count <= 200,
                       title.utf16.count <= 200, text.utf16.count <= ContentPlan.limit,
-                      !text.contains("\0"), !title.contains("\0"), editsNewsletter != true,
-                      generatesXDraft != true, xFormat == nil else { return false }
+                      !text.contains("\0"), !title.contains("\0"), !isLongFormEdit,
+                      generatesXDraft != true, xFormat == nil, createsScript != true,
+                      publishesXArticle != true, xArticleAccountKey == nil, requestsWritingHelp != true,
+                      writingKind == nil, historySnapshot == nil, restoresRevision != true,
+                      baseNewsletterText == nil, baseScriptTitle == nil, subtitle == nil else { return false }
                 switch operation {
                 case .savePlan: return !revision.isEmpty && title.isEmpty && basePlan != nil
                     && (basePlan?.utf16.count ?? 0) <= ContentPlan.limit && basePlan?.contains("\0") != true

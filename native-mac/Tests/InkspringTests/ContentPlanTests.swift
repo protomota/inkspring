@@ -210,3 +210,32 @@ func prepareLocalPlanReviewLibrary() throws {
     }
     print("Local review library ready: \(folder.path)")
 }
+
+@Test func planOperationsCannotAlsoRequestPublishingOrWriting() {
+    var change = CompanionLibrary.Change(action: .editDraft, itemID: "article", revision: "revision", text: "# Plan", publishesXArticle: true, xArticleAccountKey: "account")
+    change.contentOperation = .savePlan; change.basePlan = ""
+    #expect(!change.valid)
+    var request = CompanionLibrary.Change(action: .editDraft, itemID: "post", revision: "revision", text: "# Plan", requestsWritingHelp: true)
+    request.contentOperation = .savePlan; request.basePlan = ""
+    #expect(!request.valid)
+}
+
+@Test @MainActor func longFormPlansAndHistoryTravelTogether() throws {
+    let folder = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()).appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let mac = Workspace(directory: folder)
+    for kind in ["script", "article"] {
+        var record = WorkspaceRecord.new(kind, projectID: mac.projectID)
+        record["title"] = "Writing"; record["body"] = "Original full text"
+        record = try mac.save(record)
+        record = try mac.savePlan(itemID: record.id, markdown: "# Outline", base: "")
+        var library = mac.makeCompanionLibrary(workspaceID: UUID())
+        let separated = try library.separateFullText()
+        let text = try #require(separated)
+        try library.applyFullText(text)
+        let item = try #require(((library.scripts ?? []) + (library.articles ?? [])).first { $0.id == record.id })
+        #expect(item.body == "Original full text")
+        #expect(item.planMarkdown == "# Outline")
+        #expect(item.history?.isEmpty == false)
+    }
+}

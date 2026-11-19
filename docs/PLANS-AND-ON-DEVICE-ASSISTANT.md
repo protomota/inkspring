@@ -1,6 +1,6 @@
 # Plans and Ask Inkspring
 
-Local implementation for review, November 18, 2026. Do not distribute a new Mac build until Brad tests locally and authorizes release.
+Implemented November 18 and reconciled with the current writing tools November 19, 2026. Release authorized by Brad on November 19.
 
 ## Use it
 
@@ -39,4 +39,4 @@ On-device AI requires an eligible device with Apple Intelligence enabled and its
 
 Use `INKSPRING_MAC_CONFIGURATION=debug native-mac/build-app.sh '/Volumes/Expand/Codex Media/Inkspring Native/Plans and On-device Assistant/Local'` for a local test build. The script defaults to release for ordinary builds. Never put build output on the internal drive.
 
-Review evidence and the separate sample workspace live under `/Volumes/Expand/Codex Media/Inkspring Native/Plans and On-device Assistant`. The sample app uses its own bundle ID and library. Public installer/Sparkle feeds and TestFlight are held for review. Current tests cover complete backup restoration, document-level conflicts, full-text transport, wire capability gates, MCP scope, idempotency, ambiguity/injection checks and real Mac model execution. Physical two-device iCloud acceptance remains distinct from isolated sync-contract tests.
+Review evidence and the separate sample workspace live under `/Volumes/Expand/Codex Media/Inkspring Native/Plans and On-device Assistant`. The sample app uses its own bundle ID and library. The public release includes these features after native, mobile and visual validation. Current tests cover complete backup restoration, document-level conflicts, full-text transport, wire capability gates, MCP scope, idempotency, ambiguity/injection checks and real Mac model execution. Physical two-device iCloud acceptance remains distinct from isolated sync-contract tests.

@@ -7,7 +7,7 @@ extension Workspace {
     func savePlan(itemID: String, markdown: String, base: String) throws -> WorkspaceRecord {
         try ContentPlan.validate(markdown)
         return try withChanges {
-            guard var current = records.first(where: { $0.id == itemID && ["draft", "idea", "newsletter"].contains($0.kind) }) else {
+            guard var current = records.first(where: { $0.id == itemID && ["draft", "idea", "newsletter", "script", "article"].contains($0.kind) }) else {
                 throw WorkspaceError("This content is unavailable. Restore it from Trash before editing its plan.")
             }
             guard current["planMarkdown"] == base else { throw ContentPlanError.conflict }

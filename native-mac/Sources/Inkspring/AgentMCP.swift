@@ -465,7 +465,7 @@ struct AgentMCP {
             }
             return view(try workspace.restoreRevision(revision, to: item), full: true)
         case "get_plan", "save_plan":
-            guard let item = workspace.records.first(where: { ["draft", "idea", "newsletter"].contains($0.kind) && $0.matchesID(argument("content_id")) && (chatProjectID == nil || $0.projectID == chatProjectID) }) else {
+            guard let item = workspace.records.first(where: { ["draft", "idea", "newsletter", "script", "article"].contains($0.kind) && $0.matchesID(argument("content_id")) && (chatProjectID == nil || $0.projectID == chatProjectID) }) else {
                 throw WorkspaceError("No available writing has that ID.")
             }
             if name == "save_plan" {

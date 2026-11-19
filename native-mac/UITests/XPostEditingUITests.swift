@@ -1,6 +1,46 @@
 import XCTest
 
 final class WalkthroughTests: XCTestCase {
+    func testPlanPreviewEditSaveAndAssistant() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--newsletter-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let open = app.buttons["plan.open"].firstMatch
+        if !open.waitForExistence(timeout: 2) {
+            let draft = app.descendants(matching: .any)["review.item.draft"].firstMatch
+            if !draft.exists, app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+            XCTAssertTrue(draft.waitForExistence(timeout: 10)); draft.tap()
+        }
+        for _ in 0..<4 where !open.isHittable { app.swipeUp() }
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        if open.isHittable { open.tap() }
+        else { open.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
+        let markdown = app.buttons["Markdown"].firstMatch
+        XCTAssertTrue(markdown.waitForExistence(timeout: 5)); markdown.tap()
+        let editor = app.textViews["plan.markdown"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); editor.tap()
+        editor.typeText("# Launch plan\n\n- [ ] Check the links\n- [ ] Review the opening\n\n[Inkspring](https://inkspring.ai/)")
+        capture("Inline Plan Markdown editor", app)
+        let save = app.buttons["plan.save"].firstMatch
+        for _ in 0..<5 where !save.isHittable { app.swipeUp() }
+        XCTAssertTrue(save.isHittable); save.tap()
+        XCTAssertTrue(app.staticTexts["Plan saved on this device. Waiting for your Mac to apply it."].waitForExistence(timeout: 5))
+        capture("Plan saved locally and queued for Mac", app)
+    }
+    func testAskInkspringScreen() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let ask = app.buttons["assistant.open"].firstMatch
+        if !ask.waitForExistence(timeout: 2), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(ask.waitForExistence(timeout: 15)); ask.tap()
+        XCTAssertTrue(app.textFields["assistant.message"].waitForExistence(timeout: 5) || app.textViews["assistant.message"].exists)
+        capture("Ask Inkspring on-device assistant", app)
+    }
+
     func testXArticleReviewsAccountAndPublishesFullTextThroughMac() {
         continueAfterFailure = false
         let app = XCUIApplication()
