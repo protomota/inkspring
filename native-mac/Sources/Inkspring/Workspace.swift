@@ -148,6 +148,11 @@ final class Workspace {
             if let current, !["draft", "synced"].contains(current["state"]) {
                 throw WorkspaceError("Check this newsletter in Substack before editing.")
             }
+            if let current {
+                record.fields["reviewComments"] = current.fields["reviewComments"]
+                let applied = current.appliedRevisionCommentIDs + record.appliedRevisionCommentIDs
+                record.fields["appliedRevisionCommentIDs"] = Array(NSOrderedSet(array: applied))
+            }
             let revision = record.fields["revision"] as? Int ?? 0
             guard revision == (current?.fields["revision"] as? Int ?? 0) else {
                 throw WorkspaceError("Reopen the latest version of this newsletter before saving.")
@@ -300,7 +305,8 @@ final class Workspace {
                 throw WorkspaceError("Enter a comment of up to 4,000 characters. Each item can hold 100 comments.")
             }
             var comment = ["text": text, "at": WorkspaceRecord.timestamp]
-            if current.kind == "draft" { comment["revisionRequestID"] = revisionRequestID }
+            if ["draft", "idea"].contains(current.kind) || current.isLongForm { comment["revisionRequestID"] = revisionRequestID }
+            current.fields["writingRequestError"] = nil
             current.fields["reviewComments"] = current.comments + [comment]
             try database.put(current)
             try reload()
@@ -868,6 +874,9 @@ extension Workspace {
                 throw WorkspaceError("Wait for the active publishing attempt to finish.")
             }
             let steps = receipt.fields["steps"] as? [[String: Any]] ?? []
+            if receipt["contentKind"] == "article", !steps.isEmpty {
+                throw WorkspaceError("X already confirmed this article’s post ID. Open the published article instead of retrying.")
+            }
             receipt["status"] = steps.isEmpty ? "failed" : "partial"
             receipt["error"] = "The author checked the platform and allowed another attempt."
             try updatePublication(receipt)
@@ -888,6 +897,13 @@ extension Workspace {
                     receipts[index]["error"] = message
                     receipts[index].markUpdated()
                     try database.put(receipts[index])
+                    if receipts[index]["contentKind"] == "article",
+                       var article = records.first(where: { $0.kind == "article" && $0.id == receipts[index]["draftId"] }) {
+                        article["state"] = "uncertain"
+                        article["articlePublicationStatus"] = "uncertain"
+                        article["articlePublicationError"] = message
+                        try database.put(article)
+                    }
                 }
                 let receiptsByDraft = Dictionary(grouping: receipts, by: { $0["draftId"] })
                 for draft in records where draft.kind == "draft" && draft.scheduleStatus == "posting" {
@@ -913,6 +929,7 @@ extension Workspace {
     }
 
     func updatePublication(_ receipt: WorkspaceRecord) throws {
+        if receipt["contentKind"] == "article" { try updateXArticlePublication(receipt); return }
         guard let database else { throw WorkspaceError("The workspace is unavailable.") }
         try database.transaction {
             try reload()

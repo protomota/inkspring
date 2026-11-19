@@ -108,6 +108,11 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var articles: [Item]?
     public var scripts: [Item]?
     public var supportsScripts: Bool?
+    public var supportsXArticlePublishing: Bool?
+    public var xArticleAccountKey: String?
+    public var xArticleAccountName: String?
+    public var supportsWritingTools: Bool?
+    public var writingAgent: String?
     public var newsletters: [Item]?
     public var hasMoreNewsletters: Bool?
     public var fullText: TextVersion?
@@ -133,6 +138,11 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     }
 
     public struct Item: Codable, Equatable, Identifiable, Sendable {
+        public var publicationStatus: String?
+        public var publicationURL: String?
+        public var publicationError: String?
+        public var writingError: String?
+        public var writingReply: String?
         public var history: [ContentRevision]?
         public enum Kind: String, Codable, Sendable { case draft, idea, newsletter, script, article }
         public var isLongForm: Bool { kind == .newsletter || kind == .script || kind == .article }
@@ -258,6 +268,9 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public let title: String
         public let text: String
         // Newsletter edits use the existing wire action so older clients can decode the queue.
+        public let publishesXArticle: Bool?
+        public let xArticleAccountKey: String?
+        public let requestsWritingHelp: Bool?
         public let writingKind: String?
         public let baseScriptTitle: String?
         public let editsScript: Bool?
@@ -275,13 +288,16 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
                     title: String = "", text: String = "", editsNewsletter: Bool? = nil,
                     baseNewsletterText: String? = nil, xFormat: String? = nil, generatesXDraft: Bool? = nil,
                     historySnapshot: ContentRevision? = nil, restoresRevision: Bool? = nil, subtitle: String? = nil,
-                    editsScript: Bool? = nil, createsScript: Bool? = nil, baseScriptTitle: String? = nil, writingKind: String? = nil) {
+                    editsScript: Bool? = nil, createsScript: Bool? = nil, baseScriptTitle: String? = nil, writingKind: String? = nil, requestsWritingHelp: Bool? = nil, publishesXArticle: Bool? = nil, xArticleAccountKey: String? = nil) {
             self.id = id
             self.action = action
             self.itemID = itemID
             self.revision = revision
             self.title = action == .editDraft ? title : title.trimmingCharacters(in: .whitespacesAndNewlines)
             self.text = action == .editDraft || createsScript == true ? text : text.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.publishesXArticle = publishesXArticle
+            self.xArticleAccountKey = xArticleAccountKey
+            self.requestsWritingHelp = requestsWritingHelp
             self.writingKind = writingKind
             self.baseScriptTitle = baseScriptTitle
             self.editsScript = editsScript
@@ -296,7 +312,17 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         }
 
         public var valid: Bool {
-            guard (writingKind == nil || ["script", "article"].contains(writingKind ?? "") && (createsScript == true || editsScript == true)),
+            if publishesXArticle == true {
+                return action == .note && !itemID.isEmpty && itemID.utf8.count <= 200 && !revision.isEmpty && revision.utf8.count <= 100
+                    && text == "Publish X article" && title.isEmpty && !isLongFormEdit && createsScript != true
+                    && requestsWritingHelp != true && generatesXDraft != true && historySnapshot == nil
+                    && baseNewsletterText == nil && writingKind == nil && xFormat == nil && restoresRevision != true
+                    && xArticleAccountKey.map { !$0.isEmpty && $0.utf8.count <= 500 } == true
+            }
+            guard xArticleAccountKey == nil else { return false }
+
+            guard (requestsWritingHelp != true || action == .note && !isLongFormEdit && createsScript != true && generatesXDraft != true && historySnapshot == nil),
+                  (writingKind == nil || ["script", "article", "newsletter"].contains(writingKind ?? "") && (createsScript == true || editsScript == true)),
                   !(editsScript == true && editsNewsletter == true),
                   !(generatesXDraft == true && (editsScript == true || createsScript == true)),
                   !itemID.isEmpty, itemID.utf8.count <= 200, revision.utf8.count <= 100 else { return false }
@@ -319,7 +345,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
                 guard action == .editDraft, editsNewsletter != true, XPostStyle(rawValue: xFormat) != nil else { return false }
             }
             if isLongFormEdit {
-                return action == .editDraft && !revision.isEmpty && (title.isEmpty || (restoresRevision == true || editsScript == true) && title.utf16.count <= 300)
+                return action == .editDraft && !revision.isEmpty && (title.isEmpty || (restoresRevision == true || editsScript == true || baseScriptTitle != nil) && title.utf16.count <= 300)
                     && text.utf16.count <= 200_000 && !text.contains("\0")
                     && (subtitle?.utf16.count ?? 0) <= 1000
                     && (baseScriptTitle?.utf16.count ?? 0) <= 300
@@ -340,6 +366,11 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
                 return !revision.isEmpty && title.isEmpty && postingHour != nil
             case .saveRevision: return false
             }
+        }
+
+        public var needsWritingTools: Bool {
+            requestsWritingHelp == true || createsScript == true && writingKind == "newsletter" ||
+                editsNewsletter == true && !title.isEmpty && restoresRevision != true && baseScriptTitle != nil
         }
 
         public var postingHour: Date? {
@@ -365,6 +396,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public mutating func enqueue(_ change: Change) throws {
         guard enabled else { throw CompanionLibraryError.disabled }
         guard (change.createsScript != true && change.editsScript != true) || supportsScripts == true else { throw CompanionLibraryError.disabled }
+        guard change.publishesXArticle != true || supportsXArticlePublishing == true else { throw CompanionLibraryError.disabled }
+        guard !change.needsWritingTools || supportsWritingTools == true else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.xFormat != nil, change.text.contains(XThreadText.separator), supportsXParagraphs != true {
             throw CompanionLibraryError.disabled
@@ -395,6 +428,11 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         scripts = nil
         articles = nil
         supportsScripts = nil
+        supportsXArticlePublishing = nil
+        xArticleAccountKey = nil
+        xArticleAccountName = nil
+        supportsWritingTools = nil
+        writingAgent = nil
         hasMoreNewsletters = nil
         fullText = nil
         pending = []
@@ -427,7 +465,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
         let action: CompanionLibrary.Change.Action
         var itemID: String?
         var revision: String
-        let title: String
+        var title: String
         let text: String
         var workspaceID: UUID?
         var account: String?
@@ -435,6 +473,9 @@ struct CompanionLibraryOutbox: Codable, Equatable {
         var afterTrash: UUID?
         var retryID: UUID?
         var trashRetries: Int?
+        var publishesXArticle: Bool?
+        var xArticleAccountKey: String?
+        var requestsWritingHelp: Bool?
         var writingKind: String?
         var baseScriptTitle: String?
         var editsScript: Bool?
@@ -458,11 +499,11 @@ struct CompanionLibraryOutbox: Codable, Equatable {
             let change = CompanionLibrary.Change(id: requestID, action: action, itemID: itemID, revision: revision,
                                                  title: title, text: text, editsNewsletter: editsNewsletter,
                                                  baseNewsletterText: baseNewsletterText, xFormat: xFormat, generatesXDraft: generatesXDraft,
-                                                 historySnapshot: historySnapshot, restoresRevision: restoresRevision, subtitle: subtitle, editsScript: editsScript, createsScript: createsScript, baseScriptTitle: baseScriptTitle, writingKind: writingKind)
+                                                 historySnapshot: historySnapshot, restoresRevision: restoresRevision, subtitle: subtitle, editsScript: editsScript, createsScript: createsScript, baseScriptTitle: baseScriptTitle, writingKind: writingKind, requestsWritingHelp: requestsWritingHelp, publishesXArticle: publishesXArticle, xArticleAccountKey: xArticleAccountKey)
             // Keep the existing edit limit even when the original plus the edit exceed one record.
             if baseNewsletterText != nil, let size = try? JSONEncoder().encode(change).count, size > change.payloadLimit {
                 return .init(id: requestID, action: action, itemID: itemID, revision: revision, title: title, text: text,
-                             editsNewsletter: editsNewsletter, restoresRevision: restoresRevision, subtitle: subtitle, editsScript: editsScript, createsScript: createsScript, baseScriptTitle: baseScriptTitle, writingKind: writingKind)
+                             editsNewsletter: editsNewsletter, restoresRevision: restoresRevision, subtitle: subtitle, editsScript: editsScript, createsScript: createsScript, baseScriptTitle: baseScriptTitle, writingKind: writingKind, requestsWritingHelp: requestsWritingHelp, publishesXArticle: publishesXArticle, xArticleAccountKey: xArticleAccountKey)
             }
             return change
         }
@@ -480,7 +521,8 @@ struct CompanionLibraryOutbox: Codable, Equatable {
         let predecessor = matches.last { $0.error == nil && $0.newsletterPrepared != false }
         if let unsent = matches.first(where: { $0.error == nil && $0.newsletterPrepared == false }) {
             edit.baseNewsletterText = unsent.baseNewsletterText
-            edit.baseScriptTitle = unsent.baseScriptTitle
+            edit.baseScriptTitle = unsent.baseScriptTitle ?? edit.baseScriptTitle
+            if edit.title.isEmpty { edit.title = unsent.title }
             edit.revision = unsent.revision
         }
         let replaced = Set(matches.map(\.id))
@@ -592,6 +634,8 @@ struct CompanionLibraryOutbox: Codable, Equatable {
             if entry.error == nil, !pendingIDs.contains(entry.requestID), let change = entry.change,
                entry.revision != "pending-add",
                (entry.action != .editDraft || library.supportsDraftEdits == true),
+               (change.publishesXArticle != true || library.supportsXArticlePublishing == true),
+               (!change.needsWritingTools || library.supportsWritingTools == true),
                (entry.action != .saveRevision || library.supportsRevisionHistory == true),
                (entry.xFormat == nil || library.supportsXThreads == true),
                (entry.xFormat == nil || !entry.text.contains(XThreadText.separator) || library.supportsXParagraphs == true),

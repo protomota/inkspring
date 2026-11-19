@@ -122,10 +122,14 @@ After restoring a workspace on a new Mac, turn on schedule sync there and confir
 
 ## Writing formats and Find
 
-**YouTube scripts** and **X articles** are separate writing-only formats. On Mac, each has a named sidebar section. On iPhone and iPad, choose **New → New YouTube script** or **New → New X article**, and use the **YouTube** or **X article** platform filter. X articles carry an explicit **X article** label so they cannot be confused with tweets or threads. Neither format enters the publishing queue.
+**YouTube scripts** and **X articles** are separate long-form formats. On Mac, each has a named sidebar section. On iPhone and iPad, choose **New → New YouTube script** or **New → New X article**, and use the **YouTube** or **X article** platform filter. X articles carry an explicit **X article** label so they cannot be confused with tweets or threads. YouTube scripts stay writing-only. X articles have **Review & publish on X** controls and publish through the official Articles API, separately from tweets and threads. X Article access and API credits are required.
 
 Both formats keep the complete text, copyable project ID, Markdown preview, autosave, proofreading, revision history, and iCloud sync. Open the updated Mac app to exchange these formats with mobile. An older Mac cannot accept their edits; mobile retains them locally until a compatible Mac syncs.
 
 While editing on mobile, the text uses the available content area and the metadata stays in the preview. **Done** returns to the preview. **Find** searches within the editor and jumps between matches. On Mac, use **Find** or Command-F in the writing editor. X replies edit in place with **Back to thread**, preserving the parent draft and autosaving changes.
 
 MCP tools `list_scripts`, `get_script`, `save_script`, `list_articles`, `get_article`, and `save_article` read and save supplied text locally without an API key or a model call. Pass the last-read `expected_updated_at` when editing and a stable `request_key` when retrying creation. Scripts, articles, posts, and newsletters share each project's reference-ID sequence.
+
+Choose **New → Long-form** on mobile for Substack newsletters, X articles, or YouTube scripts. **Writing tools → Ask AI** saves a request for the selected Mac writing connection; **Proofread** uses Apple Intelligence on supported mobile devices. The Mac applies requests while Inkspring is open, preserving earlier versions and checking for concurrent author edits.
+
+To publish an X article, connect X on Mac, review the full article, then choose **Review & publish on X** and confirm the account. Mobile sends the reviewed revision and account to Mac through iCloud; the Mac must be awake with Inkspring open. A newer edit or changed account cancels the request instead of publishing unreviewed text. The receipt and article URL sync back to mobile. Known failures retain the remote draft for retry; ambiguous results require checking X before another attempt. `publish_article` is available over MCP only with immediate agent posting enabled and the current `expected_updated_at`. Supplied article text never needs an AI provider key.

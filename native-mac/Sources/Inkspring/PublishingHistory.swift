@@ -21,7 +21,7 @@ struct PublishingHistory: View {
                                 Text(receipt.title).font(.headline)
                                 Spacer()
                                 StudioPlatformLabel(name: receipt["platform"],
-                                                    title: platformName(receipt["platform"]) + " · " + receipt["status"].capitalized)
+                                                    title: (receipt["contentKind"] == "article" ? "X article" : platformName(receipt["platform"])) + " · " + receipt["status"].capitalized)
                                     .foregroundStyle(.secondary)
                             }
                             if !receipt["error"].isEmpty { Text(receipt["error"]).foregroundStyle(.secondary) }
@@ -29,7 +29,7 @@ struct PublishingHistory: View {
                             ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                                 if let raw = step["url"] as? String, let url = URL(string: raw),
                                    url.scheme == "https", url.user == nil, url.password == nil {
-                                    StudioExternalLink(steps.count == 1 ? "View post" : "View post \(index + 1)", destination: url)
+                                    StudioExternalLink(receipt["contentKind"] == "article" ? "View article" : steps.count == 1 ? "View post" : "View post \(index + 1)", destination: url)
                                 }
                             }
                             if ["uncertain", "publishing"].contains(receipt["status"]) {

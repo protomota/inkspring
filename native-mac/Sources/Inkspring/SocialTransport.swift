@@ -3,10 +3,12 @@ import Foundation
 struct SocialRequestError: LocalizedError {
     let errorDescription: String?
     let uncertain: Bool
+    let statusCode: Int?
 
-    init(_ message: String, uncertain: Bool = false) {
+    init(_ message: String, uncertain: Bool = false, statusCode: Int? = nil) {
         errorDescription = message
         self.uncertain = uncertain
+        self.statusCode = statusCode
     }
 }
 
@@ -48,7 +50,7 @@ struct SocialTransport {
             case 429: "The platform reached a rate limit. Wait before retrying."
             default: "The social service returned HTTP \(response.statusCode)."
             }
-            throw SocialRequestError(message, uncertain: uncertain)
+            throw SocialRequestError(message, uncertain: uncertain, statusCode: response.statusCode)
         }
         if data.isEmpty || !expectsJSON { return ([:], response) }
         let decoded = try? JSONSerialization.jsonObject(with: data)

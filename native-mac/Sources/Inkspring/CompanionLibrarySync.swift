@@ -26,6 +26,7 @@ extension Workspace {
             }
             let completed = try previous.pending.map(applyCompanionLibraryChange)
             await generateMobileXDraft()
+            await publishPendingXArticles()
             scheduleChanged = zip(previous.pending, completed).contains { $0.0.action == .scheduleDraft && $0.1.error == nil }
             try await publishCompanionLibrary(cloud, workspaceID: id, account: account,
                                               previous: previous, enabling: false, completed: completed)
@@ -78,6 +79,13 @@ extension Workspace {
         snapshot.supportsXThreads = true
         snapshot.supportsXParagraphs = true
         snapshot.supportsRevisionHistory = true
+        snapshot.supportsXArticlePublishing = true
+        if let account = try? socialAccounts.savedAccount(.x) {
+            snapshot.xArticleAccountKey = account.connectionKey
+            snapshot.xArticleAccountName = account.username.isEmpty ? account.name : "@" + account.username
+        }
+        snapshot.supportsWritingTools = true
+        snapshot.writingAgent = StudioWritingConnection(settings: settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: settings).writingProvider.rawValue
         snapshot.postingWindows = Dictionary(uniqueKeysWithValues: SocialPlatform.allCases.filter { $0 != .tiktok }.map {
             ($0.rawValue, postingWindow(for: $0.rawValue))
         })
@@ -128,6 +136,8 @@ extension Workspace {
                         item.generationStatus = record["generationError"].isEmpty ? "Waiting for your Mac to generate this draft." : record["generationError"]
                     }
                 }
+                item.writingReply = record["notesReply"].isEmpty ? nil : record["notesReply"]
+                item.writingError = record["writingRequestError"].isEmpty ? nil : record["writingRequestError"]
                 if comments.contains(where: { $0.state != nil }) { item.noteStates = comments.map(\.state) }
                 if record.fields["manualQuote"] as? Bool == true { item.requiresMacScheduling = true }
                 guard let encoded = try? encoder.encode(item.indexEntry), kindBytes + encoded.count <= 52_000,
@@ -161,7 +171,19 @@ extension Workspace {
                 kind: CompanionLibrary.Item.Kind(rawValue: record.kind) ?? .newsletter,
                 projectID: record.projectID, title: record.title, body: record.body,
                 shortened: false, platform: record.kind == "script" ? "youtube" : record.kind == "article" ? "x" : "substack",
-                status: record["state"], notes: [], referenceID: record.referenceID)
+                status: record["state"], notes: record.comments.suffix(4).compactMap { $0["text"] as? String },
+                noteDates: record.comments.suffix(4).map { $0["at"] as? String ?? "" }, referenceID: record.referenceID)
+            item.noteStates = record.comments.suffix(4).map { comment in
+                guard let id = comment["revisionRequestID"] as? String else { return nil }
+                return record.appliedRevisionCommentIDs.contains(id) ? "applied" : "pending"
+            }
+            item.writingError = record["writingRequestError"].isEmpty ? nil : record["writingRequestError"]
+            item.writingReply = record["notesReply"].isEmpty ? nil : record["notesReply"]
+            if record.kind == "article" {
+                item.publicationStatus = record["articlePublicationStatus"]
+                item.publicationURL = record["articleURL"]
+                item.publicationError = record["articlePublicationError"]
+            }
             item.history = try? revisionHistory(for: record)
             guard let data = try? encoder.encode(item.indexEntry), longFormBytes + data.count + 1 <= 260_000 else { continue }
             longFormBytes += data.count + 1
@@ -184,6 +206,9 @@ extension Workspace {
               library.supportsXThreads != snapshot.supportsXThreads ||
               library.supportsXParagraphs != snapshot.supportsXParagraphs ||
               library.supportsRevisionHistory != snapshot.supportsRevisionHistory ||
+              library.supportsXArticlePublishing != snapshot.supportsXArticlePublishing ||
+              library.xArticleAccountKey != snapshot.xArticleAccountKey || library.xArticleAccountName != snapshot.xArticleAccountName ||
+              library.supportsWritingTools != snapshot.supportsWritingTools || library.writingAgent != snapshot.writingAgent ||
               library.postingWindows != snapshot.postingWindows || library.postingTimeZone != snapshot.postingTimeZone ||
               library.projects != snapshot.projects || library.items != snapshot.items ||
               library.articles != snapshot.articles || library.scripts != snapshot.scripts || library.supportsScripts != snapshot.supportsScripts ||
@@ -196,6 +221,11 @@ extension Workspace {
         library.supportsXThreads = snapshot.supportsXThreads
         library.supportsXParagraphs = snapshot.supportsXParagraphs
         library.supportsRevisionHistory = snapshot.supportsRevisionHistory
+        library.supportsXArticlePublishing = snapshot.supportsXArticlePublishing
+        library.xArticleAccountKey = snapshot.xArticleAccountKey
+        library.xArticleAccountName = snapshot.xArticleAccountName
+        library.supportsWritingTools = snapshot.supportsWritingTools
+        library.writingAgent = snapshot.writingAgent
         library.postingWindows = snapshot.postingWindows
         library.postingTimeZone = snapshot.postingTimeZone
         library.items = snapshot.items
@@ -237,6 +267,18 @@ extension Workspace {
                   let record = (records + trashedRecords).first(where: { $0.id == change.itemID }),
                   ["draft", "newsletter", "script", "article"].contains(record.kind) else { return nil }
             try retainRevision(snapshot, recordID: record.id)
+            return nil
+        }
+        if change.publishesXArticle == true {
+            try queueXArticlePublication(id: change.itemID, revision: change.revision,
+                accountKey: change.xArticleAccountKey ?? "", requestID: id)
+            return nil
+        }
+        if change.requestsWritingHelp == true {
+            guard let record = records.first(where: { $0.id == change.itemID }), record.acceptsRevisionComments else {
+                return "Choose an editable, unscheduled draft for this request."
+            }
+            try addComment(to: record, text: change.text, revisionRequestID: id)
             return nil
         }
         if change.generatesXDraft == true {
@@ -281,11 +323,11 @@ extension Workspace {
             } else if newsletter["updatedAt"] != change.revision && newsletter.body != change.text {
                 return "This newsletter changed on your Mac before the edit could sync. Your mobile edit is still saved on this device."
             }
-            if change.editsScript == true, let baseTitle = change.baseScriptTitle,
+            if change.isLongFormEdit, let baseTitle = change.baseScriptTitle,
                baseTitle != change.title, newsletter.title != baseTitle, newsletter.title != change.title {
                 return "Both devices changed the script title. Your mobile version is still saved on this device."
             }
-            let changesTitle = change.editsScript == true && !change.title.isEmpty &&
+            let changesTitle = change.isLongFormEdit && !change.title.isEmpty &&
                 (change.baseScriptTitle == nil || change.baseScriptTitle != change.title)
             if newsletter.body != body || change.restoresRevision == true || changesTitle && change.title != newsletter.title {
                 if changesTitle { newsletter["title"] = change.title }

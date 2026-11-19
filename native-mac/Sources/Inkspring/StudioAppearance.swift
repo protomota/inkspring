@@ -1039,21 +1039,121 @@ private struct MacReplyWritingField: View {
 }
 #endif
 
+struct StudioWritingRequest: Identifiable {
+    let id: String
+    let text: String
+    let state: String
+}
+
+struct StudioWritingAssistant: View {
+    let agent: String
+    let requests: [StudioWritingRequest]
+    var reply: String?
+    var error: String?
+    let submit: (String) throws -> Void
+    @Environment(\.studioPalette) private var palette
+    @State private var prompt = ""
+    @State private var message: String?
+    private var agentTitle: String {
+        switch agent { case "claude", "anthropic": "Claude"; case "codex": "Codex"; case "openai": "OpenAI"; case "gemini": "Gemini"; default: "your agent" }
+    }
+    private var agentIcon: String { ["claude", "anthropic"].contains(agent) ? "claude-mark" : ["codex", "openai"].contains(agent) ? "openai-mark" : agent }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            StudioPlatformLabel(name: agentIcon, title: "Ask \(agentTitle)")
+                .font(.headline)
+            Text("Your Mac applies the request using its writing connection. Every change is kept in revision history.")
+                .font(.caption).foregroundStyle(palette.muted)
+            TextField("Ask for a brief or describe a change…", text: $prompt, axis: .vertical)
+                .lineLimit(3...6).textFieldStyle(.plain).padding(10)
+                .studioSurface(StudioRadius.control, fill: palette.well)
+                .accessibilityIdentifier("writing.prompt")
+            HStack {
+                Text("\(prompt.utf16.count)/1,000").font(.caption).foregroundStyle(palette.muted)
+                Spacer()
+                Button { send(prompt) } label: {
+                    StudioPlatformLabel(name: agentIcon, title: "Ask \(agentTitle)")
+                }
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || prompt.utf16.count > 1_000)
+                .accessibilityIdentifier("writing.send")
+            }
+            HStack {
+                Button("Summarize this") { send("Summarize this draft into a concise brief, preserving the key facts and relevant links.") }
+                Button("Tighten the writing") { send("Make this draft clearer and more concise while preserving my voice, facts and links.") }
+            }.font(.caption)
+            if let error { Text(error).font(.caption).foregroundStyle(palette.danger).accessibilityIdentifier("writing.error") }
+            if let message { Text(message).font(.caption).foregroundStyle(palette.muted).accessibilityIdentifier("writing.status") }
+            if !requests.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(requests.suffix(4))) { request in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(request.text).font(.callout)
+                                Text(request.state).font(.caption).foregroundStyle(palette.muted)
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10).studioSurface(fill: palette.well)
+                        }
+                    }
+                }.frame(maxHeight: 160)
+            }
+            if let reply, !reply.isEmpty { Text(reply).font(.callout).accessibilityIdentifier("writing.reply") }
+        }
+        .foregroundStyle(palette.text)
+        .onChange(of: reply) { message = nil }
+    }
+    private func send(_ text: String) {
+        do {
+            try submit(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            prompt = ""
+            message = "Request saved. Your Mac will apply it while Inkspring is open."
+        } catch { message = error.localizedDescription }
+    }
+}
+
 #if os(iOS)
 struct MobileWritingTools: View {
     @Binding var title: String
     @Binding var text: String
-    @State private var presented = false
+    @Binding var presented: Bool
+    let agent: String
+    let requests: [StudioWritingRequest]
+    var reply: String?
+    var error: String?
+    let request: (String) throws -> Void
+    @State private var tab = "Ask AI"
     @Environment(\.studioPalette) private var palette
     var body: some View {
-        Button("Writing tools", systemImage: "text.badge.checkmark") { presented = true }
+        Button("Writing tools", systemImage: "bubble.left.and.text.bubble.right") { presented = true }
             .accessibilityIdentifier("writing.tools")
             .popover(isPresented: $presented) {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack { Text("Proofread").font(.headline); Spacer(); Button("Done") { presented = false } }
-                    StudioProofreadAction(document: .init(title: title, body: text), unavailable: MobileProofreading.availabilityMessage,
-                        check: MobileProofreading.check) { title = $0.title; text = $0.body }
-                }.padding(20).frame(minWidth: 280, idealWidth: 360).background(palette.canvas)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Text("Writing tools").font(.headline)
+                            Spacer()
+                            Button("Done") { presented = false }.accessibilityIdentifier("writing.close")
+                        }
+                        HStack(spacing: 4) {
+                            ForEach(["Ask AI", "Proofread"], id: \.self) { option in
+                                Button { tab = option } label: {
+                                    Text(option).font(.subheadline.weight(.semibold))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 10)
+                                        .background(tab == option ? palette.active : .clear, in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(tab == option ? .isSelected : [])
+                            }
+                        }
+                        .padding(3).background(palette.well, in: Capsule())
+                        .overlay { Capsule().strokeBorder(palette.line).allowsHitTesting(false) }
+                        .accessibilityLabel("Writing tool")
+                        if tab == "Ask AI" {
+                            StudioWritingAssistant(agent: agent, requests: requests, reply: reply, error: error, submit: request)
+                        } else {
+                            StudioProofreadAction(document: .init(title: title, body: text), unavailable: MobileProofreading.availabilityMessage,
+                                check: MobileProofreading.check) { title = $0.title; text = $0.body }
+                        }
+                    }.padding(20)
+                }.frame(minWidth: 300, idealWidth: 380, minHeight: 350, idealHeight: 520).background(palette.canvas)
             }
     }
 }

@@ -39,8 +39,14 @@ struct PostInlineEditor: View {
     @State private var format = ""
     @State private var showingHistory = false
     @State private var message: String?
+    @State private var writingAssistantOpen = false
+    @State private var baseline: WorkspaceRecord?
 
-    private var dirty: Bool { title != record.title || markdown != record.body || format != record["format"] }
+    private var current: WorkspaceRecord { workspace.records.first { $0.id == record.id } ?? record }
+    private var dirty: Bool {
+        let base = baseline ?? record
+        return title != base.title || markdown != base.body || format != base["format"]
+    }
 
     var body: some View {
         if showingHistory {
@@ -60,12 +66,31 @@ struct PostInlineEditor: View {
                     StudioCopyReference(reference: reference)
                 }
                 Spacer()
+                Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") { writingAssistantOpen.toggle() }
+                    .disabled(!current.acceptsRevisionComments).accessibilityIdentifier("writing.tools")
                 Button("Revision history", systemImage: "clock.arrow.circlepath") { showingHistory = true }
                     .disabled(dirty)
                 Button("Save", action: save)
                     .modifier(PrimaryActionStyle())
                     .keyboardShortcut("s")
                     .disabled(!dirty)
+            }
+            if writingAssistantOpen {
+                ScrollView {
+                StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue,
+                    requests: current.comments.enumerated().map { index, comment in
+                        StudioWritingRequest(id: comment["revisionRequestID"] as? String ?? "saved-\(index)", text: comment["text"] as? String ?? "",
+                            state: current.appliedRevisionCommentIDs.contains(comment["revisionRequestID"] as? String ?? "") ? "Applied" : "Waiting for Mac")
+                    }, reply: current["notesReply"], error: current["writingRequestError"].isEmpty ? nil : current["writingRequestError"]) { prompt in
+                        if dirty {
+                            try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format)
+                            baseline = current
+                        }
+                        try workspace.addComment(to: current, text: prompt, revisionRequestID: UUID().uuidString.lowercased())
+                        Task { await workspace.runDraftRevisionComments() }
+                    }
+                    .padding(14).studioSurface(fill: palette.well)
+                }.frame(maxHeight: 240)
             }
             DraftTitleField(title: $title)
             StudioProofreadAction(document: .init(title: title, body: markdown),
@@ -82,13 +107,17 @@ struct PostInlineEditor: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
-        .onAppear { title = record.title; markdown = record.body; format = record["format"] }
+        .onAppear { title = current.title; markdown = current.body; format = current["format"]; baseline = current }
+        .onChange(of: current["updatedAt"]) {
+            guard !dirty else { return }
+            title = current.title; markdown = current.body; format = current["format"]; baseline = current
+        }
         .onChange(of: dirty) { _, changed in onDirty(changed) }
     }
 
     private func save() {
         do {
-            try workspace.updatePostText(record, title: title, text: markdown, format: format)
+            try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format)
             saved()
         } catch {
             message = error.localizedDescription
@@ -114,6 +143,7 @@ struct RecordEditor: View {
     @State private var message: String?
     @State private var newsletterMode = "Source"
     @State private var newsletterFindRequest = 0
+    @State private var writingAssistantOpen = false
     @State private var newsletterInspectorOpen = false
     @State private var showingHistory = false
     @State private var newsletterBrief = ""
@@ -163,7 +193,7 @@ struct RecordEditor: View {
         workspace.records.first { $0.isLongForm && $0.id == record.id }
     }
 
-    private var canEditNewsletter: Bool { ["draft", "synced"].contains(record["state"]) }
+    private var canEditNewsletter: Bool { ["draft", "synced"].contains((latestNewsletter ?? record)["state"]) }
 
     private var newsletterHasEdits: Bool {
         return ["title", "subtitle", "body", "audience"].contains { record[$0] != newsletterBase[$0] } ||
@@ -308,16 +338,27 @@ struct RecordEditor: View {
                 StudioSegmentedControl(selection: $newsletterMode, options: ["Source", "Preview"], label: Text.init)
                     .accessibilityLabel("Newsletter view")
                 Spacer()
+                Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") {
+                    writingAssistantOpen.toggle()
+                    if writingAssistantOpen { newsletterInspectorOpen = false }
+                }
+                .buttonStyle(StudioIconButtonStyle()).help("Ask AI")
+                .disabled(!canEditNewsletter).accessibilityIdentifier("writing.tools")
                 Button("Find", systemImage: "magnifyingglass") { newsletterMode = "Source"; newsletterFindRequest += 1 }
+                    .buttonStyle(StudioIconButtonStyle()).help("Find in document")
                     .keyboardShortcut("f", modifiers: .command).accessibilityIdentifier("editor.find")
                 Button("Revision history", systemImage: "clock.arrow.circlepath") {
                     if saveNewsletter() { showingHistory = true }
                 }
+                .buttonStyle(StudioIconButtonStyle()).help("Revision history")
                 .accessibilityIdentifier("history.open")
                 if record.kind == "newsletter" {
                 let inspectorTitle = newsletterInspectorOpen ? "Hide newsletter settings" : "Show newsletter settings"
-                Button(inspectorTitle, systemImage: "sidebar.right") { newsletterInspectorOpen.toggle() }
-                    .labelStyle(.iconOnly)
+                Button(inspectorTitle, systemImage: "sidebar.right") {
+                    newsletterInspectorOpen.toggle()
+                    if newsletterInspectorOpen { writingAssistantOpen = false }
+                }
+                    .buttonStyle(StudioIconButtonStyle())
                     .help(inspectorTitle)
                 }
                 VStack(alignment: .trailing, spacing: 3) {
@@ -330,17 +371,41 @@ struct RecordEditor: View {
                     if let updatedAt = latestNewsletter.flatMap({ scheduleDate($0["updatedAt"]) }) {
                         Text("Last updated \(updatedAt.formatted(date: .abbreviated, time: .standard))")
                             .multilineTextAlignment(.trailing)
+                            .lineLimit(2).frame(maxWidth: 180, alignment: .trailing)
                             .accessibilityIdentifier("newsletter.lastUpdated")
                     }
                 }
                 .font(.caption)
                 .foregroundStyle(palette.muted)
             }
+            .fixedSize(horizontal: false, vertical: true)
             .padding(18)
             StudioRule()
+            if record.kind == "article" {
+                XArticlePublishControls(workspace: workspace, article: latestNewsletter ?? record, save: saveNewsletter)
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 18).padding(.vertical, 10)
+            }
             HStack(spacing: 0) {
                 newsletterCanvas
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if writingAssistantOpen {
+                    StudioRule(axis: .vertical)
+                    StudioScrollView {
+                        StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue, requests: (latestNewsletter ?? record).comments.enumerated().map { index, comment in
+                            StudioWritingRequest(id: comment["revisionRequestID"] as? String ?? "saved-\(index)", text: comment["text"] as? String ?? "",
+                                state: (latestNewsletter ?? record).appliedRevisionCommentIDs.contains(comment["revisionRequestID"] as? String ?? "") ? "Applied" : "Waiting for Mac")
+                        }, reply: (latestNewsletter ?? record)["notesReply"], error: (latestNewsletter ?? record)["writingRequestError"].isEmpty ? nil : (latestNewsletter ?? record)["writingRequestError"]) { prompt in
+                            guard saveNewsletter(), let current = workspace.records.first(where: { $0.id == record.id }) else {
+                                throw WorkspaceError("Save the current draft before asking for a change.")
+                            }
+                            try workspace.addComment(to: current, text: prompt, revisionRequestID: UUID().uuidString.lowercased())
+                            Task { await workspace.runDraftRevisionComments() }
+                        }
+                        .padding(18).background(palette.sidebar)
+                    }
+                    .frame(width: 320)
+                    .background(palette.sidebar)
+                }
                 if newsletterInspectorOpen && record.kind == "newsletter" {
                     StudioRule(axis: .vertical)
                     StudioScrollView {

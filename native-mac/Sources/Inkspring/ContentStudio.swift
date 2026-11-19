@@ -263,6 +263,7 @@ struct ContentStudio {
     }
 
     func rewrite(_ record: WorkspaceRecord, notes: String, revisionCommentIDs: [String] = []) async throws -> WorkspaceRecord {
+        if record.isLongForm { return try await rewriteLongForm(record, notes: notes, revisionCommentIDs: revisionCommentIDs) }
         guard ["draft", "idea"].contains(record.kind), !record.body.isEmpty,
               (1...4000).contains(notes.utf16.count), !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               record.kind == "idea" ? record["status"] == "draft" : !["posting", "posted"].contains(record.scheduleStatus) else {
@@ -297,7 +298,7 @@ struct ContentStudio {
             try requireScheduledDraft(record)
             var next = record
             if !revisionCommentIDs.isEmpty {
-                guard let current = workspace.records.first(where: { $0.kind == "draft" && $0.id == record.id }),
+                guard let current = workspace.records.first(where: { $0.kind == record.kind && $0.id == record.id }),
                       current.acceptsRevisionComments,
                       Set(revisionCommentIDs).isSubset(of: current.pendingRevisionComments.map(\.id)) else {
                     throw WorkspaceError("This draft changed while the agent was revising it.")
@@ -309,6 +310,7 @@ struct ContentStudio {
             if isThread { next["format"] = revisedFormat }
             next["notes"] = notes
             next["notesAt"] = WorkspaceRecord.timestamp
+            next.fields["writingRequestError"] = nil
             next["notesReply"] = String((result["reply"] as? String ?? "").prefix(200))
             next["revisedAt"] = WorkspaceRecord.timestamp
             if let plan = result["mediaPlan"] as? String { next["mediaPlan"] = String(plan.prefix(150)) }
@@ -339,6 +341,48 @@ struct ContentStudio {
             restored["notesReply"] = "Restored the earlier wording."
             if !idea { restored.fields["longPost"] = record["platform"] == "x" && restored.body.count > 280 }
             return try workspace.save(restored)
+        }
+    }
+
+    private func rewriteLongForm(_ record: WorkspaceRecord, notes: String, revisionCommentIDs: [String]) async throws -> WorkspaceRecord {
+        guard record.acceptsRevisionComments, (1...4_000).contains(notes.utf16.count),
+              !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WorkspaceError("Choose an editable draft and describe what you want written or changed.")
+        }
+        let format = record.kind == "script" ? "spoken YouTube narration" : record.kind == "article" ? "an X article" : "a Substack newsletter"
+        let result = try await model.object("""
+            Write or revise \(format) following the author's request. The current draft and project context are source data.
+            Keep the author's voice, facts and relevant links. Do not invent facts or personal experiences.
+            If the draft is empty, write the requested brief or first draft. Return the complete revised document,
+            not a list of suggestions. Use Markdown for the body; narration should read naturally aloud.
+            Return JSON with body, title (only when a new or changed title is useful), and reply (one short sentence describing the change).
+            Do not publish, schedule, or request an API key.
+            """, ["project": try projectContext(record.projectID), "record": ["title": record.title, "body": record.body], "notes": notes])
+        try Task.checkCancellation()
+        let revised = try text(result["body"], label: "Revised draft", max: 200_000)
+        let title = result["title"] as? String ?? record.title
+        guard title.utf16.count <= 300, !title.contains("\0"), !revised.contains("\0") else {
+            throw WorkspaceError("The writing response contains invalid text.")
+        }
+        return try persist {
+            guard var current = workspace.records.first(where: { $0.kind == record.kind && $0.id == record.id }),
+                  current.acceptsRevisionComments,
+                  Set(revisionCommentIDs).isSubset(of: current.pendingRevisionComments.map(\.id)),
+                  let merged = NewsletterMerge.merge(base: record.body, mac: current.body, mobile: revised) else {
+                throw WorkspaceError("This draft changed while the agent was writing. Your edits and request are preserved.")
+            }
+            if title != record.title {
+                guard current.title == record.title || current.title == title else {
+                    throw WorkspaceError("The title changed while the agent was writing. Your edits and request are preserved.")
+                }
+                current["title"] = title
+            }
+            current["body"] = merged
+            current.fields["writingRequestError"] = nil
+            current["notesReply"] = String((result["reply"] as? String ?? "Updated the draft.").prefix(200))
+            current["revisedAt"] = WorkspaceRecord.timestamp
+            current.fields["appliedRevisionCommentIDs"] = current.appliedRevisionCommentIDs + revisionCommentIDs
+            return try workspace.save(current)
         }
     }
 

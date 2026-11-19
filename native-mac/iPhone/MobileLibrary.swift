@@ -166,7 +166,7 @@ final class MobileLibrary {
 
     func newsletterSyncStatus(for entry: CompanionLibraryOutbox.Entry) -> NewsletterSyncStatus {
         if entry.error != nil { return .needsReview }
-        if entry.editsScript == true ? snapshot?.supportsScripts != true : snapshot?.supportsNewsletterEdits != true { return .needsMacUpdate }
+        if entry.change?.needsWritingTools == true && snapshot?.supportsWritingTools != true || (entry.editsScript == true ? snapshot?.supportsScripts != true : snapshot?.supportsNewsletterEdits != true) { return .needsMacUpdate }
         if snapshot?.pending.contains(where: { $0.id == entry.requestID }) == true { return .waitingForMac }
         return .savedOnDevice
     }
@@ -235,21 +235,21 @@ final class MobileLibrary {
 
     var visibleScripts: [CompanionLibrary.Item] {
         let remote = (snapshot?.scripts ?? []) + (snapshot?.articles ?? [])
-        let ids = Set(remote.map(\.id))
+        let ids = Set((remote + (snapshot?.newsletters ?? [])).map(\.id))
         let local = outbox.entries.filter {
             $0.createsScript == true && $0.account == account && $0.workspaceID == snapshot?.workspaceID
                 && !ids.contains($0.id.uuidString.lowercased())
         }.map { entry in
-            CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: entry.writingKind == "article" ? .article : .script,
+            CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: entry.writingKind == "newsletter" ? .newsletter : entry.writingKind == "article" ? .article : .script,
                 projectID: entry.itemID ?? "", title: entry.title, body: entry.text, shortened: false,
-                platform: entry.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [])
+                platform: entry.writingKind == "newsletter" ? "substack" : entry.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [])
         }
         return remote + local
     }
 
     func createScript(projectID: String, kind: String = "script") throws -> String {
         guard let snapshot else { throw CompanionScheduleError.changed }
-        let change = CompanionLibrary.Change(action: .addIdea, itemID: projectID, title: kind == "article" ? "Untitled X article" : "Untitled YouTube script", createsScript: true, writingKind: kind)
+        let change = CompanionLibrary.Change(action: .addIdea, itemID: projectID, title: kind == "newsletter" ? "Untitled newsletter" : kind == "article" ? "Untitled X article" : "Untitled YouTube script", createsScript: true, writingKind: kind)
         try saveChange(change, workspaceID: snapshot.workspaceID)
         return change.id.uuidString.lowercased()
     }
@@ -267,13 +267,16 @@ final class MobileLibrary {
         }
         if change.action == .scheduleDraft, snapshot?.postingWindows == nil { throw CompanionLibraryError.disabled }
         let afterTrash = change.action == .deleteItem ? pendingTrash(for: change.itemID)?.id : nil
-        let predecessor = change.editsScript == true ? outbox.entries.last {
+        let creation = change.isLongFormEdit || change.requestsWritingHelp == true ? outbox.entries.last {
             $0.createsScript == true && $0.id.uuidString.lowercased() == change.itemID && $0.account == account
                 && $0.workspaceID == workspaceID
         }?.requestID : nil
+        let predecessor = change.requestsWritingHelp == true ? outbox.entries.last {
+            $0.action == .editDraft && $0.itemID == change.itemID && $0.account == account && $0.workspaceID == workspaceID && $0.error == nil
+        }?.requestID ?? creation : creation
         try queue(.init(id: change.id, action: change.action, itemID: change.itemID, revision: change.revision,
                         title: change.title, text: change.text, workspaceID: workspaceID, account: account,
-                        afterTrash: afterTrash, writingKind: change.writingKind, baseScriptTitle: change.baseScriptTitle, editsScript: change.editsScript, createsScript: change.createsScript, editsNewsletter: change.editsNewsletter, afterNewsletterEdit: predecessor,
+                        afterTrash: afterTrash, publishesXArticle: change.publishesXArticle, xArticleAccountKey: change.xArticleAccountKey, requestsWritingHelp: change.requestsWritingHelp, writingKind: change.writingKind, baseScriptTitle: change.baseScriptTitle, editsScript: change.editsScript, createsScript: change.createsScript, editsNewsletter: change.editsNewsletter, afterNewsletterEdit: predecessor,
                         baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft,
                         restoresRevision: change.restoresRevision, subtitle: change.subtitle))
     }
@@ -294,7 +297,7 @@ final class MobileLibrary {
             next.entries.append(entry)
         }
         try persist(next)
-        if entry.isLongFormEdit && busy {
+        if (entry.isLongFormEdit || entry.requestsWritingHelp == true || entry.publishesXArticle == true) && busy {
             newsletterRefreshPending = true
         } else {
             Task { await refresh() }
@@ -419,28 +422,34 @@ final class MobileLibrary {
                     fixture.updatedAt = .now
                 }
                 if ProcessInfo.processInfo.arguments.contains("--script-fixture") {
-                    var writing = (fixture.scripts ?? []) + (fixture.articles ?? [])
-                    for change in fixture.pending where change.createsScript == true || change.editsScript == true || change.action == .saveRevision {
+                    var writing = (fixture.scripts ?? []) + (fixture.articles ?? []) + (fixture.newsletters ?? [])
+                    for change in fixture.pending where change.createsScript == true || change.isLongFormEdit || change.action == .saveRevision || change.requestsWritingHelp == true || change.publishesXArticle == true {
                         let id = change.createsScript == true ? change.id.uuidString.lowercased() : change.itemID
                         if let index = writing.firstIndex(where: { $0.id == id }) {
                             let item = writing[index]
                             var updated = CompanionLibrary.Item(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: item.kind,
                                 projectID: item.projectID, title: change.title.isEmpty ? item.title : change.title,
-                                body: change.action == .saveRevision ? item.body : change.text,
-                                shortened: false, platform: item.platform, status: "draft", notes: [], referenceID: item.referenceID)
+                                body: change.requestsWritingHelp == true ? "# Local AI models\n\nA short brief explaining how local models run on your own hardware, where they help, and what to test." : change.action == .saveRevision || change.publishesXArticle == true ? item.body : change.text,
+                                shortened: false, platform: item.platform, status: change.publishesXArticle == true ? "published" : "draft", notes: change.requestsWritingHelp == true ? item.notes + [change.text] : item.notes, referenceID: item.referenceID)
+                            updated.publicationStatus = change.publishesXArticle == true ? "published" : item.publicationStatus
+                            updated.publicationURL = change.publishesXArticle == true ? "https://x.com/i/web/status/789" : item.publicationURL
                             updated.history = item.history ?? []
+                            updated.noteStates = item.noteStates
+                            updated.writingReply = item.writingReply
+                            if change.requestsWritingHelp == true { updated.noteStates = Array(repeating: "applied", count: updated.notes.count); updated.writingReply = "Wrote a short brief about local AI models." }
                             if let revision = change.historySnapshot, updated.history?.contains(where: { $0.id == revision.id }) != true {
                                 updated.history?.append(revision)
                             }
                             writing[index] = updated
                         } else if change.createsScript == true {
-                            writing.append(.init(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: change.writingKind == "article" ? .article : .script,
-                                projectID: change.itemID, title: change.title, body: change.text, shortened: false, platform: change.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [], referenceID: "STU–003"))
+                            writing.append(.init(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: change.writingKind == "newsletter" ? .newsletter : change.writingKind == "article" ? .article : .script,
+                                projectID: change.itemID, title: change.title, body: change.text, shortened: false, platform: change.writingKind == "newsletter" ? "substack" : change.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [], referenceID: "STU–003"))
                         } else { continue }
                         fixture.results.append(.init(id: change.id, newsletterRevision: writing.first { $0.id == id }?.revision))
                     }
                     fixture.scripts = writing.filter { $0.kind == .script }
                     fixture.articles = writing.filter { $0.kind == .article }
+                    fixture.newsletters = writing.filter { $0.kind == .newsletter }
                     let completed = Set(fixture.results.map(\.id))
                     fixture.pending.removeAll { completed.contains($0.id) }
                 }
@@ -604,6 +613,11 @@ final class MobileLibrary {
         }
         if ProcessInfo.processInfo.arguments.contains("--script-fixture") {
             value.supportsScripts = true
+            value.supportsWritingTools = true
+            value.supportsXArticlePublishing = true
+            value.xArticleAccountKey = "fixture:connected"
+            value.xArticleAccountName = "@fixture"
+            value.writingAgent = "codex"
             value.scripts = [.init(id: "script-example", revision: "2026-11-19T12:00:00.000Z", kind: .script,
                 projectID: "studio", title: "I started a cult — YouTube script",
                 body: "We build real skills.\n\nWe protect our signal.\n\n" + String(repeating: "We learn by building and testing useful tools.\n\n", count: 50) + "End of the hallway script.",
@@ -674,6 +688,8 @@ private struct MobileNewsletterDetail: View {
     let workspaceID: UUID
     @State private var editingRevision: String?
     @State private var editingBaseMarkdown = ""
+    @State private var confirmsArticlePublication = false
+    @State private var showsWritingTools = false
     @State private var scriptTitle = ""
     @State private var baseScriptTitle = ""
     @State private var findRequest = 0
@@ -703,8 +719,8 @@ private struct MobileNewsletterDetail: View {
         Group {
             if editingRevision != nil {
                 VStack(alignment: .leading, spacing: 12) {
-                    if [.script, .article].contains(item.kind) {
-                        TextField(item.kind == .article ? "Article title" : "Script title", text: $scriptTitle)
+                    if item.isLongForm {
+                        TextField(item.kind == .newsletter ? "Newsletter title" : item.kind == .article ? "Article title" : "Script title", text: $scriptTitle)
                             .textFieldStyle(.plain).font(.headline)
                             .accessibilityIdentifier("script.title")
                     }
@@ -726,6 +742,7 @@ private struct MobileNewsletterDetail: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         metadataHeader
+                        if item.kind == .article { articlePublishing }
                         Divider()
                         if !hasFullText || (showsMacVersion && item.shortened) {
                             Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(palette.muted)
@@ -788,6 +805,15 @@ private struct MobileNewsletterDetail: View {
             if phase != .active { save() }
         }
         .onDisappear { save() }
+        .onChange(of: item.revision) {
+            guard editingRevision != nil, markdown == editingBaseMarkdown, scriptTitle == baseScriptTitle, pendingEdit == nil,
+                  item.revisionDate != nil else { return }
+            markdown = item.body
+            editingBaseMarkdown = item.body
+            scriptTitle = item.title
+            baseScriptTitle = item.title
+            editingRevision = item.revision
+        }
         .onChange(of: pendingEdit?.id) {
             if pendingEdit == nil { showsMacVersion = false }
         }
@@ -796,12 +822,19 @@ private struct MobileNewsletterDetail: View {
                 if editingRevision != nil {
                     Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }
                         .accessibilityIdentifier("editor.find")
-                    MobileWritingTools(title: item.kind == .newsletter ? .constant("") : $scriptTitle, text: $markdown)
+                    MobileWritingTools(title: $scriptTitle, text: $markdown, presented: $showsWritingTools,
+                        agent: library.snapshot?.writingAgent ?? "agent", requests: writingRequests, reply: item.writingReply, error: item.writingError) { prompt in
+                            save()
+                            guard saveError == nil else { throw CompanionLibraryError.invalid }
+                            try library.saveChange(.init(action: .note, itemID: item.id, revision: editingRevision ?? item.revision,
+                                text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
+                        }
                     Button("Done") { save(ending: true) }.fontWeight(.semibold)
                 } else {
                     Menu {
                         if ["draft", "synced"].contains(item.status) {
                             Button("Edit Markdown", systemImage: "pencil", action: beginEditing).disabled(!canEdit)
+                            Button("Ask AI…", systemImage: "bubble.left.and.text.bubble.right") { beginEditing(); showsWritingTools = true }.disabled(!canEdit)
                         }
                         Button("Copy Markdown", systemImage: "doc.on.doc") { UIPasteboard.general.string = previewMarkdown }
                             .disabled(!hasFullText || previewMarkdown.isEmpty)
@@ -812,6 +845,46 @@ private struct MobileNewsletterDetail: View {
                 }
             }
         }
+    }
+
+    private var articlePublishing: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let raw = item.publicationURL, let url = URL(string: raw), url.scheme == "https", url.host == "x.com" {
+                Link("View published X article", destination: url)
+            } else if item.status == "published" || item.status == "uncertain" || item.status == "publishing" {
+                Text(item.status == "uncertain" ? "X hasn’t confirmed publication. Check X Articles on your Mac before retrying." : "Publishing to X…")
+                    .font(.footnote)
+            } else if library.pendingChanges(for: item.id).contains(where: { $0.publishesXArticle == true }) || item.publicationStatus == "queued" {
+                Text("Publishing request saved. Your Mac will publish while Inkspring is open.").font(.footnote)
+            } else {
+                Button("Review & publish on X…", systemImage: "paperplane") { confirmsArticlePublication = true }
+                    .disabled(!hasFullText || item.body.isEmpty || pendingEdit != nil || library.snapshot?.supportsXArticlePublishing != true || library.snapshot?.xArticleAccountKey == nil)
+                    .accessibilityIdentifier("article.reviewPublish")
+                Text(library.snapshot?.xArticleAccountKey == nil ? "Connect X in Inkspring on your Mac to publish Articles." : "Your Mac publishes the full article to X while Inkspring is open. Requires X Article access and API credits.")
+                    .font(.footnote).foregroundStyle(palette.muted)
+            }
+            if let error = item.publicationError, !error.isEmpty { Text(error).font(.footnote).foregroundStyle(palette.muted) }
+        }
+        .confirmationDialog("Publish this X article?", isPresented: $confirmsArticlePublication, titleVisibility: .visible) {
+            Button("Publish article now") {
+                do {
+                    try library.saveChange(.init(action: .note, itemID: item.id, revision: item.revision,
+                        text: "Publish X article", publishesXArticle: true, xArticleAccountKey: library.snapshot?.xArticleAccountKey), workspaceID: workspaceID)
+                } catch { saveError = error.localizedDescription }
+            }.accessibilityIdentifier("article.publish")
+        } message: {
+            Text("Publish “\(item.title)” publicly as \(library.snapshot?.xArticleAccountName ?? "your connected X account")? Your Mac must be awake with Inkspring open.")
+        }
+    }
+
+    private var writingRequests: [StudioWritingRequest] {
+        let pending = library.pendingChanges(for: item.id).filter { $0.requestsWritingHelp == true }.map {
+            StudioWritingRequest(id: $0.id.uuidString, text: $0.text, state: $0.error == nil ? "Saved; waiting for Mac" : "Needs attention")
+        }
+        return item.notes.enumerated().map { index, text in
+            let state = (item.noteStates ?? []).indices.contains(index) ? item.noteStates?[index] : nil
+            return StudioWritingRequest(id: "saved-\(index)", text: text, state: state == "applied" ? "Applied" : "Waiting for Mac")
+        } + pending
     }
 
     private func syncMessage(_ status: MobileLibrary.NewsletterSyncStatus) -> String {
@@ -825,7 +898,7 @@ private struct MobileNewsletterDetail: View {
 
     private var metadataHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text([.script, .article].contains(item.kind) && pendingEdit?.title.isEmpty == false || pendingEdit?.restoresRevision == true ? pendingEdit?.title ?? item.title : item.title)
+            Text(item.isLongForm && pendingEdit?.title.isEmpty == false || pendingEdit?.restoresRevision == true ? pendingEdit?.title ?? item.title : item.title)
                 .font(.title2.bold()).accessibilityAddTraits(.isHeader)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 StudioPlatformLabel(name: item.kind == .article ? "x" : item.kind == .script ? "youtube" : "substack", title: item.kind == .article ? "X article" : item.kind == .script ? "YouTube" : "Substack")
@@ -877,11 +950,11 @@ private struct MobileNewsletterDetail: View {
             return
         }
         do {
-            var edit = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: editingRevision, title: [.script, .article].contains(item.kind) ? scriptTitle : "",
-                                                text: markdown, editsNewsletter: item.kind == .newsletter ? true : nil, baseNewsletterText: editingBaseMarkdown, editsScript: [.script, .article].contains(item.kind) ? true : nil, baseScriptTitle: [.script, .article].contains(item.kind) ? baseScriptTitle : nil, writingKind: item.kind == .article ? "article" : nil)
+            var edit = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: editingRevision, title: [.script, .article].contains(item.kind) || scriptTitle != baseScriptTitle ? scriptTitle : "",
+                                                text: markdown, editsNewsletter: item.kind == .newsletter ? true : nil, baseNewsletterText: editingBaseMarkdown, editsScript: [.script, .article].contains(item.kind) ? true : nil, baseScriptTitle: [.script, .article].contains(item.kind) || scriptTitle != baseScriptTitle ? baseScriptTitle : nil, writingKind: item.kind == .article ? "article" : nil)
             if !edit.valid || (try? JSONEncoder().encode(edit).count).map({ $0 > edit.payloadLimit }) == true {
                 edit = .init(id: edit.id, action: edit.action, itemID: edit.itemID, revision: edit.revision, title: edit.title,
-                             text: edit.text, editsNewsletter: item.kind == .newsletter ? true : nil, editsScript: [.script, .article].contains(item.kind) ? true : nil, baseScriptTitle: [.script, .article].contains(item.kind) ? baseScriptTitle : nil, writingKind: item.kind == .article ? "article" : nil)
+                             text: edit.text, editsNewsletter: item.kind == .newsletter ? true : nil, editsScript: [.script, .article].contains(item.kind) ? true : nil, baseScriptTitle: [.script, .article].contains(item.kind) || scriptTitle != baseScriptTitle ? baseScriptTitle : nil, writingKind: item.kind == .article ? "article" : nil)
             }
             try library.saveChange(edit, workspaceID: workspaceID)
             showsMacVersion = false
@@ -1115,15 +1188,19 @@ struct MobileReviewView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if library.snapshot?.supportsScripts == true {
-                            Button { createWriting("article") } label: { Label { Text("New X article") } icon: { PlatformMark.image("x") } }
+                        Section("Long-form") {
+                            Button { createWriting("newsletter") } label: { Label { Text("New Substack newsletter") } icon: { platformMenuIcon("substack") } }
+                                .accessibilityIdentifier("newsletter.new")
+                            Button { createWriting("article") } label: { Label { Text("New X article") } icon: { platformMenuIcon("x") } }
                                 .accessibilityIdentifier("article.new")
-                            Button { createWriting("script") } label: { Label("New YouTube script", systemImage: "play.rectangle.fill") }
+                            Button { createWriting("script") } label: { Label { Text("New YouTube script") } icon: { platformMenuIcon("youtube") } }
                                 .accessibilityIdentifier("script.new")
                         }
-                        if library.snapshot?.supportsXThreads == true {
-                            Button("New X post or thread", systemImage: "square.and.pencil") { creatingXDraft = true }
-                                .accessibilityIdentifier("x.newDraft")
+                        Section("Social posts") {
+                            if library.snapshot?.supportsXThreads == true {
+                                Button { creatingXDraft = true } label: { Label { Text("New X post or thread") } icon: { platformMenuIcon("x") } }
+                                    .accessibilityIdentifier("x.newDraft")
+                            }
                         }
                     } label: { Text("New") }.accessibilityIdentifier("writing.new")
                 }
@@ -1132,7 +1209,7 @@ struct MobileReviewView: View {
                         .disabled(library.busy)
                 }
             }
-            .alert("Couldn’t create script", isPresented: Binding(get: { scriptError != nil }, set: { if !$0 { scriptError = nil } })) { Button("OK") { scriptError = nil } } message: { Text(scriptError ?? "") }
+            .alert("Couldn’t create draft", isPresented: Binding(get: { scriptError != nil }, set: { if !$0 { scriptError = nil } })) { Button("OK") { scriptError = nil } } message: { Text(scriptError ?? "") }
             .navigationDestination(isPresented: $creatingXDraft) {
                 MobileXGeneration(library: library, idea: nil)
             }
@@ -1276,7 +1353,7 @@ struct MobileReviewView: View {
             guard let projectID = projectFilter ?? library.snapshot?.projects.first?.id else { return }
             selection = try library.createScript(projectID: projectID, kind: kind)
             filter = "Drafts"
-            platformFilter = kind == "article" ? "x-article" : "youtube"
+            platformFilter = kind == "newsletter" ? "substack" : kind == "article" ? "x-article" : "youtube"
         } catch { scriptError = error.localizedDescription }
     }
 
@@ -1528,6 +1605,7 @@ private struct MobileItemEditor: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.studioPalette) private var palette
+    @State private var showsWritingTools = false
     @State private var title = ""
     @State private var text = ""
     @State private var format = "post"
@@ -1567,7 +1645,17 @@ private struct MobileItemEditor: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if !isX { Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }.accessibilityIdentifier("editor.find") }
-                MobileWritingTools(title: $title, text: $text)
+                MobileWritingTools(title: $title, text: $text, presented: $showsWritingTools,
+                    agent: library.snapshot?.writingAgent ?? "agent", requests: item.notes.enumerated().map { index, text in
+                        StudioWritingRequest(id: "saved-\(index)", text: text,
+                            state: (item.noteStates ?? []).indices.contains(index) && item.noteStates?[index] == "applied" ? "Applied" : "Waiting for Mac")
+                    } + library.pendingChanges(for: item.id).filter { $0.requestsWritingHelp == true }.map {
+                        StudioWritingRequest(id: $0.id.uuidString, text: $0.text, state: "Waiting for Mac")
+                    }, reply: item.writingReply, error: item.writingError) { prompt in
+                        guard save() else { throw CompanionLibraryError.invalid }
+                        try library.saveChange(.init(action: .note, itemID: item.id, revision: item.revision,
+                            text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
+                    }
                 Button("Done") { if save() { if let close { close() } else { dismiss() } } }
             }
         }

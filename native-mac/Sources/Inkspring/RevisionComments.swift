@@ -3,8 +3,10 @@ import OSLog
 
 extension WorkspaceRecord {
     var acceptsRevisionComments: Bool {
-        kind == "draft" && (scheduleStatus.isEmpty || scheduleStatus == "ready")
-            && !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        (kind == "idea" && self["status"] == "draft") ||
+        (kind == "draft" && (scheduleStatus.isEmpty || scheduleStatus == "ready")
+            && !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
+            (isLongForm && ["draft", "synced"].contains(self["state"]))
     }
 
     var appliedRevisionCommentIDs: [String] {
@@ -49,6 +51,12 @@ extension Workspace {
             } catch is CancellationError {
                 return
             } catch {
+                try? withChanges {
+                    guard var current = records.first(where: { $0.id == id }), !current.pendingRevisionComments.isEmpty else { return }
+                    current["writingRequestError"] = "Your Mac couldn’t finish this writing request. Your draft and request are safe; it will retry while Inkspring is open."
+                    try database?.put(current)
+                    try reload()
+                }
                 Logger(subsystem: "com.protomota.inkspring.native", category: "RevisionComments")
                     .error("Could not apply a queued draft revision. It will be checked again.")
             }

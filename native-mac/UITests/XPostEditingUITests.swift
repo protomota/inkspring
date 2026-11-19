@@ -1,6 +1,102 @@
 import XCTest
 
 final class WalkthroughTests: XCTestCase {
+    func testXArticleReviewsAccountAndPublishesFullTextThroughMac() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--script-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let menu = app.buttons["writing.new"].firstMatch
+        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
+        app.buttons["New X article"].firstMatch.tap()
+        let more = app.buttons["newsletter.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
+        app.buttons["Edit Markdown"].firstMatch.tap()
+        let editor = app.textViews["newsletter.markdown"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); editor.tap()
+        editor.typeText("# Our mission\n\nWe build real skills with AI and automation.\n\n[Visit our site](https://protomota.com)\n\n" + String(repeating: "Full article text. ", count: 30))
+        app.buttons["Done"].firstMatch.tap()
+        let review = app.buttons["article.reviewPublish"].firstMatch
+        XCTAssertTrue(review.waitForExistence(timeout: 10)); XCTAssertTrue(review.isEnabled)
+        capture("Full X Article preview and publishing controls", app)
+        review.tap()
+        let publish = app.buttons["Publish article now"].firstMatch
+        XCTAssertTrue(publish.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "@fixture")).firstMatch.exists)
+        capture("Review the X account before publishing", app)
+        publish.tap()
+        let link = app.links["View published X article"].firstMatch
+        XCTAssertTrue(link.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Our mission"].firstMatch.exists)
+        XCTAssertFalse(app.buttons["article.reviewPublish"].exists)
+        capture("Confirmed X Article link and complete article", app)
+        more.tap()
+        XCTAssertFalse(app.buttons["Edit Markdown"].exists)
+    }
+
+    func testLongFormMenuGroupsNewsletterArticleAndScript() {
+        for theme in ["warm-paper", "graphite"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["--library-fixture", "--script-fixture", "-inkspring.mobile.theme", theme]
+            app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+            app.launch()
+            let menu = app.buttons["writing.new"].firstMatch
+            if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+            XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
+            for name in ["New Substack newsletter", "New X article", "New YouTube script", "New X post or thread"] {
+                XCTAssertTrue(app.buttons[name].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+            }
+            capture("Grouped long-form menu \(theme)", app)
+            app.terminate()
+        }
+    }
+
+    func testNewsletterCreationAndAskAIApplyBriefWithoutLeavingEditor() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--script-fixture", "--history-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let menu = app.buttons["writing.new"].firstMatch
+        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
+        app.buttons["New Substack newsletter"].firstMatch.tap()
+        let more = app.buttons["newsletter.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
+        app.buttons["Ask AI…"].firstMatch.tap()
+        let prompt = app.textFields["writing.prompt"].firstMatch
+        XCTAssertTrue(prompt.waitForExistence(timeout: 8), app.debugDescription)
+        prompt.tap(); prompt.typeText("Write a quick brief about local AI models.")
+        capture("Ask the Mac writing agent for a brief", app)
+        let send = app.buttons["writing.send"].firstMatch
+        XCTAssertTrue(send.isEnabled); send.tap()
+        let reply = app.staticTexts["writing.reply"].firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(reply.label.contains("Wrote a short brief"))
+        XCTAssertTrue(app.staticTexts["Applied"].firstMatch.exists)
+        capture("Saved writing request and applied response", app)
+        app.buttons["writing.close"].tap()
+        let editor = app.textViews["newsletter.markdown"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertTrue((editor.value as? String ?? "").contains("# Local AI models"))
+        let title = app.textFields["script.title"].firstMatch
+        title.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+        title.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 19) + "Local models newsletter")
+        editor.tap()
+        editor.typeText("\n\nAn author addition.\n\n")
+        app.buttons["Done"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Local AI models"].firstMatch.waitForExistence(timeout: 8))
+        capture("Newsletter brief rendered with author changes", app)
+        more.tap(); app.buttons["Edit Markdown"].firstMatch.tap()
+        XCTAssertTrue((editor.value as? String ?? "").contains("An author addition."))
+        XCTAssertEqual(title.value as? String, "Local models newsletter")
+        app.buttons["writing.tools"].firstMatch.tap()
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        capture("Writing request history survives reopening", app)
+    }
+
     func testFullHeightNewsletterEditingKeepsCursorAndFindsText() {
         continueAfterFailure = false
         let app = XCUIApplication()

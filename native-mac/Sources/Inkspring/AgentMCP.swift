@@ -79,7 +79,7 @@ struct AgentMCP {
         .init(name: "write_reply", summary: "Write a local X reply from pasted text or a post link using the selected writing connection.",
               fields: ["project_id": "string", "post_url": "string", "post_text": "string", "author": "string", "angle": "string", "with_image": "boolean"],
               writes: true, usesNetwork: true),
-        .init(name: "rewrite_with_notes", summary: "Refine an idea or draft with the selected writing connection and preserve the earlier text.",
+        .init(name: "rewrite_with_notes", summary: "Refine an idea, post, newsletter, X article or YouTube script with the selected writing connection and preserve revisions.",
               fields: ["target": "string", "id": "string", "notes": "string"], required: ["target", "id", "notes"], writes: true, usesNetwork: true),
         .init(name: "make_image", summary: "Generate and attach an image to a saved draft. Requires an OpenAI or Gemini image API key.",
               fields: ["draft_id": "string", "prompt": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
@@ -119,7 +119,8 @@ struct AgentMCP {
         .init(name: "list_scripts", summary: "List writing-only YouTube scripts. These cannot be published or scheduled.", fields: ["project_id": "string"]),
         .init(name: "get_script", summary: "Read a full YouTube script by UUID or copyable ID.", fields: ["script_id": "string"], required: ["script_id"]),
         .init(name: "save_script", summary: "Save supplied YouTube narration locally, without a model or API key. Use expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "script_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer"], writes: true),
-        .init(name: "list_articles", summary: "List writing-only X articles. These cannot be published or scheduled.", fields: ["project_id": "string"]),
+        .init(name: "list_articles", summary: "List X articles and their publishing state.", fields: ["project_id": "string"]),
+        .init(name: "publish_article", summary: "Publish a reviewed X article with the connected X account. Requires immediate agent posting enabled and the current updatedAt. Never call without the author’s explicit publication request.", fields: ["article_id": "string", "expected_updated_at": "string"], required: ["article_id", "expected_updated_at"], writes: true, usesNetwork: true),
         .init(name: "get_article", summary: "Read a full X article by UUID or copyable ID.", fields: ["article_id": "string"], required: ["article_id"]),
         .init(name: "save_article", summary: "Save supplied X article text locally, without a model or API key. Use expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "article_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer"], writes: true),
         .init(name: "list_newsletters", summary: "List local newsletters and their revisions.", fields: ["project_id": "string"]),
@@ -284,7 +285,7 @@ struct AgentMCP {
             return result
         case "rewrite_with_notes":
             let target = value("target")
-            guard ["idea", "draft"].contains(target) else { throw WorkspaceError("Choose an idea or draft.") }
+            guard ["idea", "draft", "newsletter", "article", "script"].contains(target) else { throw WorkspaceError("Choose an editable writing item.") }
             return view(try await studio.rewrite(record(target, "id"), notes: value("notes")), full: true)
         case "make_image":
             return view(try await studio.makeImage(for: record("draft", "draft_id"), prompt: value("prompt")), full: true)
@@ -297,6 +298,14 @@ struct AgentMCP {
         case "suggest_vault_ideas":
             let count = try await studio.suggestVaultIdeas(projectID: project(), references: arguments["notes"] as? [[String: String]] ?? [])
             return ["count": count, "next": "Review suggestions in Inkspring Settings."]
+        case "publish_article":
+            let article = try record("article", "article_id")
+            guard article["updatedAt"] == value("expected_updated_at"), workspace.settings["mcpAllowPosting"] as? Bool == true else {
+                throw WorkspaceError("Read the current article and enable immediate agent posting before publishing.")
+            }
+            let publisher = XArticlePublisher(workspace: workspace)
+            let plan = try await publisher.review(article)
+            return view(try await publisher.publish(plan, fromAgent: true), full: true)
         case "post_now":
             guard workspace.settings["mcpAllowPosting"] as? Bool == true else {
                 throw WorkspaceError("The author must enable immediate agent posting in Inkspring Settings.")
