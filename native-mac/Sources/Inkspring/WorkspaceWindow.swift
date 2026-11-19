@@ -7,8 +7,7 @@ import WebKit
 enum WorkspacePage: String, CaseIterable, Identifiable {
     case ideas = "Post ideas", schedule = "Schedule", workspace = "Workspace"
     case research = "Research", replies = "Replies", analytics = "Analytics"
-    case scripts = "YouTube scripts", articles = "X articles"
-    case newsletters = "Newsletters", studio = "Writing studio", library = "Library"
+    case studio = "Writing studio", library = "Library"
     case connections = "Connections", trash = "Trash", about = "About Inkspring", settings = "Settings"
 
     var id: Self { self }
@@ -21,9 +20,6 @@ enum WorkspacePage: String, CaseIterable, Identifiable {
         case .research: "antenna.radiowaves.left.and.right"
         case .replies: "bubble.left.and.bubble.right"
         case .analytics: "chart.bar.xaxis"
-        case .newsletters: "envelope"
-        case .scripts: "play.rectangle.fill"
-        case .articles: "doc.richtext"
         case .studio: "pencil.and.outline"
         case .library: "square.stack"
         case .connections: "link"
@@ -53,6 +49,7 @@ struct WorkspaceWindow: View {
     @State private var postBeingEdited: WorkspaceRecord?
     @State private var newsletterIdea: WorkspaceRecord?
     @State private var newsletterDraft: WorkspaceRecord?
+    @State private var returnedDocumentID: String?
     @State private var newsletterBackPage: WorkspacePage?
     @State private var saveNewsletterBeforeLeaving: (() -> Bool)?
     @State private var studioDraft: WorkspaceRecord?
@@ -71,7 +68,7 @@ struct WorkspaceWindow: View {
 
     private var theme: StudioTheme { StudioTheme(preference: workspace.settings[StudioTheme.preferenceKey]) }
     private var palette: StudioPalette { StudioPalette(theme: theme.resolve(for: systemScheme)) }
-    private var isEditingNewsletter: Bool { [.newsletters, .scripts, .articles].contains(page) && newsletterDraft != nil }
+    private var isEditingNewsletter: Bool { newsletterDraft != nil }
     private var showsEditorPage: Bool {
         if case .newsletterSend = editor { return false }
         return editor != nil
@@ -81,7 +78,7 @@ struct WorkspaceWindow: View {
         scenePhase == .active && !DailyBackup.usesTestWorkspace &&
         completedWriting >= InkspringReview.milestone &&
         workspace.startupError == nil && !workspace.substackBusy &&
-        [.workspace, .library, .ideas, .newsletters].contains(page) &&
+        [.workspace, .library, .ideas].contains(page) &&
         editor == nil && postBeingEdited == nil && !isEditingNewsletter && !studioDirty && !previewExpanded && !showsAgentChat &&
         pendingNavigation == nil && workspace.error == nil && workspace.scheduleReminderDraftID == nil
     }
@@ -114,7 +111,7 @@ struct WorkspaceWindow: View {
         .background(palette.canvas)
         .studioAppearance(palette)
         .preferredColorScheme(theme == .system ? nil : palette.colorScheme)
-        .modifier(InkspringRatingPrompt(isIdle: [.workspace, .library, .ideas, .newsletters].contains(page)
+        .modifier(InkspringRatingPrompt(isIdle: [.workspace, .library, .ideas].contains(page)
                                          && editor == nil && postBeingEdited == nil && !isEditingNewsletter
                                          && pendingNavigation == nil && workspace.error == nil))
         .toolbar {
@@ -126,8 +123,7 @@ struct WorkspaceWindow: View {
             }
             if previewExpanded && editor == nil {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("New draft", systemImage: "square.and.pencil") { navigate { newDraft() } }
-                        .keyboardShortcut("n")
+                    WorkspaceDraftMenu(create: createDraft)
                 }
             }
             if editor == nil {
@@ -265,8 +261,7 @@ struct WorkspaceWindow: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 3) {
             VStack(spacing: 8) {
-                sidebarDraftButton("New draft", symbol: "plus", prominent: true) { navigate { newDraft() } }
-                    .keyboardShortcut("n")
+                WorkspaceDraftMenu(fillsWidth: true, create: createDraft)
                 sidebarDraftButton("Reply to a post", symbol: "arrowshape.turn.up.left") { navigate { newDraft(reply: true) } }
             }
             .padding(.horizontal, 6)
@@ -337,7 +332,7 @@ struct WorkspaceWindow: View {
 
     private func navButton(_ item: WorkspacePage) -> some View {
         Button {
-            if page != item {
+            if page != item || isEditingNewsletter || showsOnDeviceAssistant {
                 navigate {
                     if item == .studio, studioDraft == nil { newDraft() }
                     else { page = item }
@@ -369,7 +364,7 @@ struct WorkspaceWindow: View {
         switch item {
         case .ideas: workspace.ideas.filter { $0["status"] == "draft" }.count
         case .schedule: workspace.records.filter { ScheduleListing.section(for: $0) == .scheduled }.count
-        case .library: workspace.drafts.count
+        case .library: workspace.workspaceDrafts.count
         case .trash: workspace.trashedRecords.count
         case .replies: workspace.records.filter { $0.kind == "reply-inbox" && $0["status"] == "unread" }.count
         default: nil
@@ -385,11 +380,14 @@ struct WorkspaceWindow: View {
         HStack(spacing: 9) {
             Text(workspaceTitle).fontWeight(.medium).foregroundStyle(palette.text)
             Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
-            Text(page == .workspace ? "Posts" : page.rawValue)
+            Text(page.rawValue)
+            if let newsletterDraft, let type = WorkspaceDraftType(rawValue: newsletterDraft.kind) {
+                Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                Text(type.name)
+            }
             Spacer()
             if !showsSidebar {
-                Button("New draft", systemImage: "plus") { navigate { newDraft() } }
-                    .keyboardShortcut("n")
+                WorkspaceDraftMenu(create: createDraft)
             }
             Button("Ask Inkspring", systemImage: "sparkles") { navigate { showsOnDeviceAssistant = true } }
             Button("Ask my agent", systemImage: "bubble.left.and.text.bubble.right") { showsAgentChat = true }
@@ -428,32 +426,21 @@ struct WorkspaceWindow: View {
     @ViewBuilder private var pageContent: some View {
         switch page {
         case .workspace, .library:
-            PostBrowser(workspace: workspace, library: page == .library, edit: editPost, openInStudio: open,
-                        postBeingEdited: postBeingEdited, back: { navigate() }, finishedEditing: {
-                            postBeingEdited = nil
-                            studioDirty = false
-                        }, editDirtyChanged: { studioDirty = $0 }, selectPost: navigate,
-                        showSchedule: showSchedule,
-                        editProject: { open(workspace.project ?? .new("project")) },
-                        compose: { navigate { newDraft() } }, expanded: previewExpanded,
-                        searchRequest: page == .library ? librarySearchRequest : 0,
-                        togglePreview: { setPreviewExpanded(!previewExpanded) })
-                .id("\(workspace.projectID)-\(page.rawValue)")
-        case .ideas:
-            IdeaQueueView(workspace: workspace, add: { add("idea") }, edit: open, openDraft: open,
-                          openNewsletter: draftNewsletter, showAction: { editor = .ideaAction($0, $1) })
-                .id(workspace.projectID)
-        case .research:
-            ResearchView(workspace: workspace, add: { add("source") }, edit: open,
-                         editProject: { if let project = workspace.project { open(project) } }, openDraft: open)
-                .id(workspace.projectID)
-        case .newsletters, .scripts, .articles:
             ZStack {
-                RecordCollection(title: page.rawValue, symbol: page.icon, rows: workspace.items(page == .scripts ? "script" : page == .articles ? "article" : "newsletter"),
-                                 workspace: workspace, action: page == .scripts ? "New script" : page == .articles ? "New X article" : "New newsletter", add: { add(page == .scripts ? "script" : page == .articles ? "article" : "newsletter") }, edit: open)
-                    .opacity(newsletterDraft == nil ? 1 : 0)
-                    .disabled(newsletterDraft != nil)
-                    .accessibilityHidden(newsletterDraft != nil)
+                PostBrowser(workspace: workspace, library: page == .library, edit: editPost, openInStudio: open,
+                            returnedDocumentID: returnedDocumentID, postBeingEdited: postBeingEdited, back: { navigate() }, finishedEditing: {
+                                postBeingEdited = nil
+                                studioDirty = false
+                            }, editDirtyChanged: { studioDirty = $0 }, selectPost: navigate,
+                            showSchedule: showSchedule,
+                            editProject: { open(workspace.project ?? .new("project")) },
+                            compose: createDraft, expanded: previewExpanded,
+                            searchRequest: page == .library ? librarySearchRequest : 0,
+                            togglePreview: { setPreviewExpanded(!previewExpanded) })
+                    .id("\(workspace.projectID)-\(page.rawValue)")
+                    .opacity(isEditingNewsletter ? 0 : 1)
+                    .disabled(isEditingNewsletter)
+                    .accessibilityHidden(isEditingNewsletter)
                 if let newsletterDraft {
                     RecordEditor(record: newsletterDraft, workspace: workspace, newsletterIdea: newsletterIdea,
                                  closeNewsletter: backFromNewsletter,
@@ -463,6 +450,14 @@ struct WorkspaceWindow: View {
                         .id(newsletterDraft.id)
                 }
             }
+        case .ideas:
+            IdeaQueueView(workspace: workspace, add: { add("idea") }, edit: open, openDraft: open,
+                          openNewsletter: draftNewsletter, showAction: { editor = .ideaAction($0, $1) })
+                .id(workspace.projectID)
+        case .research:
+            ResearchView(workspace: workspace, add: { add("source") }, edit: open,
+                         editProject: { if let project = workspace.project { open(project) } }, openDraft: open)
+                .id(workspace.projectID)
         case .schedule:
             ScheduleView(workspace: workspace, open: open, focusDraftID: $scheduleFocus, tab: $scheduleTab,
                          revise: { editor = .scheduledRevision($0, $1) }, reviewPublication: reviewPublication,
@@ -548,8 +543,12 @@ struct WorkspaceWindow: View {
     }
 
     private func backFromNewsletter() {
-        let destination = newsletterBackPage ?? .newsletters
-        navigate { page = destination }
+        let destination = newsletterBackPage ?? .workspace
+        let documentID = newsletterDraft?.id
+        navigate {
+            returnedDocumentID = documentID
+            page = destination
+        }
     }
 
     private func editPost(_ record: WorkspaceRecord) {
@@ -559,7 +558,7 @@ struct WorkspaceWindow: View {
                 setPreviewExpanded(false)
                 postBeingEdited = record
             } else {
-                editor = .record(record)
+                open(record)
             }
         }
     }
@@ -570,6 +569,10 @@ struct WorkspaceWindow: View {
             return
         }
         open(.new(kind, projectID: workspace.projectID))
+    }
+
+    private func createDraft(_ type: WorkspaceDraftType) {
+        navigate { add(type.rawValue) }
     }
 
     private func newDraft(reply: Bool = false) {
@@ -613,9 +616,11 @@ struct WorkspaceWindow: View {
             studioDraft = record
             page = .studio
         } else if record.isLongForm {
+            returnedDocumentID = nil
             newsletterBackPage = page
             newsletterDraft = record
-            page = record.kind == "script" ? .scripts : record.kind == "article" ? .articles : .newsletters
+            setPreviewExpanded(false)
+            if page != .library { page = .workspace }
         } else {
             editor = .record(record)
         }
@@ -623,6 +628,7 @@ struct WorkspaceWindow: View {
 
     private func navigate(_ action: @escaping () -> Void = {}) {
         let leave = {
+            showsOnDeviceAssistant = false
             postBeingEdited = nil
             if isEditingNewsletter {
                 newsletterDraft = nil
@@ -734,49 +740,57 @@ struct RecordCard: View {
 }
 
 func platformName(_ value: String) -> String {
-    ["x": "X", "linkedin": "LinkedIn", "instagram": "Instagram", "reddit": "Reddit", "tiktok": "TikTok"][value]
+    ["youtube": "YouTube", "x": "X", "linkedin": "LinkedIn", "instagram": "Instagram", "reddit": "Reddit", "tiktok": "TikTok"][value]
         ?? value.capitalized
 }
 
-struct RecordCollection: View {
-    let title: String
-    let symbol: String
-    let rows: [WorkspaceRecord]
-    let workspace: Workspace
-    let action: String?
-    let add: () -> Void
-    let edit: (WorkspaceRecord) -> Void
-    @State private var search = ""
+enum WorkspaceDraftType: String, CaseIterable {
+    case post = "draft", newsletter, article, script
 
-    var body: some View {
-        StudioScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    PageHeading(title: title == "Newsletters" ? "Room for the whole thought." : title,
-                                subtitle: title == "Newsletters" ? "Write Markdown, preview the result, and review before sending." : nil)
-                    Spacer()
-                    if let action { Button(action, systemImage: "plus", action: add).modifier(PrimaryActionStyle()) }
-                }
-                if rows.isEmpty {
-                    ContentUnavailableView("Nothing here yet", systemImage: symbol)
-                } else {
-                    StudioSearchField(title: "Search \(title.lowercased())", text: $search)
-                        .frame(maxWidth: 300)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 245), spacing: 13)], alignment: .leading, spacing: 13) {
-                        ForEach(rows.filter(matches)) { record in
-                            Button { edit(record) } label: { RecordCard(record: record) }
-                                .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-            .studioPage()
+    var name: String {
+        switch self {
+        case .post: "Social post"
+        case .newsletter: "Newsletter"
+        case .article: "X article"
+        case .script: "YouTube script"
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func matches(_ item: WorkspaceRecord) -> Bool {
-        search.isEmpty || item.title.localizedCaseInsensitiveContains(search) || item.body.localizedCaseInsensitiveContains(search)
+    var symbol: String {
+        switch self {
+        case .post: "text.bubble"
+        case .newsletter: "envelope"
+        case .article: "doc.richtext"
+        case .script: "play.rectangle"
+        }
+    }
+}
+
+private struct WorkspaceDraftMenu: View {
+    var fillsWidth = false
+    let create: (WorkspaceDraftType) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(WorkspaceDraftType.allCases, id: \.self) { type in
+                if type == .post {
+                    Button(type.name, systemImage: type.symbol) { create(type) }
+                        .keyboardShortcut("n")
+                } else {
+                    Button(type.name, systemImage: type.symbol) { create(type) }
+                }
+            }
+        } label: {
+            HStack {
+                Label("New draft", systemImage: "plus")
+                if fillsWidth { Spacer() }
+                Image(systemName: "chevron.down").font(.caption2).accessibilityHidden(true)
+            }
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .buttonStyle(StudioActionStyle(prominent: true, fillsWidth: fillsWidth))
+        .accessibilityLabel("New draft")
     }
 }
 
@@ -787,22 +801,22 @@ enum PostBrowserFilter: String, CaseIterable {
     case scheduling = "Ready to schedule"
     case sharing = "Ready to share"
 
-    func matches(_ record: WorkspaceRecord, platform: SocialPlatform?, search: String, library: Bool) -> Bool {
-        guard record.kind == (self == .ideas ? "idea" : "draft") else { return false }
+    func matches(_ record: WorkspaceRecord, platform: String?, search: String, library: Bool) -> Bool {
+        guard self == .ideas ? record.kind == "idea" : WorkspaceDraftType(rawValue: record.kind) != nil else { return false }
         if let platform {
             let suggestions = record.fields["suggestedPlatforms"] as? [String] ?? []
-            let platforms = self == .ideas ? (suggestions.isEmpty ? ["x"] : suggestions) : [record["platform"]]
-            guard platforms.contains(platform.rawValue) else { return false }
+            let platforms = self == .ideas ? (suggestions.isEmpty ? ["x"] : suggestions) : [ScheduleListing.channel(of: record)]
+            guard platforms.contains(platform) else { return false }
         }
         let matchingStatus = switch self {
         case .all: true
-        case .working: record["status"] == "draft" && (library || record.schedule.isEmpty)
+        case .working: record.isLongForm ? ["draft", "synced"].contains(record["state"]) : record["status"] == "draft" && (library || record.schedule.isEmpty)
         case .ideas: record["status"] == "draft"
         case .scheduling: ScheduleListing.section(for: record) == .ready
         case .sharing: record["status"] == "ready"
         }
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return matchingStatus && (query.isEmpty || [record.referenceID ?? "", record.title, record.body, platformName(record["platform"])]
+        return matchingStatus && (query.isEmpty || [record.referenceID ?? "", record.title, record.body, record["subtitle"], WorkspaceDraftType(rawValue: record.kind)?.name ?? "", platformName(ScheduleListing.channel(of: record))]
             .contains { $0.localizedCaseInsensitiveContains(query) })
     }
 }
@@ -838,6 +852,7 @@ struct PostBrowser: View {
     let library: Bool
     let edit: (WorkspaceRecord) -> Void
     let openInStudio: (WorkspaceRecord) -> Void
+    let returnedDocumentID: String?
     let postBeingEdited: WorkspaceRecord?
     let back: () -> Void
     let finishedEditing: () -> Void
@@ -845,24 +860,27 @@ struct PostBrowser: View {
     let selectPost: (@escaping () -> Void) -> Void
     let showSchedule: (WorkspaceRecord) -> Void
     let editProject: () -> Void
-    let compose: () -> Void
+    let compose: (WorkspaceDraftType) -> Void
     let expanded: Bool
     let searchRequest: Int
     let togglePreview: () -> Void
     @State private var selection: String?
+    @State private var type: WorkspaceDraftType?
     @State private var filter = PostBrowserFilter.all
-    @State private var platform: SocialPlatform?
+    @State private var platform: String?
     @State private var search = ""
     @AppStorage("inkspring.mac.draftSort") private var draftSort = DraftSort.lastUpdated
     @FocusState private var searchFocused: Bool
 
-    private var tabs: [PostBrowserFilter] {
-        library ? [.all, .working, .sharing] : [.ideas, .all, .working, .scheduling]
+    private var statuses: [PostBrowserFilter] {
+        if library { return type == nil || type == .post ? [.all, .working, .sharing] : [.all, .working] }
+        if type == .script || type == .article { return [.all, .working] }
+        return [.all, .working, .scheduling]
     }
 
     private func records(for filter: PostBrowserFilter, query: String = "") -> [WorkspaceRecord] {
-        (filter == .ideas ? workspace.ideas : workspace.drafts).filter {
-            filter.matches($0, platform: platform, search: query, library: library)
+        (filter == .ideas ? workspace.ideas : workspace.workspaceDrafts).filter {
+            (type == nil || $0.kind == type?.rawValue) && filter.matches($0, platform: platform, search: query, library: library)
         }
     }
 
@@ -881,11 +899,8 @@ struct PostBrowser: View {
 
     private var reader: some View {
         let matchingRecords = records(for: filter, query: search)
-        let rows = filter == .ideas
-            ? matchingRecords.sorted { ($0["updatedAt"], $0.id) > ($1["updatedAt"], $1.id) }
-            : draftSort.sorted(matchingRecords)
+        let rows = draftSort.sorted(matchingRecords)
         let selected = rows.first { $0.id == selection }
-            ?? (filter == .all && !library ? rows.first { PostBrowserFilter.working.matches($0, platform: nil, search: "", library: false) } : nil)
             ?? rows.first
         return VStack(alignment: .leading, spacing: 0) {
             if !expanded {
@@ -905,18 +920,26 @@ struct PostBrowser: View {
                         PageHeading(title: "Library", titleSize: 32)
                     }
                     Spacer(minLength: 8)
-                    Button("New draft", systemImage: "square.and.pencil", action: compose)
-                        .modifier(PrimaryActionStyle())
+                    WorkspaceDraftMenu(create: compose)
                 }
                 .padding(.bottom, 18)
-                StudioTabs(selection: $filter, tabs: tabs, label: { $0.rawValue }, count: { records(for: $0).count })
+                StudioTabs(selection: Binding(get: { type }, set: { newType in
+                    selectPost {
+                        type = newType
+                        filter = .all
+                        platform = nil
+                        selection = nil
+                    }
+                }), tabs: [nil] + WorkspaceDraftType.allCases.map(Optional.some),
+                           label: { $0.map { $0.name + "s" } ?? "All drafts" },
+                           count: { format in workspace.workspaceDrafts.filter { format == nil || $0.kind == format?.rawValue }.count })
             }
             GeometryReader { geometry in
                 HStack(spacing: 0) {
                     if !expanded {
                         postList(rows, selected: postBeingEdited?.id ?? selected?.id)
                             .padding(.trailing, 16)
-                            .frame(width: min(max(filter == .ideas ? 190 : 210, geometry.size.width * 0.29), 330))
+                            .frame(width: min(max(210, geometry.size.width * 0.29), 330))
                             .frame(maxHeight: .infinity)
                         StudioRule(axis: .vertical)
                     }
@@ -926,16 +949,21 @@ struct PostBrowser: View {
                                              saved: finishedEditing, onDirty: editDirtyChanged)
                                 .id(postBeingEdited.id)
                         } else if let selected {
-                            PostPreview(record: selected, workspace: workspace, edit: edit, openInStudio: openInStudio, showSchedule: showSchedule,
+                            if selected.isLongForm, let format = WorkspaceDraftType(rawValue: selected.kind) {
+                                longFormPreview(selected, type: format)
+                                    .id(selected.id)
+                            } else {
+                                PostPreview(record: selected, workspace: workspace, edit: edit, openInStudio: openInStudio, showSchedule: showSchedule,
                                         expanded: expanded, togglePreview: togglePreview)
-                                .id(selected.id)
+                                    .id(selected.id)
+                            }
                         } else {
                             VStack {
-                                ContentUnavailableView("No matching posts", systemImage: "doc.text")
+                                ContentUnavailableView("No matching drafts", systemImage: "doc.text")
                                 if expanded {
                                     Button("Exit full-window preview", action: togglePreview).keyboardShortcut(.cancelAction)
                                 } else if filter == .all && search.isEmpty && platform == nil {
-                                    Button("Write a draft", systemImage: "plus", action: compose)
+                                    Button("New " + (type?.name.lowercased() ?? "social post"), systemImage: "plus") { compose(type ?? .post) }
                                         .modifier(PrimaryActionStyle())
                                 }
                             }
@@ -947,7 +975,16 @@ struct PostBrowser: View {
         }
         .padding(.horizontal, expanded ? 0 : 36)
         .padding(.vertical, expanded ? 0 : 26)
-        .onChange(of: filter) { _, _ in selection = nil; search = "" }
+        .onChange(of: returnedDocumentID) { _, id in
+            guard let id, let record = workspace.workspaceDrafts.first(where: { $0.id == id }) else { return }
+            if !rows.contains(where: { $0.id == id }) {
+                type = WorkspaceDraftType(rawValue: record.kind)
+                filter = .all
+                platform = nil
+                search = ""
+            }
+            selection = id
+        }
         .onChange(of: postBeingEdited?.id) { _, id in
             if let id { selection = id }
         }
@@ -959,33 +996,47 @@ struct PostBrowser: View {
                 }
             }
         }
-        .onAppear {
-            if !library && workspace.drafts.isEmpty && !workspace.ideas.isEmpty { filter = .ideas }
-        }
     }
 
     private func postList(_ rows: [WorkspaceRecord], selected: String?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             StudioSearchField(title: filter == .ideas ? "Search ideas" : "Search drafts", text: $search)
-            .focused($searchFocused)
-            .padding(.top, 16)
+                .focused($searchFocused)
+                .padding(.top, 16)
 
-            HStack(spacing: 8) {
-                StudioChoicePicker(title: "Filter by platform", selection: $platform,
-                                   options: [nil] + SocialPlatform.allCases.map(Optional.some),
-                                   label: { $0?.name ?? "All platforms" },
-                                   icon: { $0.flatMap { PlatformMark.image($0.rawValue) } })
-                if filter != .ideas {
-                    StudioFilterMenu(title: "Sort drafts", value: "Sort") {
-                        Picker("Sort drafts", selection: $draftSort) {
-                            ForEach(DraftSort.allCases, id: \.self) { option in
-                                Text(option.rawValue).tag(option)
-                            }
-                        }
-                        .pickerStyle(.inline)
+            StudioFilterMenu(title: "Filter drafts", value: filter == .all ? "All statuses" : filter.rawValue) {
+                ForEach(statuses, id: \.self) { status in
+                    Button {
+                        selectPost { filter = status; selection = nil }
+                    } label: {
+                        if filter == status { Label(status == .all ? "All statuses" : status.rawValue, systemImage: "checkmark") }
+                        else { Text(status == .all ? "All statuses" : status.rawValue) }
                     }
-                    .accessibilityValue(draftSort.rawValue)
                 }
+                if !library && type == nil {
+                    Divider()
+                    Button("Post ideas", systemImage: "lightbulb") {
+                        selectPost { filter = .ideas; platform = nil; selection = nil }
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                if type == nil || type == .post {
+                    let channels = SocialPlatform.allCases.map(\.rawValue) + (type == nil && filter != .ideas ? ["substack", "youtube"] : [])
+                    StudioChoicePicker(title: "Filter by platform", selection: $platform,
+                                       options: [nil] + channels.map(Optional.some),
+                                       label: { $0.map(platformName) ?? "All platforms" },
+                                       icon: { $0.flatMap(PlatformMark.image) })
+                }
+                StudioFilterMenu(title: "Sort drafts", value: "Sort") {
+                    Picker("Sort drafts", selection: $draftSort) {
+                        ForEach(DraftSort.allCases, id: \.self) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+                .accessibilityValue(draftSort.rawValue)
             }
             .padding(.bottom, 3)
 
@@ -1009,7 +1060,8 @@ struct PostBrowser: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(row.title).font(InkspringTypography.interface(13).weight(.medium)).lineLimit(2)
                                     Group {
-                                        if row["platform"].isEmpty { Text(postBrowserStatus(row)) }
+                                        if row.isLongForm, let type = WorkspaceDraftType(rawValue: row.kind) { Text(type.name + " · " + row["state"].capitalized) }
+                                        else if row["platform"].isEmpty { Text(postBrowserStatus(row)) }
                                         else { StudioPlatformLabel(name: row["platform"], title: postBrowserStatus(row)) }
                                     }
                                     .font(InkspringTypography.interface(11))
@@ -1026,14 +1078,51 @@ struct PostBrowser: View {
                             Button("Edit…", systemImage: "pencil") { edit(row) }
                                 .disabled(["posting", "posted"].contains(row.scheduleStatus))
                             Button("Copy text", systemImage: "doc.on.doc") { copy(row.body) }
-                            Button(row.kind == "idea" ? "Skip idea" : "Move to Trash", systemImage: "trash") {
-                                workspace.perform { try workspace.trashLibraryItem(row) }
+                            if !row.isLongForm {
+                                Button(row.kind == "idea" ? "Skip idea" : "Move to Trash", systemImage: "trash") {
+                                    workspace.perform { try workspace.trashLibraryItem(row) }
+                                }
                             }
                         }
                     }
                     if !rows.isEmpty { StudioRule().padding(.horizontal, 8) }
                 }
             }
+        }
+    }
+
+    private func longFormPreview(_ record: WorkspaceRecord, type: WorkspaceDraftType) -> some View {
+        StudioScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    StudioPlatformLabel(name: ScheduleListing.channel(of: record), title: type.name)
+                    Spacer()
+                    Button(expanded ? "Exit full-window preview" : "Full-window preview",
+                           systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                           action: togglePreview)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(StudioIconButtonStyle())
+                        .keyboardShortcut(expanded ? .cancelAction : nil)
+                }
+                HStack {
+                    if let reference = record.referenceID { StudioCopyReference(reference: reference) }
+                    if let updated = scheduleDate(record["updatedAt"]) {
+                        Text("Last updated \(updated.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(palette.muted)
+                    }
+                }
+                StudioRule()
+                HStack {
+                    Button(["draft", "synced"].contains(record["state"]) ? "Edit draft" : "Open document",
+                           systemImage: "square.and.pencil") { edit(record) }
+                    Button("Copy", systemImage: "doc.on.doc") { copy(record.body) }
+                }
+                NewsletterPreview(title: record.title, subtitle: record["subtitle"], markdown: record.body,
+                                  cover: workspace.mediaURL(record))
+            }
+            .padding(24)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -1054,6 +1143,7 @@ struct PostBrowser: View {
     }
 
     private func postBrowserIcon(_ record: WorkspaceRecord) -> String {
+        if record.isLongForm, let type = WorkspaceDraftType(rawValue: record.kind) { return type.symbol }
         if record.fields["video"] is [String: Any] { return "play.rectangle" }
         if record.fields["image"] is [String: Any] { return "photo" }
         return record.kind == "idea" ? "sparkles" : "doc.text"

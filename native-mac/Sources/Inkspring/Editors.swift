@@ -339,14 +339,14 @@ struct RecordEditor: View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
                 Button("Back", systemImage: "chevron.left", action: closeNewsletter)
-                    .help("Back to newsletters")
+                    .help("Return to the previous view")
                     .keyboardShortcut(.cancelAction)
                 if let reference = latestNewsletter?.referenceID {
                     StudioCopyReference(reference: reference)
                 }
                 Spacer()
                 StudioSegmentedControl(selection: $newsletterMode, options: ["Source", "Preview"], label: Text.init)
-                    .accessibilityLabel("Newsletter view")
+                    .accessibilityLabel("Document view")
                 Spacer()
                 Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") {
                     writingAssistantOpen.toggle()

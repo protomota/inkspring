@@ -59,6 +59,9 @@ final class Workspace {
     var projects: [WorkspaceRecord] { records.filter { $0.kind == "project" } }
     var project: WorkspaceRecord? { projects.first { $0.id == projectID } }
     var drafts: [WorkspaceRecord] { items("draft") }
+    var workspaceDrafts: [WorkspaceRecord] {
+        records.filter { $0.projectID == projectID && ($0.kind == "draft" || $0.isLongForm) }
+    }
     var ideas: [WorkspaceRecord] { items("idea") }
     var sources: [WorkspaceRecord] { items("source") }
 

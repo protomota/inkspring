@@ -30,11 +30,11 @@ import Testing
     post["format"] = "image"
     post.fields["image"] = ["file": "fixture.png"]
     post = try workspace.save(post)
-    #expect(PostBrowserFilter.working.matches(post, platform: .x, search: "  original ", library: false))
+    #expect(PostBrowserFilter.working.matches(post, platform: "x", search: "  original ", library: false))
     let scheduled = try workspace.scheduleDraft(post, at: .now.addingTimeInterval(3_600))
     #expect(!PostBrowserFilter.working.matches(scheduled, platform: nil, search: "", library: false))
     #expect(PostBrowserFilter.working.matches(scheduled, platform: nil, search: "", library: true))
-    #expect(!PostBrowserFilter.scheduling.matches(scheduled, platform: .x, search: "", library: false))
+    #expect(!PostBrowserFilter.scheduling.matches(scheduled, platform: "x", search: "", library: false))
     try workspace.addComment(to: scheduled, text: "Keep this review comment.")
     try workspace.updatePostText(scheduled, title: "Updated title", text: "Edited post")
     let edited = try #require(workspace.drafts.first { $0.id == post.id })
@@ -42,8 +42,8 @@ import Testing
     #expect(edited.body == "Edited post")
     #expect(edited.comments.first?["text"] as? String == "Keep this review comment.")
     #expect((edited.fields["image"] as? [String: String])?["file"] == "fixture.png")
-    #expect(PostBrowserFilter.scheduling.matches(edited, platform: .x, search: "edited", library: false))
-    #expect(!PostBrowserFilter.scheduling.matches(edited, platform: .linkedin, search: "", library: false))
+    #expect(PostBrowserFilter.scheduling.matches(edited, platform: "x", search: "edited", library: false))
+    #expect(!PostBrowserFilter.scheduling.matches(edited, platform: "linkedin", search: "", library: false))
     #expect(throws: WorkspaceError.self) { try workspace.updatePostText(scheduled, title: "Stale title", text: "Stale post") }
     let otherWindow = Workspace(directory: folder)
     try otherWindow.updatePostText(edited, title: edited.title, text: "Edited in another window")
@@ -57,12 +57,35 @@ import Testing
     idea["text"] = "An old angle"
     idea.fields["suggestedPlatforms"] = nil
     idea = try workspace.save(idea)
-    #expect(PostBrowserFilter.ideas.matches(idea, platform: .x, search: "legacy", library: false))
-    #expect(!PostBrowserFilter.ideas.matches(idea, platform: .linkedin, search: "", library: false))
+    #expect(PostBrowserFilter.ideas.matches(idea, platform: "x", search: "legacy", library: false))
+    #expect(!PostBrowserFilter.ideas.matches(idea, platform: "linkedin", search: "", library: false))
     try workspace.updatePostText(idea, title: idea.title, text: "A better angle")
     let updatedIdea = try #require(workspace.ideas.first { $0.id == idea.id })
     #expect(updatedIdea.body == "A better angle")
     #expect(updatedIdea["previousText"] == "An old angle")
+}
+
+@Test @MainActor func workspaceBrowsesAllDraftFormatsByProjectAndChannel() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    var other = WorkspaceRecord.new("project")
+    other["name"] = "Other project"
+    try workspace.save(other)
+    for format in WorkspaceDraftType.allCases {
+        var record = WorkspaceRecord.new(format.rawValue, projectID: workspace.projectID)
+        record["title"] = "Shared title"
+        record[record.isLongForm ? "body" : "content"] = "Find this paragraph"
+        let saved = try workspace.save(record)
+        #expect(workspace.workspaceDrafts.contains { $0.id == saved.id })
+        let channel = format == .newsletter ? "substack" : format == .script ? "youtube" : "x"
+        #expect(PostBrowserFilter.all.matches(saved, platform: channel, search: "paragraph", library: false))
+        #expect(!PostBrowserFilter.all.matches(saved, platform: "instagram", search: "", library: false))
+        #expect(PostBrowserFilter.working.matches(saved, platform: nil, search: format.name, library: false))
+        #expect(PostBrowserFilter.scheduling.matches(saved, platform: nil, search: "", library: false) == (format == .newsletter))
+    }
+    workspace.selectProject(other.id)
+    #expect(workspace.workspaceDrafts.isEmpty)
 }
 
 @Test @MainActor func scheduleRevisionKeepsTheDraftAndRequiresANewPostingTime() async throws {
