@@ -289,6 +289,16 @@ struct RecordEditor: View {
                         field("Idea", "text", multiline: true, height: 235)
                         field("Media plan", "mediaPlan")
                         field("Notes", "notes", multiline: true)
+                        Toggle("Include a plan", isOn: Binding(get: { record.fields["planMarkdown"] != nil }, set: {
+                            record.fields["planMarkdown"] = $0 ? ContentPlan.starter(record.title) : nil
+                        }))
+                        if record.fields["planMarkdown"] != nil {
+                            ContentPlanSection(markdown: record["planMarkdown"], reference: record.referenceID ?? record.id,
+                                               context: record.title, recoveryID: record.id) { text, base in
+                                guard record["planMarkdown"] == base else { throw ContentPlanError.conflict }
+                                record["planMarkdown"] = text
+                            }
+                        }
                         StudioLabeledChoice(title: "Status", selection: value("status"),
                                             options: ["draft", "picked", "skipped"],
                                             label: { $0 == "draft" ? "Open" : $0.capitalized })
@@ -453,6 +463,7 @@ struct RecordEditor: View {
 
     @ViewBuilder private var newsletterCanvas: some View {
         if newsletterMode == "Source" {
+            StudioScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 newsletterTextField("Title", key: "title", focus: .title)
                 newsletterTextField("Subtitle", key: "subtitle", focus: .subtitle)
@@ -462,12 +473,14 @@ struct RecordEditor: View {
                     record["subtitle"] = $0.subtitle
                     record["body"] = $0.body
                 }
+                WorkspacePlanSection(record: record, workspace: workspace)
                 DraftBodyField(text: value("body"), label: "Markdown", minHeight: 200,
                                onFocusLost: { _ = saveNewsletter() }, findRequest: newsletterFindRequest)
                     .frame(maxHeight: .infinity)
             }
             .disabled(!canEditNewsletter || newsletterUnavailable)
             .padding(22)
+            }
         } else {
             StudioScrollView {
                 NewsletterPreview(title: record["title"], subtitle: record["subtitle"],
@@ -475,6 +488,8 @@ struct RecordEditor: View {
                     .frame(maxWidth: 880)
                     .frame(maxWidth: .infinity)
                     .padding(22)
+                WorkspacePlanSection(record: record, workspace: workspace)
+                    .padding(.horizontal, 22)
             }
         }
     }
@@ -888,6 +903,16 @@ struct DraftStudio: View {
                 }
                 .onChange(of: initial["platform"]) { _, _ in
                     if !formats.contains(initial["format"]) { initial["format"] = formats[0] }
+                }
+                Toggle("Include a plan", isOn: Binding(get: { initial.fields["planMarkdown"] != nil }, set: {
+                    initial.fields["planMarkdown"] = $0 ? ContentPlan.starter(initial.title) : nil
+                }))
+                if initial.fields["planMarkdown"] != nil {
+                    ContentPlanSection(markdown: initial["planMarkdown"], reference: initial.referenceID ?? initial.id,
+                                       context: initial.title, recoveryID: initial.id) { text, base in
+                        guard initial["planMarkdown"] == base else { throw ContentPlanError.conflict }
+                        initial["planMarkdown"] = text
+                    }
                 }
                 if initial["platform"] == "linkedin" {
                     let saved = LinkedInDestination(fields: initial.fields["linkedinDestination"] as? [String: Any])

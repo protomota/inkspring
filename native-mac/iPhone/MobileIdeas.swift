@@ -31,6 +31,7 @@ struct MobileIdeasView: View {
     @State private var projectID: String?
     @FocusState private var focusedField: Field?
     @State private var title = ""
+    @State private var includesPlan = false
     @State private var bodyText = ""
     @State private var topic = ""
     @State private var suggestions: [SuggestedIdea] = []
@@ -84,6 +85,8 @@ struct MobileIdeasView: View {
                     TextField("Angle or notes", text: $bodyText, axis: .vertical)
                         .lineLimit(3...8)
                         .focused($focusedField, equals: .angle)
+                    Toggle("Include a plan", isOn: $includesPlan)
+                        .disabled(library.snapshot?.supportsContentPlans != true)
                     Button("Save idea", systemImage: "plus") { saveIdea() }
                         .disabled(!canSave)
                 }
@@ -202,10 +205,11 @@ struct MobileIdeasView: View {
         do {
             try library.saveIdea(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                                  text: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
-                                 projectID: projectID)
+                                 projectID: projectID, plan: includesPlan ? ContentPlan.starter(title) : nil)
             focusedField = nil
             title = ""
             bodyText = ""
+            includesPlan = false
             InkspringReview.recordActivity()
         } catch { message = error.localizedDescription }
     }

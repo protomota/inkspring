@@ -17,7 +17,7 @@ struct AgentMCP {
             return [.init(name: "get_writing_request", summary: "Read the current one-time Inkspring writing request and its selected context.")]
         }
         guard chatProjectID != nil else { return Self.tools }
-        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter", "list_scripts", "get_script", "list_articles", "get_article", "get_content"]
+        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter", "list_scripts", "get_script", "list_articles", "get_article", "get_content", "get_plan"]
         return Self.tools.filter { names.contains($0.name) }
     }
 
@@ -105,6 +105,8 @@ struct AgentMCP {
         .init(name: "restore_revision", summary: "Restore a saved writing version as a new local save. Keeps intervening history and never publishes. Requires the current updatedAt from get_content.",
               fields: ["content_id": "string", "revision_id": "string", "expected_updated_at": "string"],
               required: ["content_id", "revision_id", "expected_updated_at"], writes: true),
+        .init(name: "get_plan", summary: "Read the complete Markdown Plan for a post, idea or newsletter by copyable ID or UUID.", fields: ["content_id": "string"], required: ["content_id"]),
+        .init(name: "save_plan", summary: "Save a Markdown Plan locally. Read first and supply exact expected_markdown; never publishes or dispatches.", fields: ["content_id": "string", "markdown": "string", "expected_markdown": "string"], required: ["content_id", "markdown", "expected_markdown"], writes: true),
         .init(name: "save_x_thread", summary: "Save supplied X posts as one local thread draft for review.",
               fields: ["project_id": "string", "title": "string", "posts": "strings"], required: ["title", "posts"], writes: true),
         .init(name: "edit_draft", summary: "Edit a saved draft locally. For an X thread supply posts as separate strings, one per tweet, preserving paragraphs inside each. Pass expected_updated_at to protect newer edits.",
@@ -462,6 +464,16 @@ struct AgentMCP {
                 throw WorkspaceError("This writing changed. Read the latest version before restoring.")
             }
             return view(try workspace.restoreRevision(revision, to: item), full: true)
+        case "get_plan", "save_plan":
+            guard let item = workspace.records.first(where: { ["draft", "idea", "newsletter"].contains($0.kind) && $0.matchesID(argument("content_id")) && (chatProjectID == nil || $0.projectID == chatProjectID) }) else {
+                throw WorkspaceError("No available writing has that ID.")
+            }
+            if name == "save_plan" {
+                guard let markdown = arguments["markdown"] as? String, let base = arguments["expected_markdown"] as? String else { throw WorkspaceError("Supply Markdown and its exact previous version.") }
+                let saved = try workspace.savePlan(itemID: item.id, markdown: markdown, base: base)
+                return ["content_id": saved.referenceID ?? saved.id, "markdown": saved["planMarkdown"], "updated_at": saved["updatedAt"]]
+            }
+            return ["content_id": item.referenceID ?? item.id, "markdown": item["planMarkdown"], "updated_at": item["updatedAt"]]
         case "save_x_thread":
             let posts = (arguments["posts"] as? [String] ?? []).map(XThreadText.singlePost)
             guard (2...XThreadText.limit).contains(posts.count),
@@ -708,7 +720,7 @@ struct AgentMCP {
             result["posts"] = XThreadText.posts(in: record.body)
         }
         if !full {
-            for key in ["content", "text", "body"] {
+            for key in ["content", "text", "body", "planMarkdown", "previousPlanMarkdown"] {
                 if let body = result[key] as? String, body.count > 600 { result[key] = String(body.prefix(600)) + "…" }
             }
         }

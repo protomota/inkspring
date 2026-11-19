@@ -125,6 +125,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var supportsXThreads: Bool?
     public var supportsXParagraphs: Bool?
     public var supportsRevisionHistory: Bool?
+    public var supportsContentPlans: Bool?
     public var postingWindows: [String: CompanionPostingWindow]?
     public var postingTimeZone: String?
     public var updatedAt = Date.now
@@ -165,6 +166,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public let attachment: Attachment?
         public var isTrashed: Bool?
         public var requiresMacScheduling: Bool?
+        public var planMarkdown: String?
+        public var previousPlanMarkdown: String?
 
         public init(id: String, revision: String, kind: Kind, projectID: String, title: String, body: String,
                     shortened: Bool, platform: String, status: String, notes: [String],
@@ -187,6 +190,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var indexEntry: Item {
             var entry = self
             entry.history = nil
+            entry.planMarkdown = nil
+            entry.previousPlanMarkdown = nil
             guard body.utf8.count > 512 else { return entry }
             entry.body = ""
             entry.shortened = true
@@ -214,7 +219,9 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public mutating func separateFullText() throws -> Data? {
         var bodies: [String: String] = [:]
         func separate(_ item: Item) -> Item {
-            let entry = item.indexEntry
+            var entry = item.indexEntry
+            if let plan = item.planMarkdown { bodies["plan:" + item.id] = plan; entry.planMarkdown = nil }
+            if let previous = item.previousPlanMarkdown { bodies["previousPlan:" + item.id] = previous; entry.previousPlanMarkdown = nil }
             if entry.shortened && !item.shortened { bodies[item.id] = item.body }
             if let history = item.history, !history.isEmpty,
                let data = try? JSONEncoder().encode(history) {
@@ -237,6 +244,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         let bodies = try JSONDecoder().decode([String: String].self, from: decoded)
         func complete(_ item: Item) throws -> Item {
             var item = item
+            item.planMarkdown = bodies["plan:" + item.id] ?? item.planMarkdown
+            item.previousPlanMarkdown = bodies["previousPlan:" + item.id] ?? item.previousPlanMarkdown
             if item.shortened {
                 guard let body = bodies[item.id] else { throw CompanionScheduleError.changed }
                 item.body = body
@@ -283,6 +292,9 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public let historySnapshot: ContentRevision?
         public let restoresRevision: Bool?
         public let subtitle: String?
+        public var contentOperation: CompanionContentOperation?
+        public var basePlan: String?
+        public var initialPlan: String?
 
         public init(id: UUID = UUID(), action: Action, itemID: String, revision: String = "",
                     title: String = "", text: String = "", editsNewsletter: Bool? = nil,
@@ -312,6 +324,24 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         }
 
         public var valid: Bool {
+            if let initialPlan {
+                guard initialPlan.utf16.count <= ContentPlan.limit, !initialPlan.contains("\0"),
+                      action == .addIdea && generatesXDraft != true || contentOperation.map({ [.createDraft, .createNewsletter].contains($0) }) == true else { return false }
+            }
+            if let operation = contentOperation {
+                guard action == .editDraft, !itemID.isEmpty, itemID.utf8.count <= 200,
+                      title.utf16.count <= 200, text.utf16.count <= ContentPlan.limit,
+                      !text.contains("\0"), !title.contains("\0"), editsNewsletter != true,
+                      generatesXDraft != true, xFormat == nil else { return false }
+                switch operation {
+                case .savePlan: return !revision.isEmpty && title.isEmpty && basePlan != nil
+                    && (basePlan?.utf16.count ?? 0) <= ContentPlan.limit && basePlan?.contains("\0") != true
+                case .createDraft, .createNewsletter, .createProject: return !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && basePlan == nil
+                case .setTitle: return !revision.isEmpty && title.isEmpty && (1...200).contains(text.utf16.count) && basePlan == nil
+                case .moveProject: return !revision.isEmpty && !text.isEmpty && title.isEmpty && basePlan == nil
+                }
+            }
+            guard basePlan == nil else { return false }
             if publishesXArticle == true {
                 return action == .note && !itemID.isEmpty && itemID.utf8.count <= 200 && !revision.isEmpty && revision.utf8.count <= 100
                     && text == "Publish X article" && title.isEmpty && !isLongFormEdit && createsScript != true
@@ -403,6 +433,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
             throw CompanionLibraryError.disabled
         }
         if change.action == .saveRevision, supportsRevisionHistory != true { throw CompanionLibraryError.disabled }
+        if change.contentOperation != nil || change.initialPlan != nil, supportsContentPlans != true { throw CompanionLibraryError.disabled }
         if change.action == .editDraft, supportsDraftEdits != true { throw CompanionLibraryError.disabled }
         if change.editsNewsletter == true, supportsNewsletterEdits != true { throw CompanionLibraryError.disabled }
         if [.editIdea, .trashItem, .restoreItem, .deleteItem].contains(change.action), supportsItemManagement != true { throw CompanionLibraryError.disabled }
@@ -442,6 +473,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         supportsDraftEdits = nil
         supportsNewsletterEdits = nil
         supportsItemManagement = nil
+        supportsContentPlans = nil
         postingWindows = nil
         postingTimeZone = nil
     }
@@ -490,16 +522,22 @@ struct CompanionLibraryOutbox: Codable, Equatable {
         var historySnapshot: ContentRevision?
         var restoresRevision: Bool?
         var subtitle: String?
+        var contentOperation: CompanionContentOperation?
+        var basePlan: String?
+        var initialPlan: String?
 
         var requestID: UUID { retryID ?? id }
         var movesToTrash: Bool { action == .trashItem || action == .skipIdea }
 
         var change: CompanionLibrary.Change? {
             guard let itemID else { return nil }
-            let change = CompanionLibrary.Change(id: requestID, action: action, itemID: itemID, revision: revision,
+            var change = CompanionLibrary.Change(id: requestID, action: action, itemID: itemID, revision: revision,
                                                  title: title, text: text, editsNewsletter: editsNewsletter,
                                                  baseNewsletterText: baseNewsletterText, xFormat: xFormat, generatesXDraft: generatesXDraft,
                                                  historySnapshot: historySnapshot, restoresRevision: restoresRevision, subtitle: subtitle, editsScript: editsScript, createsScript: createsScript, baseScriptTitle: baseScriptTitle, writingKind: writingKind, requestsWritingHelp: requestsWritingHelp, publishesXArticle: publishesXArticle, xArticleAccountKey: xArticleAccountKey)
+            change.contentOperation = contentOperation
+            change.basePlan = basePlan
+            change.initialPlan = initialPlan
             // Keep the existing edit limit even when the original plus the edit exceed one record.
             if baseNewsletterText != nil, let size = try? JSONEncoder().encode(change).count, size > change.payloadLimit {
                 return .init(id: requestID, action: action, itemID: itemID, revision: revision, title: title, text: text,
@@ -641,6 +679,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
                (entry.xFormat == nil || !entry.text.contains(XThreadText.separator) || library.supportsXParagraphs == true),
                (entry.editsNewsletter != true || library.supportsNewsletterEdits == true),
                ((entry.editsScript != true && entry.createsScript != true) || library.supportsScripts == true),
+               (entry.contentOperation == nil && entry.initialPlan == nil || library.supportsContentPlans == true),
                (entry.action != .scheduleDraft || library.postingWindows != nil),
                (![.editIdea, .trashItem, .restoreItem, .deleteItem].contains(entry.action) || library.supportsItemManagement == true) {
                 if entry.action == .editDraft { entry.newsletterPrepared = true }

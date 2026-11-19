@@ -16,7 +16,12 @@ mkdir -p "$output/tmp"
 export TMPDIR="$output/tmp"
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 # Keep the real SDK version in the linked executable for macOS appearance selection.
-build_flags=(--package-path "$project" --scratch-path "$output/swift-build" --build-system native --sdk "$sdk" --disable-sandbox -c release)
+configuration="${INKSPRING_MAC_CONFIGURATION:-release}"
+case "$configuration" in
+    debug|release) ;;
+    *) echo "Use debug or release for INKSPRING_MAC_CONFIGURATION." >&2; exit 2 ;;
+esac
+build_flags=(--package-path "$project" --scratch-path "$output/swift-build" --build-system native --sdk "$sdk" --disable-sandbox -c "$configuration")
 swift build "${build_flags[@]}"
 binary="$(swift build "${build_flags[@]}" --show-bin-path)"
 installed_bundle="$output/Inkspring.app"

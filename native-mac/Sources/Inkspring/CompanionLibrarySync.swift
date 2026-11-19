@@ -86,6 +86,7 @@ extension Workspace {
         }
         snapshot.supportsWritingTools = true
         snapshot.writingAgent = StudioWritingConnection(settings: settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: settings).writingProvider.rawValue
+        snapshot.supportsContentPlans = true
         snapshot.postingWindows = Dictionary(uniqueKeysWithValues: SocialPlatform.allCases.filter { $0 != .tiktok }.map {
             ($0.rawValue, postingWindow(for: $0.rawValue))
         })
@@ -128,6 +129,8 @@ extension Workspace {
                     notes: comments.map(\.text), noteDates: comments.map(\.date), attachment: attachment,
                     referenceID: record.referenceID
                 )
+                item.planMarkdown = record.fields["planMarkdown"] as? String
+                item.previousPlanMarkdown = record.fields["previousPlanMarkdown"] as? String
                 item.isTrashed = inTrash
                 item.history = try? revisionHistory(for: record)
                 if record.kind == "draft" {
@@ -184,6 +187,8 @@ extension Workspace {
                 item.publicationURL = record["articleURL"]
                 item.publicationError = record["articlePublicationError"]
             }
+            item.planMarkdown = record.fields["planMarkdown"] as? String
+            item.previousPlanMarkdown = record.fields["previousPlanMarkdown"] as? String
             item.history = try? revisionHistory(for: record)
             guard let data = try? encoder.encode(item.indexEntry), longFormBytes + data.count + 1 <= 260_000 else { continue }
             longFormBytes += data.count + 1
@@ -200,7 +205,8 @@ extension Workspace {
     }
 
     private func updateLibrarySnapshot(_ library: inout CompanionLibrary, from snapshot: CompanionLibrary) {
-        guard library.supportsDraftEdits != snapshot.supportsDraftEdits ||
+        guard library.supportsContentPlans != snapshot.supportsContentPlans ||
+              library.supportsDraftEdits != snapshot.supportsDraftEdits ||
               library.supportsNewsletterEdits != snapshot.supportsNewsletterEdits ||
               library.supportsItemManagement != snapshot.supportsItemManagement ||
               library.supportsXThreads != snapshot.supportsXThreads ||
@@ -226,6 +232,7 @@ extension Workspace {
         library.xArticleAccountName = snapshot.xArticleAccountName
         library.supportsWritingTools = snapshot.supportsWritingTools
         library.writingAgent = snapshot.writingAgent
+        library.supportsContentPlans = snapshot.supportsContentPlans
         library.postingWindows = snapshot.postingWindows
         library.postingTimeZone = snapshot.postingTimeZone
         library.items = snapshot.items
@@ -281,6 +288,7 @@ extension Workspace {
             try addComment(to: record, text: change.text, revisionRequestID: id)
             return nil
         }
+        if change.contentOperation != nil { return try applyContentOperation(change, requestID: id) }
         if change.generatesXDraft == true {
             if (records + trashedRecords).contains(where: { $0.id == id }) ||
                 (settings["libraryDeletedIDs"] as? [String] ?? []).contains(id) { return nil }
@@ -354,6 +362,7 @@ extension Workspace {
             idea["topic"] = change.title
             idea["text"] = change.text
             idea["origin"] = "Mobile"
+            idea.fields["planMarkdown"] = change.initialPlan
             try save(idea)
             return nil
         }

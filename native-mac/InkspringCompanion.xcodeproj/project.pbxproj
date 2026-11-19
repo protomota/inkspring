@@ -25,6 +25,10 @@
 		B00000000000000000000040 = {isa = PBXBuildFile; fileRef = A00000000000000000000040; };
 		B00000000000000000000041 = {isa = PBXBuildFile; fileRef = A00000000000000000000041; };
 		B00000000000000000000042 = {isa = PBXBuildFile; fileRef = A00000000000000000000042; };
+		C01700000000000000000000 = {isa = PBXBuildFile; fileRef = C01700000000000000000100; };
+		C01700000000000000000001 = {isa = PBXBuildFile; fileRef = C01700000000000000000101; };
+		C01700000000000000000002 = {isa = PBXBuildFile; fileRef = C01700000000000000000102; };
+		C01700000000000000000003 = {isa = PBXBuildFile; fileRef = C01700000000000000000103; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,6 +54,10 @@
 		A00000000000000000000040 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTechnicalSupportStore.swift; sourceTree = "<group>"; };
 		A00000000000000000000041 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTechnicalSupportView.swift; sourceTree = "<group>"; };
 		A00000000000000000000042 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportContracts.swift; sourceTree = "<group>"; };
+		C01700000000000000000100 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/InkspringSchedule/ContentPlan.swift; sourceTree = SOURCE_ROOT; };
+		C01700000000000000000101 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/ContentPlanView.swift; sourceTree = SOURCE_ROOT; };
+		C01700000000000000000102 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/OnDeviceContentAssistant.swift; sourceTree = SOURCE_ROOT; };
+		C01700000000000000000103 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhone/MobileContentPlans.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,6 +74,10 @@
 		A00000000000000000000003 = {
 			isa = PBXGroup;
 			children = (
+				C01700000000000000000100 /* ContentPlan */,
+				C01700000000000000000101 /* ContentPlanView */,
+				C01700000000000000000102 /* OnDeviceContentAssistant */,
+				C01700000000000000000103 /* MobileContentPlans */,
 				A00000000000000000000004 /* iPhone */,
                 B00000000000000000000002 /* UI Tests */,
 				A00000000000000000000005 /* Shared schedule */,
@@ -204,6 +216,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C01700000000000000000003 /* MobileContentPlans in Sources */,
+				C01700000000000000000002 /* OnDeviceContentAssistant in Sources */,
+				C01700000000000000000001 /* ContentPlanView in Sources */,
+				C01700000000000000000000 /* ContentPlan in Sources */,
 				A00000000000000000000031 /* InkspringCompanion.swift in Sources */,
 				A00000000000000000000032 /* CompanionSchedule.swift in Sources */,
 				A00000000000000000000033 /* CloudScheduleStore.swift in Sources */,

@@ -63,6 +63,7 @@ struct WorkspaceWindow: View {
     @State private var showsSidebar = true
     @State private var previewExpanded = false
     @State private var showsAgentChat = false
+    @State private var showsOnDeviceAssistant = false
     @State private var agentChat = StudioAgentChat()
     @State private var settingsSection = "Appearance"
     @State private var librarySearchRequest = 0
@@ -390,6 +391,7 @@ struct WorkspaceWindow: View {
                 Button("New draft", systemImage: "plus") { navigate { newDraft() } }
                     .keyboardShortcut("n")
             }
+            Button("Ask Inkspring", systemImage: "sparkles") { navigate { showsOnDeviceAssistant = true } }
             Button("Ask my agent", systemImage: "bubble.left.and.text.bubble.right") { showsAgentChat = true }
                 .disabled(workspace.project == nil)
                 .foregroundStyle(palette.text)
@@ -405,6 +407,25 @@ struct WorkspaceWindow: View {
     }
 
     @ViewBuilder private var content: some View {
+        if showsOnDeviceAssistant {
+            InkspringAssistantChat(workspaceID: workspace.directory?.path ?? "workspace", items: { workspace.assistantContents },
+                                   execute: workspace.executeAssistant, open: { id in
+                guard let item = workspace.records.first(where: { $0.id == id }) else { return }
+                showsOnDeviceAssistant = false
+                if item.kind == "project" { workspace.selectProject(item.id) }
+                else { workspace.selectProject(item.projectID); open(item) }
+            }, back: { showsOnDeviceAssistant = false }, readPlan: { id in
+                workspace.records.first { $0.id == id && ["draft", "idea", "newsletter"].contains($0.kind) }?["planMarkdown"]
+            }, applyPlan: { id, text, base in
+                let saved = try workspace.savePlan(itemID: id, markdown: text, base: base)
+                return .init(message: "Plan saved on this Mac for \(saved.referenceID ?? saved.id).", itemID: id)
+            }, loadHistory: {
+                (workspace.settings["onDeviceAssistantHistory"] as? String).flatMap { Data(base64Encoded: $0) }
+            }, saveHistory: { data in try workspace.set("onDeviceAssistantHistory", to: data.base64EncodedString()) })
+        } else { pageContent }
+    }
+
+    @ViewBuilder private var pageContent: some View {
         switch page {
         case .workspace, .library:
             PostBrowser(workspace: workspace, library: page == .library, edit: editPost, openInStudio: open,
@@ -673,7 +694,7 @@ struct RecordCard: View {
             }
             Text(record.title).font(.headline)
             if !record.body.isEmpty {
-                Text(record.body)
+                Text(preview)
                     .font(InkspringTypography.interface(17))
                     .lineLimit(5)
                     .foregroundStyle(.secondary)
@@ -685,6 +706,30 @@ struct RecordCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .studioSurface()
+    }
+
+    private var preview: AttributedString {
+        guard record.isLongForm,
+              let markdown = try? AttributedString(markdown: record.body,
+                  options: .init(failurePolicy: .returnPartiallyParsedIfPossible)) else {
+            return AttributedString(record.body)
+        }
+        var result = AttributedString()
+        var previousBlock: Int?
+        for run in markdown.runs {
+            let block = run.presentationIntent?.components.first?.identity
+            if !result.characters.isEmpty, block != previousBlock {
+                result.append(AttributedString("\n"))
+            }
+            var text = AttributedString(markdown[run.range])
+            text.presentationIntent = nil
+            // Keep the card's click action instead of opening a preview link.
+            if text.link != nil { text.underlineStyle = .single }
+            text.link = nil
+            result.append(text)
+            previousBlock = block
+        }
+        return result
     }
 }
 
@@ -1102,6 +1147,7 @@ struct PostPreview: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .studioSurface()
+                WorkspacePlanSection(record: record, workspace: workspace)
                 Text("Comments").font(InkspringTypography.editorial(19, relativeTo: .headline))
                 ForEach(Array(record.comments.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 3) {

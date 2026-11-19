@@ -124,6 +124,7 @@ final class Workspace {
             if record.fields["audience"] == nil || record.fields["audience"] as? String == "" { record["audience"] = "everyone" }
             if record.fields["sendEmail"] == nil { record.fields["sendEmail"] = false }
         }
+        if let plan = record.fields["planMarkdown"] as? String { try ContentPlan.validate(plan) }
         try validate(record)
         let current = records.first { $0.id == record.id }
         if current?.fields["mobileGenerationPending"] as? Bool == true, record.body != current?.body {

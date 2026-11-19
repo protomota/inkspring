@@ -281,7 +281,7 @@ struct ContentStudio {
         Return JSON with \(isThread ? "posts" : "text"), reply (one short sentence about the edit), mediaPlan, and imagePrompt.
         """
         let project = try projectContext(record.projectID)
-        var input = record.fields.filter { ["title", "topic", "text", "content", "platform", "format", "mediaPlan", "imagePrompt"].contains($0.key) }
+        var input = record.fields.filter { ["title", "topic", "text", "content", "platform", "format", "mediaPlan", "imagePrompt", "planMarkdown"].contains($0.key) }
         if isThread { input["posts"] = XThreadText.posts(in: record.body) }
         let result = try await model.object(instructions, ["project": project, "record": input, "notes": notes])
         try Task.checkCancellation()

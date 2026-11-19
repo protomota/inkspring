@@ -107,9 +107,30 @@ struct ProofreadReview {
     }
 
     private static func protectedRanges(in text: String) -> [NSRange] {
-        let pattern = #"(?ms)^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}\1[ \t]*(?=\n|$)|\z)|`[^`\r\n]+`|https?://[^\s<>]+|\]\([^\r\n]*?\)|<[^>\r\n]+>"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        return regex.matches(in: text, range: NSRange(location: 0, length: text.utf16.count)).map(\.range)
+        let pattern = #"`[^`\r\n]+`|https?://[^\s<>]+|\]\([^\r\n]*?\)|<[^>\r\n]+>"#
+        let regex = try? NSRegularExpression(pattern: pattern)
+        var ranges = regex?.matches(in: text, range: NSRange(location: 0, length: text.utf16.count)).map(\.range) ?? []
+        let prefixes = try? NSRegularExpression(pattern: #"(?m)^[ \t]*(?:#{1,6}[ \t]+|(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]*)?|>[ \t]*)"#)
+        ranges += prefixes?.matches(in: text, range: NSRange(location: 0, length: text.utf16.count)).map(\.range) ?? []
+        var fence: Character?; var fenceCount = 0; var start = 0; var offset = 0
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let length = line.utf16.count
+            if let marker = fence {
+                let markers = trimmed.prefix(while: { $0 == marker }).count
+                if markers >= fenceCount, trimmed.dropFirst(markers).trimmingCharacters(in: .whitespaces).isEmpty {
+                    ranges.append(NSRange(location: start, length: offset + length - start)); fence = nil
+                }
+            } else if let marker = trimmed.first, marker == "`" || marker == "~" {
+                let count = trimmed.prefix(while: { $0 == marker }).count
+                if count >= 3 { fence = marker; fenceCount = count; start = offset }
+            } else if line.hasPrefix("    ") || line.hasPrefix("\t") {
+                ranges.append(NSRange(location: offset, length: length))
+            }
+            offset += length + 1
+        }
+        if fence != nil { ranges.append(NSRange(location: start, length: text.utf16.count - start)) }
+        return ranges
     }
 
     private static func syntax(in text: String) -> String {

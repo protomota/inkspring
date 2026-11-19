@@ -47,6 +47,10 @@ final class MobileLibrary {
         var baseTitle: String?
     }
 
+    func planRecoveryID(_ itemID: String, workspaceID: UUID) -> String {
+        "\(account ?? "unavailable").\(workspaceID).\(itemID)"
+    }
+
     func newsletterRecoveryKey(for itemID: String, workspaceID: UUID) -> String? {
         guard let account, snapshot?.workspaceID == workspaceID else { return nil }
         return "inkspring.mobile.newsletterRecovery.\(account).\(workspaceID).\(itemID)"
@@ -254,9 +258,9 @@ final class MobileLibrary {
         return change.id.uuidString.lowercased()
     }
 
-    func saveIdea(title: String, text: String, projectID: String?) throws {
+    func saveIdea(title: String, text: String, projectID: String?, plan: String? = nil) throws {
         try queue(.init(id: UUID(), action: .addIdea, itemID: projectID, revision: "", title: title, text: text,
-                        workspaceID: snapshot?.workspaceID, account: account))
+                        workspaceID: snapshot?.workspaceID, account: account, initialPlan: plan))
     }
 
     func saveChange(_ change: CompanionLibrary.Change, workspaceID: UUID) throws {
@@ -278,7 +282,7 @@ final class MobileLibrary {
                         title: change.title, text: change.text, workspaceID: workspaceID, account: account,
                         afterTrash: afterTrash, publishesXArticle: change.publishesXArticle, xArticleAccountKey: change.xArticleAccountKey, requestsWritingHelp: change.requestsWritingHelp, writingKind: change.writingKind, baseScriptTitle: change.baseScriptTitle, editsScript: change.editsScript, createsScript: change.createsScript, editsNewsletter: change.editsNewsletter, afterNewsletterEdit: predecessor,
                         baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft,
-                        restoresRevision: change.restoresRevision, subtitle: change.subtitle))
+                        restoresRevision: change.restoresRevision, subtitle: change.subtitle, contentOperation: change.contentOperation, basePlan: change.basePlan, initialPlan: change.initialPlan))
     }
 
     private func queue(_ entry: CompanionLibraryOutbox.Entry) throws {
@@ -290,7 +294,8 @@ final class MobileLibrary {
         } else {
             if [.editDraft, .editIdea, .trashItem, .restoreItem, .deleteItem, .scheduleDraft].contains(entry.action) {
                 next.entries.removeAll {
-                    $0.action == entry.action && $0.itemID == entry.itemID && $0.workspaceID == entry.workspaceID
+                    $0.action == entry.action && $0.contentOperation == entry.contentOperation
+                        && $0.editsNewsletter == entry.editsNewsletter && $0.itemID == entry.itemID && $0.workspaceID == entry.workspaceID
                         && $0.account == entry.account && $0.error != nil
                 }
             }
@@ -604,6 +609,7 @@ final class MobileLibrary {
         value.supportsXThreads = true
         value.supportsXParagraphs = true
         value.supportsRevisionHistory = true
+        value.supportsContentPlans = true
         if ProcessInfo.processInfo.arguments.contains("--x-thread-fixture") {
             var draft = CompanionLibrary.Item(id: "x-followup-demo", revision: "2026-11-18T16:00:00.000Z", kind: .draft,
                 projectID: "studio", title: "I started a cult", body: ["We build useful tools and give them away.", "Read more: https://newsletter.protomota.com/", "Join us: https://protomota.com/discord"].joined(separator: XThreadText.separator),
@@ -758,6 +764,7 @@ private struct MobileNewsletterDetail: View {
                             .contentShape(Rectangle())
                             .simultaneousGesture(TapGesture(count: 2).onEnded { beginEditing() })
                         }
+                        MobilePlanSection(item: item, library: library, workspaceID: workspaceID)
                         if let pendingEdit {
                             if let error = pendingEdit.error {
                                 Text(error).font(.footnote).foregroundStyle(palette.danger)
@@ -1074,6 +1081,7 @@ struct MobileReviewView: View {
     @State private var actionError: String?
     @State private var creatingXDraft = false
     @State private var scriptError: String?
+    @State private var askingInkspring = false
 
     private static let filters = ["Drafts", "Ideas", "Trash"]
 
@@ -1140,6 +1148,26 @@ struct MobileReviewView: View {
     }
 
     var body: some View {
+        if askingInkspring { assistantView }
+        else { reviewBody }
+    }
+
+    private var assistantView: some View {
+                InkspringAssistantChat(workspaceID: library.planRecoveryID("assistant", workspaceID: library.snapshot?.workspaceID ?? UUID()),
+                                       items: { library.assistantContents }, execute: library.executeAssistant,
+                                       open: { id in selection = id; askingInkspring = false }, back: { askingInkspring = false },
+                                       readPlan: { id in
+                    guard let item = ((library.snapshot?.items ?? []) + (library.snapshot?.newsletters ?? [])).first(where: { $0.id == id }) else { return nil }
+                    return library.planText(item)
+                }, applyPlan: { id, text, base in
+                    guard let snapshot = library.snapshot,
+                          let item = (snapshot.items + (snapshot.newsletters ?? [])).first(where: { $0.id == id }) else { throw CompanionScheduleError.changed }
+                    try library.savePlan(text, base: base, item: item, workspaceID: snapshot.workspaceID)
+                    return .init(message: "Plan saved on this device. Waiting for your Mac to apply it.", itemID: id)
+                })
+    }
+
+    private var reviewBody: some View {
         NavigationSplitView {
             Group {
                 if let snapshot = library.snapshot {
@@ -1186,6 +1214,10 @@ struct MobileReviewView: View {
             .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
             .refreshable { await library.refresh() }
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Ask Inkspring", systemImage: "sparkles") { askingInkspring = true }
+                        .accessibilityIdentifier("assistant.open")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Section("Long-form") {
@@ -1869,6 +1901,8 @@ private struct MobileReviewDetail: View {
                 }
                 .listRowBackground(palette.card)
             }
+            Section { MobilePlanSection(item: item, library: library, workspaceID: workspaceID) }
+                .listRowBackground(palette.card)
             if item.isTrashed != true {
             Section {
                 ForEach(Array(item.notes.enumerated()), id: \.offset) { index, text in

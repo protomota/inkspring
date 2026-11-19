@@ -68,7 +68,7 @@ struct WorkspaceBackup {
     private static let safePreferences: Set<String> = [
         StudioWritingConnection.preferenceKey, "provider", "imageProvider", "anthropicModel", "openaiModel", "geminiModel",
         "openaiImageModel", "geminiImageModel", "anthropicWorkspaceId", "personalProfile",
-        "personalSetupDismissed", "ideaQueueTarget"
+        "personalSetupDismissed", "ideaQueueTarget", "onDeviceAssistantHistory"
     ]
 
     private static let secretFields: Set<String> = [
