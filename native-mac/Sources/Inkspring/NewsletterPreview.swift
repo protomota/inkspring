@@ -15,7 +15,12 @@ struct NewsletterPreview: View {
             Text(title.isEmpty ? "Your newsletter title" : title)
                 .font(InkspringTypography.editorial(32, relativeTo: .title))
                 .accessibilityAddTraits(.isHeader)
-            if !subtitle.isEmpty { Text(subtitle).font(InkspringTypography.editorial(19)).foregroundStyle(.secondary) }
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(InkspringTypography.interface(19))
+                    .lineSpacing(5)
+                    .foregroundStyle(.secondary)
+            }
             if let error {
                 Text(error).foregroundStyle(.secondary)
             } else {
@@ -56,7 +61,9 @@ private struct NewsletterPreviewBlock: View {
                 .font(InkspringTypography.editorial(level == 1 ? 28 : level == 2 ? 23 : 19, relativeTo: .headline))
                 .accessibilityAddTraits(.isHeader)
         case "paragraph":
-            Text(inline).font(InkspringTypography.editorial(17))
+            Text(inline)
+                .font(InkspringTypography.interface(17))
+                .lineSpacing(5)
         case "blockquote":
             blockChildren
                 .padding(.leading, 12)

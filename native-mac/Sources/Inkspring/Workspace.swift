@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import InkspringSchedule
 import UniformTypeIdentifiers
 
 @MainActor @Observable
@@ -18,6 +19,7 @@ final class Workspace {
     var companionError: String?
     var companionTransfer: CompanionTransfer?
     var companionLibraryBusy = false
+    var companionLibraryTextCleanupPending = false
     var companionLibraryError: String?
     var projectID = ""
     var error: String?
@@ -27,11 +29,13 @@ final class Workspace {
     var importingWorkspaceFolder = false
     var restoringBackup = false
     var runningDuePosts = false
+    var runningDraftRevisions = false
+    var runningMobileXGeneration = false
     var refreshingReplies = false
     var refreshingAnalytics: Set<SocialPlatform> = []
     private var lastIdeaQueueAttempt: [String: Date] = [:]
     var refreshingWorkSources = false
-    private var database: WorkspaceDatabase?
+    private(set) var database: WorkspaceDatabase?
     private var lastDataVersion: Int32?
 
     init(directory override: URL? = nil) {
@@ -111,8 +115,16 @@ final class Workspace {
             throw WorkspaceError("This item was permanently deleted. Create a new draft or idea instead.")
         }
         if record.kind == "draft" { record["title"] = record.draftTitle }
+        if record.kind == "newsletter" {
+            if record.fields["audience"] == nil || record.fields["audience"] as? String == "" { record["audience"] = "everyone" }
+            if record.fields["sendEmail"] == nil { record.fields["sendEmail"] = false }
+        }
         try validate(record)
         let current = records.first { $0.id == record.id }
+        if current?.fields["mobileGenerationPending"] as? Bool == true, record.body != current?.body {
+            record.fields["mobileGenerationPending"] = nil
+            record.fields["generationError"] = nil
+        }
         if record.kind == "draft", record.fields["image"] != nil, record.fields["video"] != nil {
             guard let current, !scheduling,
                   ["image", "video"].allSatisfy({ (record.fields[$0] as? NSDictionary) == (current.fields[$0] as? NSDictionary) }) else {
@@ -161,7 +173,7 @@ final class Workspace {
             }
         }
         record.markUpdated(after: current?["updatedAt"])
-        try database.put(record)
+        record = try database.put(record)
         try reload()
         return record
     }
@@ -243,17 +255,21 @@ final class Workspace {
         return ["file": name, "origin": "Attached"]
     }
 
-    func addComment(to record: WorkspaceRecord, text: String) throws {
+    func addComment(to record: WorkspaceRecord, text: String, revisionRequestID: String? = nil) throws {
         guard let database else { throw WorkspaceError("The workspace is unavailable.") }
         try withChanges {
             guard var current = records.first(where: { $0.id == record.id && $0.kind == record.kind }) else {
                 throw WorkspaceError("This item is no longer available.")
             }
+            if let revisionRequestID,
+               current.comments.contains(where: { $0["revisionRequestID"] as? String == revisionRequestID }) { return }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   text.utf16.count <= 4000, current.comments.count < 100 else {
                 throw WorkspaceError("Enter a comment of up to 4,000 characters. Each item can hold 100 comments.")
             }
-            current.fields["reviewComments"] = current.comments + [["text": text, "at": WorkspaceRecord.timestamp]]
+            var comment = ["text": text, "at": WorkspaceRecord.timestamp]
+            if current.kind == "draft" { comment["revisionRequestID"] = revisionRequestID }
+            current.fields["reviewComments"] = current.comments + [comment]
             try database.put(current)
             try reload()
         }
@@ -333,7 +349,7 @@ final class Workspace {
         }
     }
 
-    func updatePostText(_ input: WorkspaceRecord, title: String, text: String) throws {
+    func updatePostText(_ input: WorkspaceRecord, title: String, text: String, format: String? = nil) throws {
         try withChanges {
             guard var record = records.first(where: { $0.kind == input.kind && $0.id == input.id }),
                   record["updatedAt"] == input["updatedAt"] else {
@@ -353,6 +369,9 @@ final class Workspace {
             case "draft":
                 record["title"] = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 record["content"] = text
+                if let format, record["platform"] == "x", XPostStyle(rawValue: format) != nil {
+                    record["format"] = format
+                }
             default:
                 throw WorkspaceError("Choose an idea or post to edit.")
             }
@@ -396,11 +415,23 @@ final class Workspace {
             }
         }
         if record.kind == "newsletter" {
-            guard record["title"].utf16.count <= 300, record["subtitle"].utf16.count <= 1_000,
-                  record["body"].utf16.count <= 200_000, !record["body"].contains("\0"),
-                  ["everyone", "only_paid", "founding"].contains(record["audience"]),
-                  record.fields["sendEmail"] is Bool else {
-                throw WorkspaceError("Use a supported audience and up to 300 characters for the title, 1,000 for the subtitle, and 200,000 for the body.")
+            guard record["title"].utf16.count <= 300 else {
+                throw WorkspaceError("Shorten the title to 300 characters or less.")
+            }
+            guard record["subtitle"].utf16.count <= 1_000 else {
+                throw WorkspaceError("Shorten the subtitle to 1,000 characters or less.")
+            }
+            guard record["body"].utf16.count <= 200_000 else {
+                throw WorkspaceError("Shorten the newsletter to 200,000 characters or less.")
+            }
+            guard !record["body"].contains("\0") else {
+                throw WorkspaceError("Remove the invalid control character from the newsletter text.")
+            }
+            guard ["everyone", "only_paid", "founding"].contains(record["audience"]) else {
+                throw WorkspaceError("Choose an audience in Newsletter settings.")
+            }
+            guard record.fields["sendEmail"] is Bool else {
+                throw WorkspaceError("Check the Email subscribers setting in Newsletter settings.")
             }
         }
         if record.kind == "idea", record["text"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -567,7 +598,8 @@ extension Workspace {
                     throw WorkspaceError("The workspace changed after review. Review the restore again.")
                 }
                 let local = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
-                for input in backup.records where !plan.preservedIDs.contains(input.id) {
+                let rows = backup.records.filter { $0.kind == "project" } + backup.records.filter { $0.kind != "project" }
+                for input in rows where !plan.preservedIDs.contains(input.id) {
                     var row = backup.restored(input)
                     for key in ["image", "coverImage", "videoThumbnail"] {
                         if var image = row.fields[key] as? [String: Any],
@@ -729,6 +761,30 @@ extension Workspace {
             try database.put(locked)
             try reload()
             return receipt
+        }
+    }
+
+    func saveNewsletterEditor(_ edited: WorkspaceRecord, basedOn base: WorkspaceRecord) throws -> WorkspaceRecord {
+        try withChanges {
+            guard var current = records.first(where: { $0.kind == "newsletter" && $0.id == edited.id }) else {
+                guard (base.fields["revision"] as? Int ?? 0) == 0 else {
+                    throw WorkspaceError("This newsletter is no longer available.")
+                }
+                return try save(edited)
+            }
+            guard let body = NewsletterMerge.merge(base: base.body, mac: edited.body, mobile: current.body) else {
+                throw WorkspaceError("Both versions changed the same part of this newsletter. Your edits are still open here.")
+            }
+            current["body"] = body
+            for key in ["title", "subtitle", "audience"] where base[key] != edited[key] {
+                current[key] = edited[key]
+            }
+            for key in ["sendEmail", "coverImage"] {
+                if (base.fields[key] as? NSObject) != (edited.fields[key] as? NSObject) {
+                    current.fields[key] = edited.fields[key]
+                }
+            }
+            return try save(current)
         }
     }
 

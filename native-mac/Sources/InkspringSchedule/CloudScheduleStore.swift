@@ -54,6 +54,108 @@ public struct CloudScheduleStore {
         } catch CompanionLibraryError.disabled {
             // Older Mac releases never created a library.
         }
+        try await requireAccount(account)
+        do { _ = try await database.deleteRecordZone(withID: textZone(workspaceID)) }
+        catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem {}
+    }
+
+    private func textZone(_ workspaceID: UUID) -> CKRecordZone.ID {
+        .init(zoneName: "inkspring-text-\(workspaceID.uuidString.lowercased())")
+    }
+
+    private func textIndex(_ zone: CKRecordZone.ID) -> CKRecord.ID {
+        .init(recordName: "index", zoneID: zone)
+    }
+
+    private func textPart(_ number: Int, _ version: CompanionLibrary.TextVersion, _ zone: CKRecordZone.ID) -> CKRecord.ID {
+        .init(recordName: "\(version.digest)-\(number)", zoneID: zone)
+    }
+
+    public func loadLibraryText(_ version: CompanionLibrary.TextVersion, workspaceID: UUID, account: String) async throws -> Data {
+        try await verifyLibraryWorkspace(workspaceID, account: account)
+        let zone = textZone(workspaceID)
+        var data = Data()
+        guard version.partCount > 0 else { throw CompanionScheduleError.changed }
+        for start in stride(from: 0, to: version.partCount, by: 2) {
+            try Task.checkCancellation()
+            let ids = (start..<min(start + 2, version.partCount)).map { textPart($0, version, zone) }
+            let records = try await database.records(for: ids)
+            for id in ids {
+                guard let part = try records[id]?.get()["schedule"] as? Data else { throw CompanionScheduleError.changed }
+                data.append(part)
+            }
+        }
+        try await requireAccount(account)
+        return data
+    }
+
+    // Register the generation before saving its parts so a later sync can remove
+    // incomplete generations as well as ones replaced by an edit.
+    public func stageLibraryText(_ data: Data, version: CompanionLibrary.TextVersion, workspaceID: UUID, account: String) async throws {
+        try await verifyLibraryWorkspace(workspaceID, account: account)
+        let zone = textZone(workspaceID)
+        let indexID = textIndex(zone)
+        let existing = try await fetchTextIndex(zone)
+        if existing == nil {
+            _ = try await database.save(CKRecordZone(zoneID: zone))
+        }
+        let index = existing ?? CKRecord(recordType: Self.recordType, recordID: indexID)
+        var versions = try decodeTextIndex(index)
+        if !versions.contains(version) {
+            versions.append(version)
+            index["schedule"] = try JSONEncoder().encode(versions) as CKRecordValue
+            _ = try await database.save(index)
+        }
+        let size = CompanionLibrary.TextVersion.partSize
+        for start in stride(from: 0, to: version.partCount, by: 2) {
+            try Task.checkCancellation()
+            try await requireAccount(account)
+            let records = (start..<min(start + 2, version.partCount)).map { number in
+                let record = CKRecord(recordType: Self.recordType, recordID: textPart(number, version, zone))
+                let offset = number * size
+                record["schedule"] = data.subdata(in: offset..<min(offset + size, data.count)) as CKRecordValue
+                return record
+            }
+            let saved = try await database.modifyRecords(saving: records, deleting: [], savePolicy: .changedKeys, atomically: true)
+            for record in records {
+                guard let result = saved.saveResults[record.recordID] else { throw CompanionScheduleError.changed }
+                _ = try result.get()
+            }
+        }
+    }
+
+    public func pruneLibraryText(keeping version: CompanionLibrary.TextVersion?, workspaceID: UUID, account: String) async throws {
+        try await verifyLibraryWorkspace(workspaceID, account: account)
+        let zone = textZone(workspaceID)
+        guard let index = try await fetchTextIndex(zone) else { return }
+        let obsolete = try decodeTextIndex(index).filter { $0 != version }
+        guard !obsolete.isEmpty else { return }
+        for old in obsolete {
+            for start in stride(from: 0, to: old.partCount, by: 100) {
+                try await requireAccount(account)
+                let ids = (start..<min(start + 100, old.partCount)).map { textPart($0, old, zone) }
+                let removed = try await database.modifyRecords(saving: [], deleting: ids, atomically: false)
+                for id in ids {
+                    do {
+                        guard let result = removed.deleteResults[id] else { throw CompanionScheduleError.changed }
+                        try result.get()
+                    } catch let error as CKError where error.code == .unknownItem {}
+                }
+            }
+        }
+        index["schedule"] = try JSONEncoder().encode(version.map { [$0] } ?? []) as CKRecordValue
+        try await requireAccount(account)
+        _ = try await database.save(index)
+    }
+
+    private func fetchTextIndex(_ zone: CKRecordZone.ID) async throws -> CKRecord? {
+        do { return try await fetch(textIndex(zone)) }
+        catch let error as CKError where error.code == .zoneNotFound { return nil }
+    }
+
+    private func decodeTextIndex(_ record: CKRecord) throws -> [CompanionLibrary.TextVersion] {
+        guard let data = record["schedule"] as? Data else { return [] }
+        return try JSONDecoder().decode([CompanionLibrary.TextVersion].self, from: data)
     }
 
     private func verifyLibraryWorkspace(_ workspaceID: UUID, account: String) async throws {
@@ -75,7 +177,9 @@ public struct CloudScheduleStore {
             try change(&library)
             if current != nil && library == previous { return library }
             let bytes = try JSONEncoder().encode(library)
-            guard bytes.count < 512_000 else { throw CompanionScheduleError.oversized }
+            // The CloudKit record limit is 1 MB, including record overhead.
+            // Allow the library index and outbox to share this record.
+            guard bytes.count < 800_000 else { throw CompanionScheduleError.oversized }
             record["schedule"] = bytes as CKRecordValue
             try await requireAccount(account)
             do {

@@ -5,23 +5,23 @@ struct ScheduleView: View {
     let workspace: Workspace
     let open: (WorkspaceRecord) -> Void
     @Binding var focusDraftID: String?
+    @Binding var tab: ScheduleListing.Section
+    let revise: (WorkspaceRecord, @escaping (WorkspaceRecord) -> Void) -> Void
+    let reviewPublication: (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void
+    let chooseTime: (WorkspaceRecord, @escaping () -> Void) -> Void
+    let reviewNewsletter: (WorkspaceRecord, Bool, @escaping (WorkspaceRecord) -> Void) -> Void
     @Environment(\.openURL) private var openURL
-    @State private var tab = ScheduleListing.Section.scheduled
+    @Environment(\.scenePhase) private var scenePhase
     @State private var projectFilter: String?
     @State private var channelFilter: String?
-    @State private var selected: WorkspaceRecord?
-    @State private var publishing: WorkspaceRecord?
-    @State private var revising: WorkspaceRecord?
     @State private var manuallyPosted: WorkspaceRecord?
-    @State private var postingTime = Date.now.addingTimeInterval(3600)
-    @State private var chosenMinute = -1
-    @State private var linkedInDestinations: [LinkedInDestination] = []
-    @State private var chosenDestination = ""
-    @State private var tiktokReviewSlot: Date?
-    @State private var timeError: String?
+    @State private var cancellingNewsletter: WorkspaceRecord?
+    @State private var checkingNewsletter: WorkspaceRecord?
     @State private var returningIdea: Workspace.IdeaReturnPlan?
     @State private var generatingImages: Set<String> = []
     @State private var changingNotifications = false
+    @State private var notificationsDenied = false
+    @State private var notificationError: String?
 
     var body: some View {
         let listing = ScheduleListing(records: workspace.records, projectID: projectFilter, channel: channelFilter)
@@ -35,24 +35,7 @@ struct ScheduleView: View {
                                     subtitle: "Review drafts and choose when to send them.")
                         Spacer()
                     }
-                    HStack(spacing: 18) {
-                        Toggle("Automatic posting", isOn: Binding(get: {
-                            workspace.settings["autoPost"] as? Bool == true
-                        }, set: { enabled in
-                            workspace.perform { try workspace.set("autoPost", to: enabled) }
-                        }))
-                        Toggle("Schedule notifications", isOn: Binding(get: {
-                            workspace.settings[ScheduleNotifications.settingKey] as? Bool == true
-                        }, set: { enabled in
-                            changingNotifications = true
-                            Task {
-                                await workspace.setScheduleNotifications(enabled)
-                                changingNotifications = false
-                            }
-                        }))
-                        .disabled(changingNotifications)
-                        .help("Alert when a scheduled post needs review while automatic posting is on.")
-                    }
+                    postingControls
                     Label("\(totals[.scheduled].count) scheduled · \(totals[.ready].count) ready across all projects",
                           systemImage: "calendar")
                         .font(InkspringTypography.interface(13))
@@ -120,16 +103,8 @@ struct ScheduleView: View {
                 focusDraftID = nil
             }
         }
-        .sheet(item: $publishing) { draft in
-            PublicationReview(draft: draft, workspace: workspace) { _ in
-                publishing = nil
-                tab = .history
-            }
-        }
-        .sheet(item: $revising) { draft in
-            ScheduledDraftRevision(draft: draft, workspace: workspace) { updated in
-                if ScheduleListing.section(for: updated) == .ready { tab = .ready }
-            }
+        .task(id: scenePhase) {
+            if scenePhase == .active { notificationsDenied = await ScheduleNotifications.isDenied() }
         }
         .confirmationDialog("Record this post as published?", isPresented: Binding(
             get: { manuallyPosted != nil }, set: { if !$0 { manuallyPosted = nil } }
@@ -152,58 +127,83 @@ struct ScheduleView: View {
         } message: { plan in
             Text("“\(plan.ideaTitle)” will appear in Open. Its drafts and publishing history stay saved.")
         }
-        .sheet(item: $selected, onDismiss: { tiktokReviewSlot = nil }) { draft in
-            if let slot = tiktokReviewSlot {
-                PublicationReview(draft: draft, workspace: workspace, scheduleAt: slot) { _ in
-                    selected = nil
-                    tab = .scheduled
+        .confirmationDialog("Cancel the newsletter schedule?", isPresented: Binding(
+            get: { cancellingNewsletter != nil }, set: { if !$0 { cancellingNewsletter = nil } }
+        ), presenting: cancellingNewsletter) { item in
+            Button("Cancel schedule", role: .destructive) {
+                runNewsletterAction { try await Substack(workspace: workspace).cancel(item.id) }
+            }
+        } message: { _ in
+            Text("The newsletter stays saved as a draft on Substack.")
+        }
+        .confirmationDialog("Did you check the outcome in Substack?", isPresented: Binding(
+            get: { checkingNewsletter != nil }, set: { if !$0 { checkingNewsletter = nil } }
+        ), presenting: checkingNewsletter) { item in
+            Button("I checked Substack") {
+                runNewsletterAction { try await Substack(workspace: workspace).acknowledge(item.id) }
+            }
+        } message: { _ in
+            Text("Check your drafts, scheduled posts, and published posts before continuing.")
+        }
+    }
+
+    private var postingControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: Binding(get: {
+                workspace.settings["autoPost"] as? Bool == true
+            }, set: { enabled in
+                workspace.perform { try workspace.set("autoPost", to: enabled) }
+            })) {
+                postingLabel("Automatic posting",
+                             description: "Send eligible scheduled posts from your Mac at their chosen time. Keep it off to review and publish posts yourself.")
+            }
+            .toggleStyle(.switch)
+            .accessibilityLabel("Automatic posting")
+            StudioRule()
+            Toggle(isOn: Binding(get: {
+                workspace.settings[ScheduleNotifications.settingKey] as? Bool == true && !notificationsDenied
+            }, set: changeScheduleNotifications)) {
+                postingLabel("Schedule notifications",
+                             description: "Get an alert when a scheduled post needs attention while automatic posting is on.")
+            }
+            .toggleStyle(.switch)
+            .accessibilityLabel("Schedule notifications")
+            .disabled(changingNotifications)
+            if notificationsDenied {
+                Text("macOS has notifications turned off for Inkspring.")
+                    .font(.callout).foregroundStyle(palette.muted)
+                Button("Open Notification Settings", systemImage: "gearshape") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                        openURL(url)
+                    }
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Schedule \(draft.title)").font(.title2)
-                    if draft["platform"] == "linkedin" {
-                        if linkedInDestinations.isEmpty {
-                            Text("Connect LinkedIn in Connections before scheduling.").foregroundStyle(.secondary)
-                        } else {
-                            StudioLabeledChoice(title: "LinkedIn destination", selection: $chosenDestination,
-                                                options: linkedInDestinations.map(\.urn),
-                                                label: { urn in linkedInDestinations.first(where: { $0.urn == urn })?.name ?? "Choose a destination" })
-                        }
-                    }
-                    let slots = openHours(for: draft)
-                    if !slots.isEmpty {
-                        StudioFilterMenu(title: "Open posting hours", value: "Open posting hours") {
-                            ForEach(slots, id: \.self) { slot in
-                                Button(slot.formatted(date: .abbreviated, time: .shortened)) { postingTime = slot }
-                            }
-                        }
-                    }
-                    StudioDateTimePicker(selection: $postingTime, includesMinute: false)
-                    StudioLabeledChoice(title: "Posting minute", selection: $chosenMinute, options: Array(-1..<60),
-                                        label: { $0 < 0 ? "Choose automatically" : String(format: "%02d", $0) })
-                    if let timeError { Text(timeError).foregroundStyle(.red) }
-                    HStack {
-                        Button("Cancel") { selected = nil }.keyboardShortcut(.cancelAction)
-                        Spacer()
-                        Button(draft["platform"] == "tiktok" ? "Review TikTok post…" : "Schedule") {
-                            do {
-                                let slot = try workspace.preferredPostingDate(for: draft["platform"], hour: postingTime, minute: chosenMinute)
-                                if draft["platform"] == "tiktok" {
-                                    tiktokReviewSlot = slot
-                                } else {
-                                    try workspace.scheduleDraft(draft, at: slot, linkedin: selectedLinkedInDestination)
-                                    selected = nil
-                                    tab = .scheduled
-                                }
-                            } catch { timeError = error.localizedDescription }
-                        }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(draft["platform"] == "linkedin" && selectedLinkedInDestination == nil)
-                    }
-                }
-                .padding(25)
-                .frame(width: 420)
-                .studioAppearance(palette)
+            }
+            if let notificationError { Text(notificationError).foregroundStyle(palette.danger) }
+        }
+        .padding(14)
+        .studioSurface()
+    }
+
+    private func postingLabel(_ title: String, description: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.headline)
+            Text(description)
+                .font(.callout)
+                .foregroundStyle(palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func changeScheduleNotifications(_ enabled: Bool) {
+        changingNotifications = true
+        notificationError = nil
+        Task {
+            defer { changingNotifications = false }
+            do { try await workspace.setScheduleNotifications(enabled) }
+            catch {
+                notificationsDenied = await ScheduleNotifications.isDenied()
+                if !notificationsDenied { notificationError = error.localizedDescription }
             }
         }
     }
@@ -246,11 +246,15 @@ struct ScheduleView: View {
                     StudioFilterMenu(title: "Post actions", value: "Actions") {
                         if !draft.body.isEmpty {
                             if draft.fields["manualQuote"] as? Bool != true {
-                                Button("Review & publish…") { publishing = draft }
+                                Button("Review & publish…") { reviewPublication(draft, nil) { _ in tab = .history } }
                             }
                             Button("Record as posted…") { manuallyPosted = draft }
                             if draft.scheduleStatus != "skipped" {
-                                Button("Rewrite with notes…") { revising = draft }
+                                Button("Rewrite with notes…") {
+                                    revise(draft) { updated in
+                                        if ScheduleListing.section(for: updated) == .ready { tab = .ready }
+                                    }
+                                }
                             }
                         }
                         if ["ready", "removed", "failed", "manual", "queued", "due"].contains(draft.scheduleStatus) {
@@ -280,7 +284,7 @@ struct ScheduleView: View {
                 if ["ready", "queued", "failed", "removed"].contains(draft.scheduleStatus),
                    draft.fields["manualQuote"] as? Bool != true {
                     Button("Choose a time…") {
-                        chooseTime(for: draft)
+                        chooseTime(draft) { tab = .scheduled }
                     }
                 }
             }
@@ -304,7 +308,10 @@ struct ScheduleView: View {
     }
 
     private func newsletterCard(_ item: WorkspaceRecord) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let state = item["state"]
+        let editable = ["draft", "synced"].contains(state)
+        let reschedulable = state == "scheduled"
+        return VStack(alignment: .leading, spacing: 8) {
             RecordCard(record: item)
             HStack {
                 Text(projectName(for: item)).foregroundStyle(.secondary)
@@ -313,7 +320,53 @@ struct ScheduleView: View {
                     Text(date.formatted(date: .abbreviated, time: .shortened))
                 }
                 Spacer()
-                Button("Open newsletter") { open(item) }
+                Button(editable ? "Edit draft" : "View newsletter") { open(item) }
+                StudioFilterMenu(title: "Newsletter actions", value: "Actions") {
+                    if editable {
+                        Button("Save to Substack") {
+                            runNewsletterAction { try await Substack(workspace: workspace).sync(item.id) }
+                        }
+                        .disabled(Substack(workspace: workspace).selected == nil || item.body.isEmpty)
+                        Button("Review & publish…") { beginNewsletterSend(item, scheduling: false) }
+                    }
+                    if reschedulable {
+                        Button("Cancel schedule…") { cancellingNewsletter = item }
+                    }
+                    if !item["remoteId"].isEmpty {
+                        Button("Check status") {
+                            runNewsletterAction { try await Substack(workspace: workspace).refresh(item.id) }
+                        }
+                    }
+                    if state == "uncertain" {
+                        Button("Confirm Substack check…") { checkingNewsletter = item }
+                    }
+                    if let url = Substack.editorURL(item) {
+                        StudioExternalLink("Open in Substack", destination: url)
+                    }
+                    Button("Copy text", systemImage: "doc.on.doc") { copy(item.body) }
+                }
+                .disabled(workspace.substackBusy)
+                if editable || reschedulable {
+                    Button("Choose a time…") { beginNewsletterSend(item, scheduling: true) }
+                        .disabled(workspace.substackBusy)
+                }
+            }
+        }
+    }
+
+    private func beginNewsletterSend(_ item: WorkspaceRecord, scheduling: Bool) {
+        reviewNewsletter(item, scheduling) { saved in
+            if let section = ScheduleListing.section(for: saved) { tab = section }
+        }
+    }
+
+    private func runNewsletterAction(_ action: @escaping @MainActor () async throws -> WorkspaceRecord) {
+        Task {
+            do {
+                let updated = try await action()
+                if let section = ScheduleListing.section(for: updated) { tab = section }
+            } catch {
+                workspace.error = error.localizedDescription
             }
         }
     }
@@ -327,28 +380,6 @@ struct ScheduleView: View {
         case "published": "Published on Substack"
         default: "Newsletter draft"
         }
-    }
-
-    private var selectedLinkedInDestination: LinkedInDestination? {
-        linkedInDestinations.first { $0.urn == chosenDestination }
-    }
-
-    private func chooseTime(for draft: WorkspaceRecord) {
-        linkedInDestinations = draft["platform"] == "linkedin" ? (try? workspace.socialAccounts.savedLinkedInDestinations()) ?? [] : []
-        let saved = LinkedInDestination(fields: draft.fields["linkedinDestination"] as? [String: Any])
-        chosenDestination = saved?.urn ?? linkedInDestinations.first?.urn ?? ""
-        postingTime = (draft.schedule["slotAt"] as? String).flatMap(scheduleDate)
-            .flatMap { $0 > .now ? $0 : nil } ?? openHours(for: draft).first ?? Date.now.addingTimeInterval(3600)
-        chosenMinute = workspace.postingMinute(for: draft["platform"])
-        timeError = nil
-        selected = draft
-    }
-
-    private func openHours(for draft: WorkspaceRecord) -> [Date] {
-        var proposed = draft
-        if let destination = selectedLinkedInDestination { proposed.fields["linkedinDestination"] = destination.fields }
-        return PostScheduling.proposedTimes(for: proposed, in: workspace.records, linkedInPersonalURN: linkedInDestinations.first?.urn,
-                                            window: workspace.postingWindow(for: draft["platform"]))
     }
 
     private func generateImage(_ draft: WorkspaceRecord) async {
@@ -375,64 +406,150 @@ struct ScheduleView: View {
     }
 }
 
-private struct ScheduledDraftRevision: View {
+struct ScheduleTimePage: View {
+    let draft: WorkspaceRecord
+    let workspace: Workspace
+    let close: () -> Void
+    let scheduled: () -> Void
+    let reviewPublication: (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void
+    @State private var postingTime = Date.now.addingTimeInterval(3600)
+    @State private var chosenMinute = -1
+    @State private var linkedInDestinations: [LinkedInDestination] = []
+    @State private var chosenDestination = ""
+    @State private var timeError: String?
+
+    private var selectedLinkedInDestination: LinkedInDestination? {
+        linkedInDestinations.first { $0.urn == chosenDestination }
+    }
+
+    private var openHours: [Date] {
+        var proposed = draft
+        if let destination = selectedLinkedInDestination { proposed.fields["linkedinDestination"] = destination.fields }
+        return PostScheduling.proposedTimes(for: proposed, in: workspace.records, linkedInPersonalURN: linkedInDestinations.first?.urn,
+                                            window: workspace.postingWindow(for: draft["platform"]))
+    }
+
+    var body: some View {
+        StudioEditorPage(title: "Choose a posting time") {
+            Button("Cancel", role: .cancel, action: close).keyboardShortcut(.cancelAction)
+            Button(draft["platform"] == "tiktok" ? "Review TikTok post…" : "Schedule", action: schedule)
+                .modifier(PrimaryActionStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft["platform"] == "linkedin" && selectedLinkedInDestination == nil)
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(draft.title).font(InkspringTypography.editorial(24))
+                    if draft["platform"] == "linkedin" {
+                        if linkedInDestinations.isEmpty {
+                            Text("Connect LinkedIn in Connections before scheduling.").foregroundStyle(.secondary)
+                        } else {
+                            StudioLabeledChoice(title: "LinkedIn destination", selection: $chosenDestination,
+                                                options: linkedInDestinations.map(\.urn),
+                                                label: { urn in linkedInDestinations.first { $0.urn == urn }?.name ?? "Choose a destination" })
+                        }
+                    }
+                    let slots = openHours
+                    if !slots.isEmpty {
+                        StudioFilterMenu(title: "Open posting hours", value: "Open posting hours") {
+                            ForEach(slots, id: \.self) { slot in
+                                Button(slot.formatted(date: .abbreviated, time: .shortened)) { postingTime = slot }
+                            }
+                        }
+                    }
+                    StudioDateTimePicker(selection: $postingTime, includesMinute: false)
+                    StudioLabeledChoice(title: "Posting minute", selection: $chosenMinute, options: Array(-1..<60),
+                                        label: { $0 < 0 ? "Choose automatically" : String(format: "%02d", $0) })
+                    if let timeError { Text(timeError).foregroundStyle(.red) }
+                }
+                .frame(maxWidth: 920, alignment: .leading)
+                .studioPage()
+            }
+        }
+        .onAppear {
+            if draft["platform"] == "linkedin" {
+                linkedInDestinations = (try? workspace.socialAccounts.savedLinkedInDestinations()) ?? []
+            }
+            let saved = LinkedInDestination(fields: draft.fields["linkedinDestination"] as? [String: Any])
+            chosenDestination = saved?.urn ?? linkedInDestinations.first?.urn ?? ""
+            postingTime = (draft.schedule["slotAt"] as? String).flatMap(scheduleDate)
+                .flatMap { $0 > .now ? $0 : nil } ?? openHours.first ?? Date.now.addingTimeInterval(3600)
+            chosenMinute = workspace.postingMinute(for: draft["platform"])
+        }
+    }
+
+    private func schedule() {
+        do {
+            let slot = try workspace.preferredPostingDate(for: draft["platform"], hour: postingTime, minute: chosenMinute)
+            if draft["platform"] == "tiktok" {
+                reviewPublication(draft, slot) { _ in scheduled() }
+            } else {
+                try workspace.scheduleDraft(draft, at: slot, linkedin: selectedLinkedInDestination)
+                scheduled()
+                close()
+            }
+        } catch { timeError = error.localizedDescription }
+    }
+}
+
+struct ScheduledDraftRevision: View {
     @State var draft: WorkspaceRecord
     let workspace: Workspace
     let saved: (WorkspaceRecord) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
     @State private var notes = ""
     @State private var request: String?
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Rewrite with notes").font(.title2)
-            Text(draft.title).font(.headline)
-            StudioScrollView {
-                Text(draft.body).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 200)
-            if ["queued", "due"].contains(draft.scheduleStatus) {
-                Text("Changing the wording moves this post to Ready to schedule.").foregroundStyle(.secondary)
-            }
-            if !draft["notesReply"].isEmpty {
-                Text(draft["notesReply"]).foregroundStyle(.secondary)
-            }
-            TextField("Revision notes", text: $notes, axis: .vertical)
-                .lineLimit(3...6)
-                .studioInput()
+        StudioEditorPage(title: "Rewrite with notes") {
+            Button("Done", action: close).keyboardShortcut(.cancelAction)
                 .disabled(request != nil)
-            if let error { Text(error).foregroundStyle(.red) }
-            HStack {
-                if !draft["previousContent"].isEmpty {
-                    Button("Restore earlier wording") {
-                        do {
-                            draft = try ContentStudio(workspace: workspace).undoRewrite(draft)
-                            error = nil
-                            saved(draft)
-                        } catch {
-                            self.error = error.localizedDescription
+            if request != nil {
+                ProgressView("Rewriting…").controlSize(.small)
+            } else {
+                Button("Rewrite draft") {
+                    error = nil
+                    request = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .modifier(PrimaryActionStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || notes.utf16.count > 4_000)
+            }
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(draft.title).font(.headline)
+                    Text(draft.body).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .studioSurface()
+                    if ["queued", "due"].contains(draft.scheduleStatus) {
+                        Text("Changing the wording moves this post to Ready to schedule.").foregroundStyle(.secondary)
+                    }
+                    if !draft["notesReply"].isEmpty {
+                        Text(draft["notesReply"]).foregroundStyle(.secondary)
+                    }
+                    DraftBodyField(text: $notes, label: "Revision notes", minHeight: 140)
+                        .disabled(request != nil)
+                    if let error { Text(error).foregroundStyle(.red) }
+                    if !draft["previousContent"].isEmpty {
+                        Button("Restore earlier wording") {
+                            do {
+                                draft = try ContentStudio(workspace: workspace).undoRewrite(draft)
+                                error = nil
+                                saved(draft)
+                            } catch {
+                                self.error = error.localizedDescription
+                            }
                         }
+                        .disabled(request != nil)
                     }
-                    .disabled(request != nil)
                 }
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-                if request != nil {
-                    ProgressView("Rewriting…").controlSize(.small)
-                } else {
-                    Button("Rewrite draft") {
-                        error = nil
-                        request = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || notes.utf16.count > 4_000)
-                }
+                .frame(maxWidth: 920, alignment: .leading)
+                .studioPage()
             }
         }
-        .padding(24)
-        .frame(width: 500)
         .task(id: request) {
             guard let request else { return }
             defer { self.request = nil }

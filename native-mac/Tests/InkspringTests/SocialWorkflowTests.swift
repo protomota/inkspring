@@ -73,14 +73,22 @@ import Testing
     }
 }
 
-@Test @MainActor func xThreadResumesOnlyAfterConfirmedSteps() async throws {
+@Test(arguments: ["thread", "followup"]) @MainActor func xThreadResumesOnlyAfterConfirmedSteps(format: String) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let workspace = Workspace(directory: root)
-    var draft = WorkspaceRecord.new("draft", projectID: workspace.projectID)
-    draft["title"] = "Thread fixture"
-    draft["format"] = "thread"
-    draft["content"] = "First post.\n\nSecond post."
+    try workspace.set("mcpEnabled", to: true)
+    let followUp = "Read more: https://example.com/newsletter"
+    let result = await AgentMCP(workspace: workspace).handle([
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": ["name": "save_x_thread", "arguments": [
+            "title": "Thread fixture", "project_id": workspace.projectID,
+            "posts": ["First post.\n\nStill the first post.", followUp]
+        ]]
+    ])
+    let saved = try #require((result?["result"] as? [String: Any])?["structuredContent"] as? [String: Any])
+    var draft = try #require(workspace.drafts.first { $0.id == saved["id"] as? String })
+    draft["format"] = format
     draft = try workspace.save(draft)
     var requests: [[String: Any]] = []
     let transport = SocialTransport { request in
@@ -100,13 +108,41 @@ import Testing
     let receipt = try await publisher.publish(publisher.review(current))
     #expect(receipt["status"] == "published")
     #expect(requests.count == 3)
-    #expect(requests[0]["text"] as? String == "First post.")
+    #expect(requests[0]["text"] as? String == "First post.\nStill the first post.")
+    #expect(requests[0]["reply"] == nil)
+    #expect(requests[2]["text"] as? String == followUp)
     #expect((requests[2]["reply"] as? [String: String])?["in_reply_to_tweet_id"] == "101")
     #expect(workspace.drafts.first { $0.id == draft.id }?.scheduleStatus == "posted")
     let posted = try #require(workspace.drafts.first { $0.id == draft.id })
     let repeatReview = try await publisher.review(posted)
     await #expect(throws: WorkspaceError.self) { _ = try await publisher.publish(repeatReview) }
     #expect(requests.count == 3)
+}
+
+@Test @MainActor func xThreePostThreadChainsEveryReplyToThePreviousPost() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspace = Workspace(directory: root)
+    var draft = WorkspaceRecord.new("draft", projectID: workspace.projectID)
+    draft["title"] = "Three-post thread"
+    draft["content"] = "Opening post.\n\nSecond post.\n\nMore: https://example.com/"
+    draft["format"] = "thread"
+    draft = try workspace.save(draft)
+    var requests: [[String: Any]] = []
+    let publisher = SocialPublisher(workspace: workspace, transport: SocialTransport { request in
+        let body = try #require(request.httpBody)
+        requests.append(try #require(JSONSerialization.jsonObject(with: body) as? [String: Any]))
+        let data = try JSONSerialization.data(withJSONObject: ["data": ["id": "\(100 + requests.count)"]])
+        let url = try #require(request.url)
+        return (data, try #require(HTTPURLResponse(url: url, statusCode: 201,
+                                                 httpVersion: nil, headerFields: nil)))
+    }, authorize: { _ in account })
+    let receipt = try await publisher.publish(publisher.review(draft))
+    #expect(receipt["status"] == "published")
+    #expect(requests.count == 3)
+    #expect(requests[0]["reply"] == nil)
+    #expect((requests[1]["reply"] as? [String: String])?["in_reply_to_tweet_id"] == "101")
+    #expect((requests[2]["reply"] as? [String: String])?["in_reply_to_tweet_id"] == "102")
 }
 
 private let account = ManagedSocialAccount(

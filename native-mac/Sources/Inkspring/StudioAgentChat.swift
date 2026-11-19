@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 
-enum StudioChatAgent: String, CaseIterable, Identifiable {
+enum StudioChatAgent: String, CaseIterable, Codable, Identifiable {
     case codex, claude
     var id: Self { self }
     var title: String { self == .codex ? "Codex" : "Claude" }
@@ -203,33 +203,119 @@ struct StudioAgentLabel: View {
     }
 }
 
-@MainActor @Observable
-final class StudioAgentChat {
-    struct Entry: Identifiable {
-        let id = UUID()
+struct StudioAgentConversation: Codable, Identifiable {
+    struct Entry: Codable, Identifiable {
+        var id = UUID()
+        var sentAt = Date.now
         let role: String
         let text: String
         var agent: StudioChatAgent? = nil
     }
+
+    var id = UUID()
+    var entries: [Entry] = []
+    var updatedAt: Date { entries.last?.sentAt ?? .distantPast }
+    var title: String {
+        let firstPrompt = entries.first?.text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Untitled chat"
+        return firstPrompt.count > 70 ? String(firstPrompt.prefix(70)) + "…" : firstPrompt
+    }
+}
+
+@MainActor @Observable
+final class StudioAgentChat {
     var message = ""
-    private(set) var entries: [Entry] = []
+    private(set) var history: [StudioAgentConversation] = []
+    private(set) var hasSavedChats = false
+    private(set) var currentID: UUID?
     private(set) var task: Task<Void, Never>?
     private(set) var error: String?
+    @ObservationIgnored private var database: WorkspaceDatabase?
+    @ObservationIgnored private var projectID = ""
+    private let reply: (StudioChatAgent, String, String) async throws -> String
+
+    init(reply: @escaping (StudioChatAgent, String, String) async throws -> String = { agent, project, prompt in
+             try await agent.reply(project: project, prompt: prompt)
+         }) {
+        self.reply = reply
+    }
+
+    var entries: [StudioAgentConversation.Entry] { history.first { $0.id == currentID }?.entries ?? [] }
+
     var canSend: Bool {
         task == nil && !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && message.utf16.count <= 4_000
     }
 
-    func clear() {
-        guard task == nil else { return }
-        entries = []
-        message = ""
-        error = nil
+    var recentPrompts: [String] {
+        var seen = Set<String>()
+        let prompts = history.flatMap(\.entries).filter { $0.role == "You" }.sorted { $0.sentAt > $1.sentAt }
+        var recent: [String] = []
+        for prompt in prompts where seen.insert(prompt.text).inserted {
+            recent.append(prompt.text)
+            if recent.count == 5 { break }
+        }
+        return recent
     }
 
-    func send(to agent: StudioChatAgent, project: WorkspaceRecord) {
-        guard canSend else { return }
-        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = ["history": entries.suffix(16).map { ["role": $0.role, "text": $0.text] },
+    func load(projectID: String, database: WorkspaceDatabase?) {
+        self.database = database
+        self.projectID = projectID
+        do { try refreshHistory() }
+        catch { self.error = error.localizedDescription }
+    }
+
+    private func refreshHistory() throws {
+        history = try database?.agentChats(projectID: projectID) ?? []
+        hasSavedChats = try !history.isEmpty || (database?.hasAgentChats() ?? false)
+        if let id = currentID, !history.contains(where: { $0.id == id }) { currentID = nil }
+    }
+
+    func open(_ id: UUID?) {
+        guard task == nil else { return }
+        error = nil
+        do {
+            try refreshHistory()
+            currentID = id.flatMap { selected in history.contains { $0.id == selected } ? selected : nil }
+            message = ""
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func delete(_ id: UUID? = nil) {
+        guard task == nil, let database else { return }
+        error = nil
+        do {
+            try database.deleteAgentChats(projectID: projectID, chatID: id)
+            if id == nil || id == currentID {
+                currentID = nil
+                message = ""
+            }
+            try refreshHistory()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func send(_ quickPrompt: String? = nil, to agent: StudioChatAgent, project: WorkspaceRecord) {
+        let input = quickPrompt ?? message
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard task == nil, !text.isEmpty, input.utf16.count <= 4_000,
+              projectID == project.id, let database else { return }
+        let chatID: UUID
+        let previous: [StudioAgentConversation.Entry]
+        do {
+            (chatID, previous) = try database.transaction {
+                try refreshHistory()
+                let saved = history.first { $0.id == currentID }
+                var chat = saved ?? StudioAgentConversation()
+                let previous = chat.entries
+                chat.entries.append(.init(role: "You", text: text))
+                try database.saveAgentChat(chat, projectID: project.id, isNew: saved == nil)
+                return (chat.id, previous)
+            }
+            currentID = chatID
+            try refreshHistory()
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        let context = ["history": previous.suffix(16).map { ["role": $0.role, "text": $0.text] },
                        "message": text, "project": project.title] as [String: Any]
         guard let data = try? JSONSerialization.data(withJSONObject: context) else { return }
         let prompt = """
@@ -238,13 +324,18 @@ final class StudioAgentChat {
         \(String(decoding: data, as: UTF8.self))
         """
         error = nil
-        message = ""
-        entries.append(.init(role: "You", text: text))
+        if quickPrompt == nil { message = "" }
         task = Task {
             defer { task = nil }
             do {
-                let reply = try await agent.reply(project: project.id, prompt: prompt)
-                entries.append(.init(role: "Agent", text: reply, agent: agent))
+                let reply = try await reply(agent, project.id, prompt)
+                try database.transaction {
+                    try refreshHistory()
+                    guard var chat = history.first(where: { $0.id == chatID }) else { return }
+                    chat.entries.append(.init(role: "Agent", text: reply, agent: agent))
+                    try database.saveAgentChat(chat, projectID: project.id, isNew: false)
+                }
+                try refreshHistory()
             } catch is CancellationError {
                 error = "Stopped."
             } catch {
@@ -262,8 +353,24 @@ struct StudioAgentChatView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("studioChatAgent") private var agent = StudioChatAgent.codex
     @FocusState private var focused: Bool
+    @State private var confirmsDeletion = false
+    @State private var deletionTarget: UUID?
 
     private var enabled: Bool { workspace.settings["mcpEnabled"] as? Bool == true }
+    private var canAsk: Bool {
+        enabled && chat.task == nil && workspace.project != nil && workspace.database != nil && agent.executable != nil
+    }
+    private static let examples = [
+        "Which ideas would make good newsletters?",
+        "Which drafts are closest to ready?",
+        "Suggest stronger openings for my latest draft.",
+        "What themes keep coming up in my ideas?"
+    ]
+
+    private func ask(_ prompt: String? = nil) {
+        guard canAsk, let project = workspace.project else { return }
+        chat.send(prompt, to: agent, project: project)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -278,8 +385,17 @@ struct StudioAgentChatView: View {
                 .disabled(chat.task != nil)
                 Text(workspace.project?.title ?? "").foregroundStyle(palette.muted).lineLimit(1)
                 Spacer()
-                Button("New chat", systemImage: "plus") { chat.clear(); focused = true }
-                    .disabled(chat.entries.isEmpty || chat.task != nil)
+                if !chat.entries.isEmpty && !chat.recentPrompts.isEmpty {
+                    Menu("Recent prompts", systemImage: "clock.arrow.circlepath") {
+                        ForEach(chat.recentPrompts, id: \.self) { prompt in
+                            Button(String(prompt.prefix(96)) + (prompt.count > 96 ? "…" : "")) { ask(prompt) }
+                        }
+                    }
+                    .disabled(!canAsk)
+                }
+                historyMenu
+                Button("New chat", systemImage: "plus") { chat.open(nil); focused = true }
+                    .disabled(chat.currentID == nil || chat.task != nil)
             }
             ScrollViewReader { proxy in
                 StudioScrollView {
@@ -287,11 +403,10 @@ struct StudioAgentChatView: View {
                         if chat.entries.isEmpty {
                             Text("Ask about this project’s drafts, ideas, or newsletters, or get help with wording.")
                                 .foregroundStyle(palette.muted)
-                            Button("Which ideas would make good newsletters?") {
-                                chat.message = "Which ideas in this project would make good newsletters?"
-                                focused = true
+                            promptButtons("Try asking", prompts: Self.examples)
+                            if !chat.recentPrompts.isEmpty {
+                                promptButtons("Recent prompts", prompts: chat.recentPrompts)
                             }
-                            .disabled(!enabled)
                         }
                         ForEach(chat.entries) { entry in
                             VStack(alignment: .leading, spacing: 5) {
@@ -315,6 +430,9 @@ struct StudioAgentChatView: View {
                 }
                 .studioSurface()
                 .onChange(of: chat.entries.count) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: chat.currentID) { _, id in
+                    if id != nil { proxy.scrollTo("end", anchor: .bottom) }
+                }
                 .onChange(of: chat.error) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
             }
             if !enabled {
@@ -340,17 +458,75 @@ struct StudioAgentChatView: View {
                     Button("Stop", systemImage: "stop.fill") { task.cancel() }
                 } else {
                     Button("Send", systemImage: "arrow.up") {
-                        if let project = workspace.project { chat.send(to: agent, project: project) }
+                        ask()
                     }
                     .modifier(PrimaryActionStyle())
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!enabled || !chat.canSend || agent.executable == nil)
+                    .disabled(!canAsk || !chat.canSend)
                 }
             }
         }
         .padding(24)
         .frame(width: 620, height: 570)
-        .onAppear { focused = enabled }
+        .onAppear {
+            chat.load(projectID: workspace.projectID, database: workspace.database)
+            focused = enabled
+        }
         .onDisappear { chat.task?.cancel() }
+        .confirmationDialog(deletionTarget == nil ? "Delete all chat history?" : "Delete this chat?",
+                            isPresented: $confirmsDeletion, titleVisibility: .visible) {
+            Button(deletionTarget == nil ? "Delete all chats" : "Delete chat", role: .destructive) {
+                chat.delete(deletionTarget)
+            }
+        } message: {
+            Text(deletionTarget == nil
+                 ? "This permanently removes saved chats and recent prompts for every project in this workspace."
+                 : "This permanently removes the conversation and its messages.")
+        }
+    }
+
+    private var historyMenu: some View {
+        Menu("History", systemImage: "clock") {
+            if chat.history.isEmpty {
+                Text("No chats in this project")
+            }
+            ForEach(chat.history) { conversation in
+                Button {
+                    chat.open(conversation.id)
+                    focused = true
+                } label: {
+                    Label(conversation.title, systemImage: conversation.id == chat.currentID ? "checkmark" : "bubble")
+                }
+            }
+            if chat.hasSavedChats {
+                Divider()
+                if let currentID = chat.currentID {
+                    Button("Delete this chat…", role: .destructive) {
+                        deletionTarget = currentID
+                        confirmsDeletion = true
+                    }
+                }
+                Button("Delete all chat history…", role: .destructive) {
+                    deletionTarget = nil
+                    confirmsDeletion = true
+                }
+            }
+        }
+        .disabled(chat.task != nil)
+    }
+
+    private func promptButtons(_ title: String, prompts: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(palette.muted)
+            ForEach(prompts, id: \.self) { prompt in
+                Button {
+                    ask(prompt)
+                } label: {
+                    Text(prompt).lineLimit(1)
+                }
+                .help(prompt)
+            }
+        }
+        .disabled(!canAsk)
     }
 }

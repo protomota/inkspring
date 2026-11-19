@@ -18,6 +18,7 @@
 		A00000000000000000000038 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002A /* PrivacyInfo.xcprivacy */; };
 		A00000000000000000000039 /* MobileSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002B /* MobileSettings.swift */; };
 		A0000000000000000000003A /* Sources/Inkspring/StudioAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002C /* Sources/Inkspring/StudioAppearance.swift */; };
+		FC000000000000000000003A /* StudioProofreading.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC000000000000000000002C /* StudioProofreading.swift */; };
 		A0000000000000000000003B /* Sources/Inkspring/InkspringCommunity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002D /* Sources/Inkspring/InkspringCommunity.swift */; };
 		A0000000000000000000003C /* MobileTips.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000002E /* MobileTips.swift */; };
 		A0000000000000000000003D = {isa = PBXBuildFile; fileRef = A0000000000000000000002F; };
@@ -41,6 +42,7 @@
 		A0000000000000000000002A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A0000000000000000000002B /* MobileSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSettings.swift; sourceTree = "<group>"; };
 		A0000000000000000000002C /* Sources/Inkspring/StudioAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/StudioAppearance.swift; sourceTree = SOURCE_ROOT; };
+		FC000000000000000000002C /* StudioProofreading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/StudioProofreading.swift; sourceTree = SOURCE_ROOT; };
 		A0000000000000000000002D /* Sources/Inkspring/InkspringCommunity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Inkspring/InkspringCommunity.swift; sourceTree = SOURCE_ROOT; };
 		A0000000000000000000002E /* MobileTips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTips.swift; sourceTree = "<group>"; };
 		A233B3E230A8FE0100BCE10F /* InkspringTips.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; name = InkspringTips.storekit; path = iPhone/InkspringTips.storekit; sourceTree = "<group>"; };
@@ -83,6 +85,7 @@
 				A0000000000000000000002A /* PrivacyInfo.xcprivacy */,
 				A0000000000000000000002B /* MobileSettings.swift */,
 				A0000000000000000000002C /* Sources/Inkspring/StudioAppearance.swift */,
+				FC000000000000000000002C /* StudioProofreading.swift */,
 				A0000000000000000000002D /* Sources/Inkspring/InkspringCommunity.swift */,
 				A0000000000000000000002E /* MobileTips.swift */,
 				A0000000000000000000002F,
@@ -208,6 +211,7 @@
 				B00000000000000000000042 /* SupportContracts.swift in Sources */,
 				A00000000000000000000039 /* MobileSettings.swift in Sources */,
 				A0000000000000000000003A /* Sources/Inkspring/StudioAppearance.swift in Sources */,
+				FC000000000000000000003A /* StudioProofreading.swift in Sources */,
 				A0000000000000000000003B /* Sources/Inkspring/InkspringCommunity.swift in Sources */,
 				A0000000000000000000003C /* MobileTips.swift in Sources */,
 				A0000000000000000000003D,

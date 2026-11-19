@@ -1,9 +1,22 @@
 import CloudKit
 import SwiftUI
 
+private extension CompanionLibrary.Item {
+    var revisionDate: Date? {
+        (try? Date(revision, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+            ?? (try? Date(revision, strategy: .iso8601))
+    }
+}
+
 @MainActor @Observable
 final class MobileLibrary {
-    var snapshot: CompanionLibrary?
+    private struct LibraryState {
+        var snapshot: CompanionLibrary?
+        var outbox = CompanionLibraryOutbox()
+    }
+
+    private var state = LibraryState()
+    var snapshot: CompanionLibrary? { state.snapshot }
     var error: String?
     var busy = false
     private(set) var lastCheck: Date?
@@ -14,15 +27,46 @@ final class MobileLibrary {
     private var account: String?
     private var accountRevision = UUID()
     private var store: CloudScheduleStore?
+    private var syncedText: (workspace: UUID, version: CompanionLibrary.TextVersion, data: Data)?
     private let defaults = UserDefaults.standard
     private static let outboxKey = "inkspring.mobile.libraryOutbox.v1"
     private static let legacyIdeasKey = "inkspring.mobile.localIdeas.v1"
-    private var outbox = CompanionLibraryOutbox()
+    private var outbox: CompanionLibraryOutbox { state.outbox }
     private var outboxLoaded = false
+    private var newsletterRefreshPending = false
+#if DEBUG
+    private var staleFixtureSnapshot: CompanionLibrary?
+#endif
+
+    struct NewsletterEditRecovery: Codable {
+        let revision: String
+        let base: String
+        let markdown: String
+    }
+
+    func newsletterRecoveryKey(for itemID: String, workspaceID: UUID) -> String? {
+        guard let account, snapshot?.workspaceID == workspaceID else { return nil }
+        return "inkspring.mobile.newsletterRecovery.\(account).\(workspaceID).\(itemID)"
+    }
+
+    func recoverNewsletterEdit(key: String) -> NewsletterEditRecovery? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(NewsletterEditRecovery.self, from: data)
+    }
+
+    func storeNewsletterRecovery(_ edit: NewsletterEditRecovery?, key: String) {
+        guard let edit else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        if let data = try? JSONEncoder().encode(edit) {
+            defaults.set(data, forKey: key)
+        }
+    }
 
     var pendingIdeas: [CompanionLibraryOutbox.Entry] {
         outbox.entries.reversed().filter {
-            $0.action == .addIdea && ($0.account == nil || $0.account == account)
+            $0.action == .addIdea && $0.generatesXDraft != true && ($0.account == nil || $0.account == account)
                 && ($0.workspaceID == nil || $0.workspaceID == snapshot?.workspaceID || snapshot == nil)
                 && !isDeleting($0.id.uuidString.lowercased())
         }
@@ -45,6 +89,44 @@ final class MobileLibrary {
         outbox.entries.filter {
             $0.itemID == itemID && $0.workspaceID == snapshot?.workspaceID && $0.account == account
         }
+    }
+
+    enum NewsletterSyncStatus: String {
+        case savedOnDevice = "Saved on this device"
+        case needsMacUpdate = "Mac update needed"
+        case waitingForMac = "Waiting for Mac"
+        case needsReview = "Edit needs review"
+
+        var icon: String {
+            switch self {
+            case .savedOnDevice, .waitingForMac: "clock"
+            case .needsMacUpdate: "arrow.down.circle"
+            case .needsReview: "exclamationmark.circle"
+            }
+        }
+    }
+
+    func newsletterSyncStatus(for entry: CompanionLibraryOutbox.Entry) -> NewsletterSyncStatus {
+        if entry.error != nil { return .needsReview }
+        if snapshot?.supportsNewsletterEdits != true { return .needsMacUpdate }
+        if snapshot?.pending.contains(where: { $0.id == entry.requestID }) == true { return .waitingForMac }
+        return .savedOnDevice
+    }
+
+    var newsletterSyncSummary: String? {
+        guard let snapshot else { return nil }
+        let edits = outbox.entries.filter {
+            $0.editsNewsletter == true && $0.workspaceID == snapshot.workspaceID && $0.account == account
+        }
+        let latestByItem = Dictionary(edits.compactMap { edit in edit.itemID.map { ($0, edit) } },
+                                      uniquingKeysWith: { _, newest in newest })
+        let statuses = latestByItem.values.map(newsletterSyncStatus)
+        if statuses.contains(.needsReview) { return NewsletterSyncStatus.needsReview.rawValue }
+        if snapshot.supportsNewsletterEdits != true { return NewsletterSyncStatus.needsMacUpdate.rawValue }
+        if statuses.contains(.savedOnDevice) { return NewsletterSyncStatus.savedOnDevice.rawValue }
+        if statuses.contains(.waitingForMac) { return NewsletterSyncStatus.waitingForMac.rawValue }
+        if error != nil { return "Check failed" }
+        return "Up to date"
     }
 
     struct SchedulingRequest: Identifiable {
@@ -101,31 +183,43 @@ final class MobileLibrary {
     func saveChange(_ change: CompanionLibrary.Change, workspaceID: UUID) throws {
         guard let account, snapshot?.workspaceID == workspaceID else { throw CompanionScheduleError.changed }
         guard change.valid else { throw CompanionLibraryError.invalid }
+        if change.editsNewsletter == true, try JSONEncoder().encode(change).count > change.payloadLimit {
+            throw CompanionLibraryError.invalid
+        }
         if change.action == .scheduleDraft, snapshot?.postingWindows == nil { throw CompanionLibraryError.disabled }
         let afterTrash = change.action == .deleteItem ? pendingTrash(for: change.itemID)?.id : nil
         try queue(.init(id: change.id, action: change.action, itemID: change.itemID, revision: change.revision,
                         title: change.title, text: change.text, workspaceID: workspaceID, account: account,
-                        afterTrash: afterTrash))
+                        afterTrash: afterTrash, editsNewsletter: change.editsNewsletter,
+                        baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft))
     }
 
     private func queue(_ entry: CompanionLibraryOutbox.Entry) throws {
         try loadOutbox()
         var next = outbox
-        if [.editDraft, .editIdea, .trashItem, .restoreItem, .deleteItem, .scheduleDraft].contains(entry.action) {
-            next.entries.removeAll {
-                $0.action == entry.action && $0.itemID == entry.itemID && $0.workspaceID == entry.workspaceID
-                    && $0.account == entry.account && $0.error != nil
+        if entry.editsNewsletter == true {
+            next.queueNewsletterEdit(entry)
+        } else {
+            if [.editDraft, .editIdea, .trashItem, .restoreItem, .deleteItem, .scheduleDraft].contains(entry.action) {
+                next.entries.removeAll {
+                    $0.action == entry.action && $0.itemID == entry.itemID && $0.workspaceID == entry.workspaceID
+                        && $0.account == entry.account && $0.error != nil
+                }
             }
+            next.entries.append(entry)
         }
-        next.entries.append(entry)
         try persist(next)
-        Task { await refresh() }
+        if entry.editsNewsletter == true && busy {
+            newsletterRefreshPending = true
+        } else {
+            Task { await refresh() }
+        }
     }
 
     private func loadOutbox() throws {
         guard !outboxLoaded else { return }
         if let data = defaults.data(forKey: Self.outboxKey) {
-            outbox = try JSONDecoder().decode(CompanionLibraryOutbox.self, from: data)
+            state.outbox = try JSONDecoder().decode(CompanionLibraryOutbox.self, from: data)
         } else if let data = defaults.data(forKey: Self.legacyIdeasKey), !data.isEmpty {
             var migrated = outbox
             try migrated.migrateIdeas(from: data)
@@ -136,14 +230,45 @@ final class MobileLibrary {
 
     private func persist(_ value: CompanionLibraryOutbox) throws {
         defaults.set(try JSONEncoder().encode(value), forKey: Self.outboxKey)
-        outbox = value
+        state.outbox = value
     }
 
+#if DEBUG
     private func prepareChanges(in library: CompanionLibrary, account: String) throws -> [CompanionLibrary.Change] {
         var next = outbox
         let changes = next.prepare(for: library, account: account)
         try persist(next)
         return changes
+    }
+#endif
+
+    private func acceptSnapshot(_ incoming: CompanionLibrary, account: String) throws -> [CompanionLibrary.Change] {
+        guard !isOlderSnapshot(incoming) else { return [] }
+        var next = outbox
+        let changes = next.prepare(for: incoming, account: account)
+        if next != outbox { defaults.set(try JSONEncoder().encode(next), forKey: Self.outboxKey) }
+        if snapshot != incoming || next != outbox {
+            // Clearing an acknowledged local edit must replace the displayed text in the same update.
+            state = LibraryState(snapshot: incoming, outbox: next)
+        }
+        return changes
+    }
+
+    private func isOlderSnapshot(_ incoming: CompanionLibrary) -> Bool {
+        guard let snapshot, incoming.workspaceID == snapshot.workspaceID else { return false }
+        if incoming.updatedAt < snapshot.updatedAt { return true }
+        let currentRevisions = Dictionary((snapshot.newsletters ?? []).compactMap { item in
+            item.revisionDate.map { (item.id, $0) }
+        }, uniquingKeysWith: max)
+        return incoming.newsletters?.contains { item in
+            guard let current = currentRevisions[item.id], let incoming = item.revisionDate else { return false }
+            return incoming < current
+        } == true
+    }
+
+    private func clearSnapshot() {
+        state.snapshot = nil
+        syncedText = nil
     }
 
     private func cloud() -> CloudScheduleStore {
@@ -161,7 +286,9 @@ final class MobileLibrary {
         var checkedAccount = false
         defer {
             busy = false
-            if revision != accountRevision {
+            let refreshAgain = newsletterRefreshPending || revision != accountRevision
+            newsletterRefreshPending = false
+            if refreshAgain {
                 Task { await refresh() }
             } else if !Task.isCancelled {
                 lastCheck = .now
@@ -172,11 +299,43 @@ final class MobileLibrary {
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--library-fixture") {
                 account = "fixture"
+                if var stale = staleFixtureSnapshot {
+                    staleFixtureSnapshot = nil
+                    stale.updatedAt = .now
+                    _ = try acceptSnapshot(stale, account: "fixture")
+                    return
+                }
                 var fixture = snapshot ?? Self.fixture
                 for change in try prepareChanges(in: fixture, account: "fixture").prefix(24 - fixture.pending.count) {
                     try fixture.enqueue(change)
                 }
-                snapshot = fixture
+                let newsletterEdits = fixture.pending.filter { $0.editsNewsletter == true }
+                let exercisesSyncRace = ProcessInfo.processInfo.arguments.contains("--newsletter-sync-race-fixture")
+                for change in newsletterEdits {
+                    if let index = fixture.newsletters?.firstIndex(where: { $0.id == change.itemID }) {
+                        if exercisesSyncRace, let item = fixture.newsletters?[index] {
+                            fixture.newsletters?[index] = .init(
+                                id: item.id, revision: "2026-11-17T12:00:00.000Z", kind: item.kind,
+                                projectID: item.projectID, title: item.title,
+                                body: change.text + "\n\nApplied on Mac.\n\n"
+                                    + String(repeating: "This text is delivered separately through iCloud. ", count: 12),
+                                shortened: false, platform: item.platform, status: item.status, notes: item.notes
+                            )
+                            fixture.updatedAt = .now
+                            staleFixtureSnapshot = snapshot
+                        } else {
+                            fixture.newsletters?[index].body = change.text
+                        }
+                    }
+                }
+                fixture.acknowledge(newsletterEdits.map { .init(id: $0.id) })
+                let data = try fixture.separateFullText()
+                let completed = try await snapshotWithFullText(fixture) { _ in
+                    if exercisesSyncRace && !newsletterEdits.isEmpty { try await Task.sleep(for: .seconds(3)) }
+                    guard let data else { throw CompanionScheduleError.changed }
+                    return data
+                }
+                _ = try acceptSnapshot(completed, account: "fixture")
                 accountStatus = "Preview data"
                 remoteWorkspaceFound = true
                 error = nil
@@ -189,7 +348,7 @@ final class MobileLibrary {
             checkedAccount = true
             accountStatus = "Connected"
             if account != key {
-                snapshot = nil
+                clearSnapshot()
                 remoteWorkspaceFound = nil
                 lastCloudContact = nil
             }
@@ -199,28 +358,35 @@ final class MobileLibrary {
             lastCloudContact = .now
             remoteWorkspaceFound = schedule != nil
             guard let schedule, schedule.sharing else {
-                snapshot = nil
+                clearSnapshot()
                 error = "Turn on schedule and library sync in Inkspring on your Mac."
                 return
             }
-            if snapshot?.workspaceID != schedule.workspaceID { snapshot = nil }
-            let library = try await cloud.loadLibrary(workspaceID: schedule.workspaceID, account: key)
+            if snapshot?.workspaceID != schedule.workspaceID {
+                clearSnapshot()
+            }
+            let incoming = try await cloud.loadLibrary(workspaceID: schedule.workspaceID, account: key)
             guard revision == accountRevision else { return }
             lastCloudContact = .now
-            snapshot = library?.enabled == true ? library : nil
-            error = snapshot == nil ? CompanionLibraryError.disabled.localizedDescription : nil
-            guard let snapshot else { return }
-            let changes = try prepareChanges(in: snapshot, account: key)
-            guard !changes.isEmpty else { return }
-            let updated = try await cloud.updateLibrary(workspaceID: snapshot.workspaceID, account: key) { library in
-                for change in changes.prefix(max(0, 24 - library.pending.count)) {
-                    do { try library.enqueue(change) }
-                    catch CompanionLibraryError.full { break }
-                }
+            guard let incoming, incoming.enabled else {
+                clearSnapshot()
+                error = CompanionLibraryError.disabled.localizedDescription
+                return
             }
-            if revision == accountRevision {
-                self.snapshot = updated
-                lastCloudContact = .now
+            error = nil
+            guard !isOlderSnapshot(incoming) else { return }
+            let completed = try await snapshotWithFullText(incoming) { version in
+                try await cloud.loadLibraryText(version, workspaceID: incoming.workspaceID, account: key)
+            }
+            guard revision == accountRevision else { return }
+            let changes = try acceptSnapshot(completed, account: key)
+            if !changes.isEmpty {
+                _ = try await cloud.updateLibrary(workspaceID: incoming.workspaceID, account: key) { library in
+                    for change in changes.prefix(max(0, 24 - library.pending.count)) {
+                        do { try library.enqueue(change) }
+                        catch CompanionLibraryError.full { break }
+                    }
+                }
             }
         } catch {
             guard revision == accountRevision else { return }
@@ -228,7 +394,7 @@ final class MobileLibrary {
             syncErrorCode = "\(failure.domain) (\(failure.code))"
             if !checkedAccount { accountStatus = "Unavailable" }
             if (error as? CompanionScheduleError) == .accountChanged {
-                snapshot = nil
+                clearSnapshot()
                 account = nil
                 accountStatus = "Not checked"
                 remoteWorkspaceFound = nil
@@ -238,9 +404,32 @@ final class MobileLibrary {
         }
     }
 
+    private func snapshotWithFullText(_ incoming: CompanionLibrary,
+                                      loadText: (CompanionLibrary.TextVersion) async throws -> Data) async throws -> CompanionLibrary {
+        guard let version = incoming.fullText else {
+            syncedText = nil
+            return incoming
+        }
+        let revision = accountRevision
+        let data: Data
+        if let syncedText, syncedText.workspace == incoming.workspaceID, syncedText.version == version {
+            data = syncedText.data
+        } else {
+            data = try await loadText(version)
+        }
+        let completed = try await Task.detached(priority: .utility) {
+            var completed = incoming
+            try completed.applyFullText(data)
+            return completed
+        }.value
+        guard revision == accountRevision else { throw CompanionScheduleError.accountChanged }
+        syncedText = (incoming.workspaceID, version, data)
+        return completed
+    }
+
     func accountChanged() {
         accountRevision = UUID()
-        snapshot = nil
+        clearSnapshot()
         account = nil
         accountStatus = "Not checked"
         remoteWorkspaceFound = nil
@@ -251,18 +440,68 @@ final class MobileLibrary {
 
 #if DEBUG
     private static var fixture: CompanionLibrary {
-        var value = CompanionLibrary(workspaceID: UUID(uuidString: "de6b0e64-2e7a-4bc6-a4b2-79a3e63b8e1a")!)
+        let fixtureID = ProcessInfo.processInfo.environment["INKSPRING_FIXTURE_ID"].flatMap(UUID.init(uuidString:))
+        var value = CompanionLibrary(workspaceID: fixtureID ?? UUID(uuidString: "de6b0e64-2e7a-4bc6-a4b2-79a3e63b8e1a")!)
         value.projects = [.init(id: "studio", name: "Studio")]
         value.items = [
-            .init(id: "draft", revision: "1", kind: .draft, projectID: "studio", title: "A quieter way to draft",
+            .init(id: "draft", revision: "2026-11-16T12:00:00.000Z", kind: .draft, projectID: "studio", title: "A quieter way to draft",
                   body: "Start with the decision you made and why it mattered. One concrete example is enough.",
-                  shortened: false, platform: "linkedin", status: "ready", notes: [], attachment: .video),
+                  shortened: false, platform: "linkedin", status: "ready", notes: [], attachment: .video, referenceID: "STU-001"),
             .init(id: "idea", revision: "1", kind: .idea, projectID: "studio", title: "Show the unfinished work",
                   body: "Explain a trade-off from a work in progress and ask readers how they would handle it.",
                   shortened: false, platform: "", status: "draft", notes: [])
         ]
         value.supportsDraftEdits = true
+        value.supportsNewsletterEdits = true
+        if ProcessInfo.processInfo.arguments.contains("--newsletter-offline-fixture") {
+            value.supportsNewsletterEdits = nil
+        }
         value.supportsItemManagement = true
+        value.supportsXThreads = true
+        if ProcessInfo.processInfo.arguments.contains("--x-thread-fixture") {
+            var draft = CompanionLibrary.Item(id: "x-followup-demo", revision: "2026-11-18T16:00:00.000Z", kind: .draft,
+                projectID: "studio", title: "I started a cult", body: "We build useful tools and give them away.\n\nRead more: https://newsletter.protomota.com/\nJoin us: https://protomota.com/discord",
+                shortened: false, platform: "x", status: "draft", notes: [], referenceID: "STU-003")
+            draft.format = "followup"
+            value.items.insert(draft, at: 0)
+        }
+        if ProcessInfo.processInfo.arguments.contains("--newsletter-fixture") {
+            value.newsletters = [
+                .init(id: "newsletter-draft", revision: "2026-11-16T12:00:00.000Z", kind: .newsletter,
+                      projectID: "studio", title: "A better first paragraph", body: """
+                      ## Start with a detail
+
+                      Give the reader **one thing** they can picture.
+
+                      - Open with an example.
+                      - Keep the first sentence short.
+
+                      [Visit Inkspring](https://inkspring.ai/)
+                      """,
+                      shortened: false, platform: "substack", status: "draft", notes: [], referenceID: "STU-002"),
+                .init(id: "newsletter-published", revision: "2026-11-15T12:00:00.000Z", kind: .newsletter,
+                      projectID: "studio", title: "Notes from the studio", body: "What changed after a week of testing.",
+                      shortened: false, platform: "substack", status: "published", notes: [], referenceID: "STU-003")
+            ]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--project-filter-fixture") {
+            value.projects.append(.init(id: "field-notes", name: "Field Notes"))
+            value.items.append(.init(id: "field-draft", revision: "1", kind: .draft, projectID: "field-notes",
+                                     title: "What we learned in the field", body: "Lead with one example.",
+                                     shortened: false, platform: "linkedin", status: "draft", notes: []))
+            value.newsletters?.append(.init(id: "field-newsletter", revision: "1", kind: .newsletter, projectID: "field-notes",
+                                           title: "A dispatch from the field", body: "One idea worth sharing.",
+                                           shortened: false, platform: "substack", status: "draft", notes: []))
+        }
+        if ProcessInfo.processInfo.arguments.contains("--full-text-fixture") {
+            let paragraphs = String(repeating: "A complete paragraph stays in the library when contents sync through iCloud.\n\n", count: 126)
+            value.items.append(.init(id: "full-post", revision: "1", kind: .draft, projectID: "studio",
+                                     title: "Long post with complete text", body: paragraphs + "End of the complete post.",
+                                     shortened: false, platform: "linkedin", status: "draft", notes: []))
+            value.newsletters = [.init(id: "full-newsletter", revision: "1", kind: .newsletter, projectID: "studio",
+                                       title: "Long newsletter with complete text", body: paragraphs + "End of the complete newsletter.",
+                                       shortened: false, platform: "substack", status: "draft", notes: [])]
+        }
         value.postingWindows = ["linkedin": .init(), "reddit": .init()]
         value.postingTimeZone = TimeZone.current.identifier
         if ProcessInfo.processInfo.arguments.contains("--editing-fixture") {
@@ -282,8 +521,331 @@ final class MobileLibrary {
 #endif
 }
 
+private struct MobileNewsletterDetail: View {
+    @Environment(\.studioPalette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
+    @FocusState private var editorFocused: Bool
+    let item: CompanionLibrary.Item
+    let metadata: String
+    let library: MobileLibrary
+    let workspaceID: UUID
+    @State private var editingRevision: String?
+    @State private var editingBaseMarkdown = ""
+    @State private var markdown = ""
+    @State private var saveError: String?
+    @State private var showsMacVersion = false
+    @State private var recoveryKey: String?
+
+    private var pendingEdit: CompanionLibraryOutbox.Entry? {
+        library.pendingChanges(for: item.id).last { $0.editsNewsletter == true }
+    }
+
+    private var canEdit: Bool {
+        !showsMacVersion && hasFullText && ["draft", "synced"].contains(item.status)
+    }
+
+    private var hasFullText: Bool {
+        !item.shortened || (pendingEdit != nil && pendingEdit?.error == nil)
+    }
+
+    private var previewMarkdown: String {
+        if let pendingEdit, pendingEdit.error == nil, !showsMacVersion { return pendingEdit.text }
+        return item.body
+    }
+
+    var body: some View {
+        Group {
+            if editingRevision != nil {
+                VStack(alignment: .leading, spacing: 12) {
+                    metadataHeader
+                    StudioProofreadAction(document: .init(body: markdown),
+                                          unavailable: MobileProofreading.availabilityMessage,
+                                          begin: { editorFocused = false },
+                                          check: MobileProofreading.check) {
+                        markdown = $0.body
+                    }
+                    Text("Markdown").font(.subheadline.weight(.semibold))
+                    TextEditor(text: $markdown)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(palette.text)
+                        .scrollContentBackground(.hidden)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($editorFocused)
+                        .accessibilityLabel("Newsletter Markdown")
+                        .accessibilityIdentifier("newsletter.markdown")
+                        .padding(8)
+                        .frame(maxHeight: .infinity)
+                        .studioSurface()
+                        .task { editorFocused = true }
+                    if let saveError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(saveError).font(.footnote).foregroundStyle(palette.danger)
+                            Button("Copy unsaved Markdown", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = markdown
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: 760)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        metadataHeader
+                        Divider()
+                        if !hasFullText || (showsMacVersion && item.shortened) {
+                            Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(palette.muted)
+                        } else {
+                            Group {
+                                if previewMarkdown.isEmpty {
+                                    Text("No newsletter text yet.").foregroundStyle(palette.muted)
+                                } else {
+                                    MobileNewsletterMarkdown(markdown: previewMarkdown).equatable()
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(TapGesture(count: 2).onEnded { beginEditing() })
+                        }
+                        if let pendingEdit {
+                            if let error = pendingEdit.error {
+                                Text(error).font(.footnote).foregroundStyle(palette.danger)
+                                Button("Copy unsynced Markdown", systemImage: "doc.on.doc") {
+                                    UIPasteboard.general.string = pendingEdit.text
+                                }
+                            } else {
+                                let status = library.newsletterSyncStatus(for: pendingEdit)
+                                Text(syncMessage(status)).font(.footnote).foregroundStyle(palette.muted)
+                                if pendingEdit.revision != item.revision && !item.shortened {
+                                    Button(showsMacVersion ? "Show saved mobile edit" : "Show version from Mac") {
+                                        showsMacVersion.toggle()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .studioSurface()
+                    .padding(16)
+                    .frame(maxWidth: 760)
+                    .frame(maxWidth: .infinity)
+                }
+                .accessibilityIdentifier("newsletter.preview")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tint(palette.iconAccent)
+        .navigationTitle("Newsletter")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: markdown) {
+            guard let editingRevision, let recoveryKey, markdown != editingBaseMarkdown else { return }
+            library.storeNewsletterRecovery(.init(revision: editingRevision, base: editingBaseMarkdown, markdown: markdown),
+                                            key: recoveryKey)
+        }
+        .task(id: markdown) {
+            guard editingRevision != nil, markdown != editingBaseMarkdown else { return }
+            do { try await Task.sleep(for: .milliseconds(750)) }
+            catch { return }
+            save()
+        }
+        .onChange(of: editorFocused) { previous, focused in
+            if previous && !focused { save() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { save() }
+        }
+        .onDisappear { save() }
+        .onChange(of: pendingEdit?.id) {
+            if pendingEdit == nil { showsMacVersion = false }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if editingRevision != nil {
+                    Button("Done") { save(ending: true) }.fontWeight(.semibold)
+                } else {
+                    Menu {
+                        if ["draft", "synced"].contains(item.status) {
+                            Button("Edit Markdown", systemImage: "pencil", action: beginEditing).disabled(!canEdit)
+                        }
+                        Button("Copy Markdown", systemImage: "doc.on.doc") { UIPasteboard.general.string = previewMarkdown }
+                            .disabled(!hasFullText || previewMarkdown.isEmpty)
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle")
+                    }
+                    .accessibilityIdentifier("newsletter.more")
+                }
+            }
+        }
+    }
+
+    private func syncMessage(_ status: MobileLibrary.NewsletterSyncStatus) -> String {
+        switch status {
+        case .needsMacUpdate: "Saved on this device. The Mac build publishing this workspace cannot accept newsletter edits yet."
+        case .waitingForMac: "Sent to iCloud. Waiting for Inkspring on your Mac to apply the edit."
+        case .savedOnDevice: "Saved on this device. Waiting to upload to iCloud."
+        case .needsReview: "Your mobile edit is saved on this device."
+        }
+    }
+
+    private var metadataHeader: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(item.title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                StudioPlatformLabel(name: "substack", title: "Substack")
+                Text("·").accessibilityHidden(true)
+                Text(metadata)
+            }
+            .font(.footnote)
+            .foregroundStyle(palette.muted)
+            if let reference = item.referenceID {
+                StudioCopyReference(reference: reference)
+            }
+            if let updatedAt = item.revisionDate {
+                Text("Last updated \(updatedAt.formatted(date: .abbreviated, time: .standard))")
+                    .font(.footnote)
+                    .foregroundStyle(palette.muted)
+                    .accessibilityIdentifier("newsletter.lastUpdated")
+            }
+        }
+        .foregroundStyle(palette.text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func beginEditing() {
+        guard canEdit, editingRevision == nil else { return }
+        recoveryKey = library.newsletterRecoveryKey(for: item.id, workspaceID: workspaceID)
+        let recovery = recoveryKey.flatMap { library.recoverNewsletterEdit(key: $0) }
+        editingBaseMarkdown = recovery?.base ?? previewMarkdown
+        markdown = recovery?.markdown ?? editingBaseMarkdown
+        editingRevision = recovery?.revision ?? item.revision
+    }
+
+    private func endEditing() {
+        editingRevision = nil
+        editorFocused = false
+        saveError = nil
+        recoveryKey = nil
+    }
+
+    private func save(ending: Bool = false) {
+        guard let editingRevision else { return }
+        if markdown == editingBaseMarkdown {
+            if let recoveryKey { library.storeNewsletterRecovery(nil, key: recoveryKey) }
+            if ending { endEditing() }
+            return
+        }
+        do {
+            var edit = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: editingRevision,
+                                                text: markdown, editsNewsletter: true, baseNewsletterText: editingBaseMarkdown)
+            if !edit.valid || (try? JSONEncoder().encode(edit).count).map({ $0 > edit.payloadLimit }) == true {
+                edit = .init(id: edit.id, action: edit.action, itemID: edit.itemID, revision: edit.revision,
+                             text: edit.text, editsNewsletter: true)
+            }
+            try library.saveChange(edit, workspaceID: workspaceID)
+            showsMacVersion = false
+            editingBaseMarkdown = markdown
+            if let recoveryKey { library.storeNewsletterRecovery(nil, key: recoveryKey) }
+            saveError = nil
+            if ending { endEditing() }
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
+}
+
+private struct MobileNewsletterMarkdown: View, Equatable {
+    @Environment(\.studioPalette) private var palette
+    let markdown: String
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.markdown == rhs.markdown }
+
+    private struct Block: Identifiable {
+        let id: Int
+        let kind: PresentationIntent.Kind
+        let quote: Bool
+        let listDepth: Int
+        let marker: String?
+        var text: AttributedString
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Self.parse(markdown)) { block in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let marker = block.marker {
+                        Text(marker).foregroundStyle(palette.muted).accessibilityHidden(true)
+                    }
+                    blockContent(block)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.leading, CGFloat(block.listDepth) * 16 + (block.quote ? 12 : 0))
+                .overlay(alignment: .leading) {
+                    if block.quote { Rectangle().fill(palette.line).frame(width: 2) }
+                }
+            }
+        }
+        .foregroundStyle(palette.text)
+    }
+
+    @ViewBuilder private func blockContent(_ block: Block) -> some View {
+        switch block.kind {
+        case .header(let level):
+            Text(block.text)
+                .font((level == 1 ? Font.title : level == 2 ? .title2 : .headline).bold())
+                .accessibilityAddTraits(.isHeader)
+        case .codeBlock:
+            Text(block.text).font(.system(.callout, design: .monospaced))
+                .padding(10).studioSurface(StudioRadius.control, fill: palette.well)
+        case .thematicBreak:
+            Divider()
+        default:
+            Text(block.text).font(.body)
+        }
+    }
+
+    private static func parse(_ markdown: String) -> [Block] {
+        guard let attributed = try? AttributedString(markdown: markdown, options: .init(failurePolicy: .returnPartiallyParsedIfPossible)) else {
+            return [.init(id: 0, kind: .paragraph, quote: false, listDepth: 0, marker: nil, text: AttributedString(markdown))]
+        }
+        var result: [Block] = []
+        var seenListItems: Set<Int> = []
+        for run in attributed.runs {
+            let components = run.presentationIntent?.components ?? []
+            let id = components.first?.identity ?? 0
+            var text = AttributedString(attributed[run.range])
+            text.presentationIntent = nil
+            if let url = run.link {
+                if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+                    text.underlineStyle = .single
+                } else {
+                    text.link = nil
+                }
+            }
+            if run.inlinePresentationIntent?.contains(.code) == true { text.font = .system(.body, design: .monospaced) }
+            if result.last?.id == id {
+                result[result.count - 1].text.append(text)
+                continue
+            }
+            let quote = components.contains { $0.kind == .blockQuote }
+            let listDepth = components.count { $0.kind == .orderedList || $0.kind == .unorderedList }
+            let listPosition = components.firstIndex { if case .listItem = $0.kind { true } else { false } }
+            var marker: String?
+            if let listPosition, case .listItem(let ordinal) = components[listPosition].kind,
+               seenListItems.insert(components[listPosition].identity).inserted {
+                marker = components.dropFirst(listPosition + 1).first?.kind == .orderedList ? "\(ordinal)." : "•"
+            }
+            result.append(.init(id: id, kind: components.first?.kind ?? .paragraph, quote: quote,
+                                listDepth: max(0, listDepth - (marker == nil ? 0 : 1)), marker: marker, text: text))
+        }
+        return result
+    }
+}
+
 struct MobileReviewView: View {
     @Environment(\.mobileWideLayout) private var wideLayout
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let library: MobileLibrary
     let isSelected: Bool
     let openSettings: () -> Void
@@ -291,27 +853,59 @@ struct MobileReviewView: View {
     @State private var selection: String?
     @State private var filter = "Drafts"
     @State private var platformFilter: String?
+    @State private var projectFilter: String?
+    @AppStorage("inkspring.mobile.draftSort") private var draftSort = DraftSort.lastUpdated
     @State private var editItem: CompanionLibrary.Item?
     @State private var deleteItem: CompanionLibrary.Item?
     @State private var actionError: String?
+    @State private var creatingXDraft = false
 
     private static let filters = ["Drafts", "Ideas", "Trash"]
 
+    private enum DraftSort: String, CaseIterable {
+        case lastUpdated = "Last updated"
+        case oldestUpdate = "Oldest update"
+        case title = "Title A–Z"
+
+        func sorted(_ items: [CompanionLibrary.Item]) -> [CompanionLibrary.Item] {
+            if self == .title {
+                return items.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            }
+            return items.map { (item: $0, date: $0.revisionDate) }
+                .sorted { lhs, rhs in
+                    guard let lhsDate = lhs.date else { return false }
+                    guard let rhsDate = rhs.date else { return true }
+                    return self == .lastUpdated ? lhsDate > rhsDate : lhsDate < rhsDate
+                }
+                .map(\.item)
+        }
+    }
+
     private var drafts: [CompanionLibrary.Item] {
-        library.visibleItems.filter { $0.kind == .draft && $0.isTrashed != true }
+        let posts = library.visibleItems.filter { $0.kind == .draft && $0.isTrashed != true }
+        return posts + (library.snapshot?.newsletters ?? [])
     }
 
     private var platformOptions: [String] {
         var platforms = Set(drafts.map(\.reviewPlatform).filter { !$0.isEmpty })
+        platforms.insert("substack")
         if let platformFilter { platforms.insert(platformFilter) }
         return platforms.sorted { reviewPlatformName($0).localizedStandardCompare(reviewPlatformName($1)) == .orderedAscending }
+    }
+
+    private var projectOptions: [CompanionLibrary.Project] {
+        (library.snapshot?.projects ?? []).sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
     private var items: [CompanionLibrary.Item] {
         switch filter {
         case "Drafts":
-            guard let platformFilter else { return drafts }
-            return drafts.filter { $0.reviewPlatform == platformFilter }
+            return draftSort.sorted(drafts.filter { item in
+                (projectFilter == nil || item.projectID == projectFilter) &&
+                    (platformFilter == nil || item.reviewPlatform == platformFilter)
+            })
         case "Trash": return library.visibleItems.filter { $0.isTrashed == true }
         default: return library.visibleItems.filter { $0.isTrashed != true && $0.kind == .idea }
         }
@@ -319,6 +913,11 @@ struct MobileReviewView: View {
 
     private var emptyMessage: String {
         if filter == "Trash" { return "Trash is empty." }
+        if filter == "Drafts", platformFilter == "substack" {
+            if library.snapshot?.newsletters == nil { return "Update Inkspring on your Mac to sync newsletters." }
+            return projectFilter == nil ? "No Substack newsletters in your workspace." : "No Substack newsletters in this project."
+        }
+        if filter == "Drafts", projectFilter != nil { return "No matching drafts in this project." }
         if filter == "Drafts", let platformFilter { return "No \(reviewPlatformName(platformFilter)) drafts to review." }
         return "No \(filter.lowercased()) to review."
     }
@@ -331,7 +930,7 @@ struct MobileReviewView: View {
                         Section {
                             VStack(alignment: .leading, spacing: 10) {
                                 reviewFilters
-                                if filter == "Drafts", !platformOptions.isEmpty { platformMenu }
+                                if filter == "Drafts" { draftFilters }
                             }
                             .listRowBackground(Color.clear)
                         }
@@ -343,8 +942,8 @@ struct MobileReviewView: View {
                             }
                             ForEach(items) { item in
                                 let selected = wideLayout && selection == item.id
-                                let showsProjectStatus = filter != "Drafts"
-                                let showsPlatform = item.kind == .draft && !item.reviewPlatform.isEmpty
+                                let showsProjectStatus = filter != "Drafts" || item.kind == .newsletter
+                                let showsPlatform = !item.reviewPlatform.isEmpty
                                 NavigationLink(value: item.id) {
                                     HStack(alignment: .top, spacing: 8) {
                                         VStack(alignment: .leading, spacing: 4) {
@@ -366,7 +965,12 @@ struct MobileReviewView: View {
                                             if let attachment = item.attachment {
                                                 MobileAttachmentLabel(attachment: attachment).font(.caption)
                                             }
-                                            if library.isChanging(item.id) {
+                                            if item.kind == .newsletter,
+                                               let edit = library.pendingChanges(for: item.id).last(where: { $0.editsNewsletter == true }) {
+                                                let syncStatus = library.newsletterSyncStatus(for: edit)
+                                                Label(syncStatus.rawValue, systemImage: syncStatus.icon)
+                                                    .font(.caption).foregroundStyle(palette.muted)
+                                            } else if library.isChanging(item.id) {
                                                 Label("iCloud sync pending", systemImage: "checkmark").font(.caption).foregroundStyle(palette.muted)
                                             }
                                         }
@@ -382,28 +986,43 @@ struct MobileReviewView: View {
                                 .listRowBackground(selected ? palette.well : palette.card)
                                 .accessibilityAddTraits(selected ? .isSelected : [])
                                 .contextMenu {
-                                    if item.isTrashed == true {
-                                        Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }
-                                            .disabled(library.isChanging(item.id))
+                                    if item.kind == .newsletter {
+                                        if !item.shortened && !item.body.isEmpty {
+                                            Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
+                                        }
                                     } else {
-                                        Button("Edit", systemImage: "pencil") { editItem = item }
+                                        if item.isTrashed == true {
+                                            Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }
+                                                .disabled(library.isChanging(item.id))
+                                        } else {
+                                            Button("Edit", systemImage: "pencil") { editItem = item }
+                                        }
+                                        Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
+                                            .disabled(item.shortened)
+                                        Button(item.isTrashed == true ? "Delete permanently…" : item.kind == .idea ? "Skip idea" : "Move to Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
+                                            .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
                                     }
-                                    Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
-                                    Button(item.isTrashed == true ? "Delete permanently…" : item.kind == .idea ? "Skip idea" : "Move to Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
-                                        .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(item.isTrashed == true ? "Delete" : item.kind == .idea ? "Skip" : "Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
-                                        .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                    if item.isTrashed == true {
-                                        Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }.tint(palette.iconAccent)
-                                            .disabled(library.isChanging(item.id))
-                                    } else {
-                                        Button("Edit", systemImage: "pencil") { editItem = item }.tint(palette.iconAccent)
+                                    if item.kind != .newsletter {
+                                        Button(item.isTrashed == true ? "Delete" : item.kind == .idea ? "Skip" : "Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
+                                            .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
                                     }
                                 }
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    if item.kind != .newsletter {
+                                        if item.isTrashed == true {
+                                            Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }.tint(palette.iconAccent)
+                                                .disabled(library.isChanging(item.id))
+                                        } else {
+                                            Button("Edit", systemImage: "pencil") { editItem = item }.tint(palette.iconAccent)
+                                        }
+                                    }
+                                }
+                            }
+                            if filter == "Drafts", platformFilter == "substack", snapshot.hasMoreNewsletters == true {
+                                Text("Open Inkspring on Mac to see the rest of your newsletters.")
+                                    .font(.footnote).foregroundStyle(palette.muted)
                             }
                         }
                         .listRowBackground(palette.card)
@@ -430,15 +1049,30 @@ struct MobileReviewView: View {
             .refreshable { await library.refresh() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    if library.snapshot?.supportsXThreads == true {
+                        Button("New X draft", systemImage: "square.and.pencil") { creatingXDraft = true }
+                            .accessibilityIdentifier("x.newDraft")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await library.refresh() } }
                         .disabled(library.busy)
                 }
             }
+            .navigationDestination(isPresented: $creatingXDraft) {
+                MobileXGeneration(library: library, idea: nil)
+            }
         } detail: {
             Group {
                 if let snapshot = library.snapshot, let item = items.first(where: { $0.id == selection }) {
-                    MobileReviewDetail(item: item, library: library, workspaceID: snapshot.workspaceID)
-                        .id("\(snapshot.workspaceID)-\(item.id)")
+                    if item.kind == .newsletter {
+                        MobileNewsletterDetail(item: item, metadata: [projectName(item, in: snapshot), status(item)]
+                            .joined(separator: " · "), library: library, workspaceID: snapshot.workspaceID)
+                            .id("\(snapshot.workspaceID)-\(item.id)")
+                    } else {
+                        MobileReviewDetail(item: item, library: library, workspaceID: snapshot.workspaceID)
+                            .id("\(snapshot.workspaceID)-\(item.id)")
+                    }
                 } else if library.snapshot != nil && items.isEmpty {
                     if filter == "Trash" {
                         ContentUnavailableView("Trash is empty", systemImage: "trash")
@@ -453,6 +1087,10 @@ struct MobileReviewView: View {
         }
         .onChange(of: items.map(\.id), initial: true) { _, _ in updateSelection() }
         .onChange(of: wideLayout) { _, _ in updateSelection() }
+        .onChange(of: library.snapshot?.workspaceID) { _, _ in projectFilter = nil }
+        .onChange(of: projectOptions.map(\.id)) { _, ids in
+            if let projectFilter, !ids.contains(projectFilter) { self.projectFilter = nil }
+        }
         .sheet(item: $editItem) { item in
             if let snapshot = library.snapshot {
                 MobileItemEditor(item: item, library: library, workspaceID: snapshot.workspaceID)
@@ -467,6 +1105,34 @@ struct MobileReviewView: View {
             Button("OK", role: .cancel) { actionError = nil }
         } message: { Text(actionError ?? "") }
         .modifier(InkspringRatingPrompt(isIdle: isSelected && selection == nil && !library.busy && library.snapshot != nil))
+    }
+
+    private var draftFilters: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
+            : AnyLayout(HStackLayout(spacing: wideLayout ? 6 : 8))
+        return layout {
+            platformMenu
+            projectMenu
+            sortMenu
+        }
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            Picker("Sort drafts", selection: $draftSort) {
+                ForEach(DraftSort.allCases, id: \.self) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            filterMenuLabel("Sort", icon: "arrow.up.arrow.down", isFiltered: draftSort != .lastUpdated)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sort drafts")
+        .accessibilityValue(draftSort.rawValue)
+        .accessibilityIdentifier("review.draftSort")
     }
 
     private var platformMenu: some View {
@@ -485,26 +1151,50 @@ struct MobileReviewView: View {
             }
             .pickerStyle(.inline)
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "line.3.horizontal.decrease")
-                    .foregroundStyle(palette.iconAccent)
-                Text(title).foregroundStyle(palette.text)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(palette.muted)
-            }
-            .font(.subheadline.weight(.medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(platformFilter == nil ? palette.control : palette.active, in: Capsule())
-            .overlay { Capsule().strokeBorder(palette.line).allowsHitTesting(false) }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            filterMenuLabel(title, icon: "line.3.horizontal.decrease", isFiltered: platformFilter != nil)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Filter by platform")
         .accessibilityValue(title)
         .accessibilityIdentifier("review.platformFilter")
+    }
+
+    private var projectMenu: some View {
+        let title = projectOptions.first { $0.id == projectFilter }?.name ?? "All projects"
+        return Menu {
+            Picker("Project", selection: $projectFilter) {
+                Label("All projects", systemImage: "folder").tag(nil as String?)
+                ForEach(projectOptions) { project in
+                    Label(project.name, systemImage: "folder").tag(Optional(project.id))
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            filterMenuLabel(title, icon: "folder", isFiltered: projectFilter != nil)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Filter by project")
+        .accessibilityValue(title)
+        .accessibilityIdentifier("review.projectFilter")
+    }
+
+    private func filterMenuLabel(_ title: String, icon: String, isFiltered: Bool) -> some View {
+        let compact = !dynamicTypeSize.isAccessibilitySize
+        return HStack(spacing: compact ? 4 : 7) {
+            Image(systemName: icon)
+                .foregroundStyle(palette.iconAccent)
+            Text(title).foregroundStyle(palette.text).lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(palette.muted)
+        }
+        .font((compact ? Font.caption : .subheadline).weight(.medium))
+        .padding(.horizontal, compact ? 7 : 12)
+        .padding(.vertical, 7)
+        .background(isFiltered ? palette.active : palette.control, in: Capsule())
+        .overlay { Capsule().strokeBorder(palette.line).allowsHitTesting(false) }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 
     private func platformMenuIcon(_ platform: String) -> Image {
@@ -607,6 +1297,62 @@ private func reviewPlatformName(_ platform: String) -> String {
     }
 }
 
+private struct MobileXGeneration: View {
+    @Environment(\.studioPalette) private var palette
+    let library: MobileLibrary
+    let idea: CompanionLibrary.Item?
+    @State private var projectID = ""
+    @State private var title = ""
+    @State private var brief = ""
+    @State private var format = "post"
+    @State private var message: String?
+    @State private var queued = false
+
+    var body: some View {
+        Form {
+            Section {
+                if idea == nil, let projects = library.snapshot?.projects {
+                    Picker("Project", selection: $projectID) {
+                        ForEach(projects) { Text($0.name).tag($0.id) }
+                    }
+                }
+                TextField("Draft title", text: $title, axis: .vertical)
+                Picker("X post type", selection: $format) {
+                    ForEach(XPostStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .accessibilityIdentifier("x.generationType")
+                TextField("What should the post be about?", text: $brief, axis: .vertical).lineLimit(4...10)
+                Button("Generate on my Mac", systemImage: "sparkles") {
+                    guard let snapshot = library.snapshot else { return }
+                    do {
+                        try library.saveChange(.init(action: .addIdea, itemID: idea?.id ?? projectID,
+                                                     revision: idea?.revision ?? "", title: title, text: brief,
+                                                     xFormat: format, generatesXDraft: true), workspaceID: snapshot.workspaceID)
+                        queued = true
+                        message = "Queued for your Mac. The generated draft will appear in Review."
+                    } catch { message = error.localizedDescription }
+                }
+                .disabled(queued || library.snapshot?.supportsXThreads != true || projectID.isEmpty ||
+                          title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                          title.utf16.count > 200 || brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                          brief.utf16.count > 10_000)
+                .accessibilityIdentifier("x.generate")
+                Text("Your Mac uses your writing connection. Keep Inkspring open there.").font(.footnote)
+                if let message { Text(message).font(.callout) }
+            }
+            .listRowBackground(palette.card)
+            .disabled(queued)
+        }
+        .scrollContentBackground(.hidden).background(palette.canvas)
+        .navigationTitle("Draft for X").navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            projectID = idea?.projectID ?? library.snapshot?.projects.first?.id ?? ""
+            title = idea?.title ?? ""
+            brief = idea?.body ?? ""
+        }
+    }
+}
+
 private struct MobileItemEditor: View {
     let item: CompanionLibrary.Item
     let library: MobileLibrary
@@ -616,13 +1362,15 @@ private struct MobileItemEditor: View {
     @Environment(\.studioPalette) private var palette
     @State private var title = ""
     @State private var text = ""
+    @State private var format = "post"
+    @State private var initialized = false
     @State private var message: String?
     @FocusState private var focus: Field?
     private enum Field { case title, text }
 
     private var unavailable: String? {
         if item.isTrashed == true { return "Restore this item from Trash before editing." }
-        if item.shortened { return "This is a shortened copy. Update and open Inkspring on Mac to sync the complete text before editing." }
+        if item.shortened { return "Waiting for the full text to sync." }
         if ["posting", "posted", "uncertain"].contains(item.status) {
             return "This post is publishing or published. Check its status before editing."
         }
@@ -643,11 +1391,28 @@ private struct MobileItemEditor: View {
                         .font(.body).lineLimit(1...5).focused($focus, equals: .title)
                         .accessibilityIdentifier("mobile.edit.title")
                 }.listRowBackground(palette.card)
+                if item.kind == .draft, unavailable == nil {
+                    Section {
+                        StudioProofreadAction(document: .init(title: title, body: text),
+                                              unavailable: MobileProofreading.availabilityMessage,
+                                              begin: { focus = nil },
+                                              check: MobileProofreading.check) {
+                            title = $0.title
+                            text = $0.body
+                        }
+                    }
+                    .listRowBackground(palette.card)
+                }
                 Section(item.kind == .draft ? "Post text" : "Idea") {
-                    TextEditor(text: $text).font(.body).frame(minHeight: 240)
-                        .scrollContentBackground(.hidden)
-                        .focused($focus, equals: .text).accessibilityLabel("Post text")
-                        .accessibilityIdentifier("mobile.edit.body")
+                    if item.platform == "x", XPostStyle(rawValue: item.format ?? "post") != nil,
+                       item.requiresMacScheduling != true, library.snapshot?.supportsXThreads == true {
+                        StudioXPostEditor(text: $text, format: $format)
+                    } else {
+                        TextEditor(text: $text).font(.body).frame(minHeight: 240)
+                            .scrollContentBackground(.hidden)
+                            .focused($focus, equals: .text).accessibilityLabel("Post text")
+                            .accessibilityIdentifier("mobile.edit.body")
+                    }
                 }.listRowBackground(palette.card)
                 if let message { Text(message).foregroundStyle(palette.danger) }
                 Section {
@@ -669,7 +1434,10 @@ private struct MobileItemEditor: View {
                     Button("Save") {
                         do {
                             try library.saveChange(.init(action: item.kind == .draft ? .editDraft : .editIdea,
-                                itemID: item.id, revision: item.revision, title: title, text: text), workspaceID: workspaceID)
+                                itemID: item.id, revision: item.revision, title: title, text: text,
+                                xFormat: item.platform == "x" && XPostStyle(rawValue: item.format ?? "post") != nil &&
+                                    item.requiresMacScheduling != true && library.snapshot?.supportsXThreads == true ? format : nil),
+                                workspaceID: workspaceID)
                             dismiss()
                         } catch { message = error.localizedDescription }
                     }
@@ -679,9 +1447,12 @@ private struct MobileItemEditor: View {
                 }
             }
             .task {
+                guard !initialized else { return }
+                initialized = true
                 let pending = library.pendingChanges(for: item.id).last { [.editDraft, .editIdea].contains($0.action) }
                 title = pending?.title ?? item.title
-                text = pending?.text ?? item.body
+                text = pending?.text ?? (item.shortened ? "" : item.body)
+                format = pending?.xFormat ?? item.format ?? "post"
                 if unavailable == nil { focus = bodyFirst ? .text : .title }
             }
         }
@@ -709,6 +1480,7 @@ private struct MobileReviewDetail: View {
     @State private var savedNoteID: UUID?
     @State private var editingDraft = false
     @State private var choosingSchedule = false
+    @State private var generatingXDraft = false
     @State private var needsMacUpdate = false
     @State private var confirmDeletion = false
     @State private var editBodyFirst = false
@@ -791,12 +1563,37 @@ private struct MobileReviewDetail: View {
                         .foregroundStyle(palette.muted)
                 }
                 if let attachment = item.attachment { MobileAttachmentLabel(attachment: attachment) }
-                if let updated = date(item.revision) {
-                    Text("Updated \(updated.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.footnote).foregroundStyle(.secondary)
+                if let reference = item.referenceID {
+                    StudioCopyReference(reference: reference)
                 }
-                if inTrash {
+                if let updatedAt = item.revisionDate {
+                    Text("Last updated \(updatedAt.formatted(date: .abbreviated, time: .standard))")
+                        .font(.footnote)
+                        .foregroundStyle(palette.muted)
+                        .accessibilityIdentifier("post.lastUpdated")
+                }
+                if item.shortened && pendingEdit == nil {
+                    Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(.secondary)
+                } else if inTrash {
                     Text(pendingEdit?.text ?? item.body).foregroundStyle(palette.text).textSelection(.enabled)
+                } else if item.platform == "x", ["followup", "thread"].contains(pendingEdit?.xFormat ?? item.format ?? "") {
+                    let posts = XThreadText.posts(in: pendingEdit?.text ?? item.body)
+                    ForEach(posts.indices, id: \.self) { index in
+                        Button {
+                            editBodyFirst = true
+                            editingDraft = true
+                        } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Label(index == 0 ? "Opening post" : "Follow-up reply \(index)", systemImage: index == 0 ? "text.bubble" : "arrow.turn.down.right")
+                                    .font(.subheadline.weight(.semibold)).foregroundStyle(palette.iconAccent)
+                                Text(posts[index]).font(.body).foregroundStyle(palette.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("x.reply.\(index)")
+                    }
                 } else {
                     Button { editBodyFirst = true; editingDraft = true } label: {
                         Text(pendingEdit?.text ?? item.body)
@@ -807,20 +1604,32 @@ private struct MobileReviewDetail: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("Edit text")
                 }
-                if item.shortened { Text("Open the full text on your Mac.").font(.footnote).foregroundStyle(.secondary) }
                 if let error = pendingEdit?.error {
                     Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
                 }
+                if let status = item.generationStatus { Text(status).font(.footnote).foregroundStyle(palette.muted) }
 
             }
             .listRowBackground(palette.card)
+            if item.kind == .idea, !inTrash, library.snapshot?.supportsXThreads == true {
+                Section {
+                    Button("Draft for X", systemImage: "square.and.pencil") { generatingXDraft = true }
+                }
+                .listRowBackground(palette.card)
+            }
             if item.isTrashed != true {
-            Section("Review notes") {
+            Section {
                 ForEach(Array(item.notes.enumerated()), id: \.offset) { index, text in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(text)
                         if let dates = item.noteDates, dates.indices.contains(index), let timestamp = date(dates[index]) {
                             Text(timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        if let states = item.noteStates, states.indices.contains(index), let state = states[index] {
+                            let label = state == "applied" ? "Revision applied" :
+                                state == "waitingForDraft" ? "Waiting for an editable draft on Mac" : "Waiting for your Mac to revise"
+                            Label(label, systemImage: state == "applied" ? "checkmark" : "clock")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
@@ -833,14 +1642,14 @@ private struct MobileReviewDetail: View {
                         }
                     }
                 }
-                TextField("Write a review note", text: $note, axis: .vertical)
+                TextField(item.kind == .draft ? "What should change?" : "Write a comment", text: $note, axis: .vertical)
                     .lineLimit(2...5)
                     .focused($editingNote)
-                    .onChange(of: editingNote) { _, focused in
-                        if !focused { saveNote() }
+                if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button(item.kind == .draft ? "Add revision comment" : "Add comment") {
+                        if saveNote() { editingNote = false }
                     }
-                if editingNote, !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button("Done") { editingNote = false }
+                    .disabled(note.utf16.count > 1000)
                 }
                 if note.utf16.count > 1000 {
                     Text("Use up to 1,000 characters.").font(.footnote).foregroundStyle(.secondary)
@@ -849,9 +1658,15 @@ private struct MobileReviewDetail: View {
                     let entry = library.pendingChanges(for: item.id).first { $0.id == savedNoteID }
                     let uploaded = entry == nil || library.snapshot?.pending.contains { $0.id == savedNoteID } == true
                     if entry?.error == nil {
-                        Label(uploaded ? "Saved to iCloud" : "Saved · iCloud sync pending", systemImage: "checkmark")
+                        Label(uploaded ? "Comment synced" : "Comment saved · iCloud sync pending", systemImage: "checkmark")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                }
+            } header: {
+                Text(item.kind == .draft ? "Revision comments" : "Comments")
+            } footer: {
+                if item.kind == .draft {
+                    Text("Inkspring on your Mac checks for new comments every five minutes and applies them to editable, unscheduled drafts using your writing connection.")
                 }
             }
             .listRowBackground(palette.card)
@@ -887,7 +1702,6 @@ private struct MobileReviewDetail: View {
         .scrollContentBackground(.hidden)
         .navigationTitle(inTrash ? "Trash" : item.kind == .draft ? "Draft" : "Idea")
         .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { saveNote() }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if item.isTrashed != true {
@@ -898,6 +1712,9 @@ private struct MobileReviewDetail: View {
         }
         .sheet(isPresented: $editingDraft) {
             MobileItemEditor(item: item, library: library, workspaceID: workspaceID, bodyFirst: editBodyFirst)
+        }
+        .navigationDestination(isPresented: $generatingXDraft) {
+            MobileXGeneration(library: library, idea: item)
         }
         .sheet(isPresented: $choosingSchedule) {
             if let postingWindow {
@@ -931,6 +1748,7 @@ private struct MobileReviewDetail: View {
                 }
             }
             Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = pendingEdit?.text ?? item.body }
+                .disabled(item.shortened && pendingEdit == nil)
             ShareLink(item: pendingEdit?.text ?? item.body) { Label("Share text", systemImage: "square.and.arrow.up") }
             if !inTrash {
                 Button(item.kind == .idea ? "Skip idea" : "Move to Trash", systemImage: "trash", role: .destructive) { remove(.trashItem) }
@@ -944,14 +1762,16 @@ private struct MobileReviewDetail: View {
         if save(.init(action: action, itemID: item.id, revision: item.revision)), !wideLayout { dismiss() }
     }
 
-    private func saveNote() {
+    private func saveNote() -> Bool {
         let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.utf16.count <= 1000 else { return }
+        guard !text.isEmpty, text.utf16.count <= 1000 else { return false }
         let change = CompanionLibrary.Change(action: .note, itemID: item.id, revision: item.revision, text: text)
         if save(change) {
             note = ""
             savedNoteID = change.id
+            return true
         }
+        return false
     }
 
     @discardableResult

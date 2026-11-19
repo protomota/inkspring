@@ -15,6 +15,12 @@ struct WorkspaceRecord: Identifiable {
 
     var id: String { self["id"] }
     var projectID: String { self["projectId"] }
+    var referenceID: String? { self["referenceId"].isEmpty ? nil : self["referenceId"] }
+
+    func matchesID(_ value: String) -> Bool {
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return id == key || referenceID == key.uppercased()
+    }
 
     var title: String {
         let key = switch kind {
@@ -157,7 +163,18 @@ final class WorkspaceDatabase {
                 );
                 CREATE INDEX IF NOT EXISTS records_kind ON records(kind);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS agent_chats (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, updated REAL NOT NULL, payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS agent_chats_project ON agent_chats(project_id, updated DESC);
+                CREATE TABLE IF NOT EXISTS content_identifiers (
+                    record_id TEXT PRIMARY KEY NOT NULL, reference TEXT UNIQUE NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS content_identifiers_number ON content_identifiers(
+                    substr(reference, 1, 3), CAST(substr(reference, 5) AS INTEGER) DESC
+                ) WHERE length(reference) > 3;
                 """)
+            try backfillContentIdentifiers()
         } catch {
             sqlite3_close(handle)
             throw error
@@ -190,7 +207,10 @@ final class WorkspaceDatabase {
     }
 
     func records() throws -> [WorkspaceRecord] {
-        try statement("SELECT kind, payload FROM records ORDER BY rowid DESC") { statement in
+        try statement("""
+            SELECT kind, payload, reference FROM records
+            LEFT JOIN content_identifiers ON records.id = record_id ORDER BY records.rowid DESC
+            """) { statement in
             var records: [WorkspaceRecord] = []
             while true {
                 switch sqlite3_step(statement) {
@@ -198,9 +218,12 @@ final class WorkspaceDatabase {
                 case SQLITE_ROW:
                     let kind = String(cString: sqlite3_column_text(statement, 0))
                     let json = String(cString: sqlite3_column_text(statement, 1))
-                    guard let fields = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+                    guard var fields = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
                           let id = fields["id"] as? String, !id.isEmpty else {
                         throw WorkspaceError("The workspace contains an invalid \(kind) record.")
+                    }
+                    if let reference = sqlite3_column_text(statement, 2) {
+                        fields[kind == "project" ? "projectKey" : "referenceId"] = String(cString: reference)
                     }
                     records.append(WorkspaceRecord(kind: kind, fields: fields))
                 default: throw databaseError
@@ -209,7 +232,25 @@ final class WorkspaceDatabase {
         }
     }
 
-    func put(_ record: WorkspaceRecord) throws {
+    @discardableResult
+    func put(_ input: WorkspaceRecord) throws -> WorkspaceRecord {
+        guard ["project", "draft", "newsletter"].contains(input.kind) else {
+            try writeRecord(input)
+            return input
+        }
+        return try transaction {
+            var record = input
+            if record.kind == "project" {
+                record["projectKey"] = try projectKey(id: record.id, name: record["name"], preferred: record["projectKey"])
+            } else {
+                record["referenceId"] = try contentReference(for: record)
+            }
+            try writeRecord(record)
+            return record
+        }
+    }
+
+    private func writeRecord(_ record: WorkspaceRecord) throws {
         let payload = try JSONSerialization.data(withJSONObject: record.fields)
         try statement("""
             INSERT INTO records (id, kind, project_id, payload) VALUES (?, ?, ?, ?)
@@ -224,8 +265,152 @@ final class WorkspaceDatabase {
         }
     }
 
+    private func backfillContentIdentifiers() throws {
+        let needsBackfill = try statement("""
+            SELECT 1 FROM records LEFT JOIN content_identifiers ON records.id = record_id
+            WHERE records.kind IN ('project', 'draft', 'newsletter') AND record_id IS NULL LIMIT 1
+            """) { statement in
+            switch sqlite3_step(statement) {
+            case SQLITE_DONE: return false
+            case SQLITE_ROW: return true
+            default: throw databaseError
+            }
+        }
+        guard needsBackfill else { return }
+        try transaction {
+            let rows = try records().sorted { ($0["createdAt"], $0.id) < ($1["createdAt"], $1.id) }
+            for row in rows.filter({ $0.kind == "project" }) + rows.filter({ ["draft", "newsletter"].contains($0.kind) }) {
+                if try identifier(for: row.id) == nil { try put(row) }
+            }
+        }
+    }
+
+    private func identifier(for id: String) throws -> String? {
+        try statement("SELECT reference FROM content_identifiers WHERE record_id = ?", [id]) { statement in
+            switch sqlite3_step(statement) {
+            case SQLITE_DONE: return nil
+            case SQLITE_ROW: return String(cString: sqlite3_column_text(statement, 0))
+            default: throw databaseError
+            }
+        }
+    }
+
+    private func reserve(_ reference: String, for id: String) throws -> Bool {
+        try statement("""
+            INSERT INTO content_identifiers (record_id, reference) VALUES (?, ?)
+            ON CONFLICT(reference) DO NOTHING
+            """, [id, reference]) { statement in
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
+            return sqlite3_changes(handle) == 1
+        }
+    }
+
+    private func projectKey(id: String, name: String, preferred: String = "") throws -> String {
+        if let existing = try identifier(for: id) { return existing }
+        if preferred.range(of: #"\A[A-Z]{3}\z"#, options: .regularExpression) != nil,
+           try reserve(preferred, for: id) { return preferred }
+
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        let cleaned = name.decomposedStringWithCompatibilityMapping.uppercased().filter { letters.contains($0) }
+        let stem = String(cleaned.prefix(3)).padding(toLength: 3, withPad: "X", startingAt: 0)
+        let occupied: Set<String> = try statement("SELECT reference FROM content_identifiers WHERE length(reference) = 3") { statement in
+            var keys: Set<String> = []
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_DONE: return keys
+                case SQLITE_ROW: keys.insert(String(cString: sqlite3_column_text(statement, 0)))
+                default: throw databaseError
+                }
+            }
+        }
+        let nearby = [stem] + letters.map { String(stem.prefix(2)) + String($0) }
+        let key = nearby.first { !occupied.contains($0) } ?? (0..<(26 * 26 * 26)).lazy.map { index in
+            String([letters[index / 676], letters[index / 26 % 26], letters[index % 26]])
+        }.first { !occupied.contains($0) }
+        guard let key, try reserve(key, for: id) else {
+            throw WorkspaceError("No project IDs are available.")
+        }
+        return key
+    }
+
+    private func contentReference(for record: WorkspaceRecord) throws -> String {
+        if let existing = try identifier(for: record.id), existing.contains("-") { return existing }
+
+        let preferred = record.referenceID ?? ""
+        if preferred.range(of: #"\A[A-Z]{3}-[0-9]{3,15}\z"#, options: .regularExpression) != nil,
+           let number = Int64(preferred.dropFirst(4)), number > 0,
+           preferred == formatReference(prefix: String(preferred.prefix(3)), number: number),
+           try reserve(preferred, for: record.id) { return preferred }
+        let project = try projectKey(id: record.projectID, name: "Inkspring")
+        // Reservations survive deletion, so a pasted ID can never resolve to a new item.
+        let number: Int64 = try statement("""
+            SELECT CAST(substr(reference, 5) AS INTEGER) FROM content_identifiers
+            WHERE substr(reference, 1, 3) = ? AND length(reference) > 3
+            ORDER BY CAST(substr(reference, 5) AS INTEGER) DESC LIMIT 1
+            """, [project]) { statement in
+            switch sqlite3_step(statement) {
+            case SQLITE_DONE: return 1
+            case SQLITE_ROW: return sqlite3_column_int64(statement, 0) + 1
+            default: throw databaseError
+            }
+        }
+        let reference = formatReference(prefix: project, number: number)
+        guard try reserve(reference, for: record.id) else {
+            throw WorkspaceError("Could not assign a unique post or newsletter ID.")
+        }
+        return reference
+    }
+
+    private func formatReference(prefix: String, number: Int64) -> String {
+        let digits = String(number)
+        return prefix + "-" + String(repeating: "0", count: max(0, 3 - digits.count)) + digits
+    }
+
     func remove(_ id: String, kind: String) throws {
         try statement("DELETE FROM records WHERE id = ? AND kind = ?", [id, kind]) { statement in
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
+        }
+    }
+
+    func agentChats(projectID: String) throws -> [StudioAgentConversation] {
+        try statement("SELECT payload FROM agent_chats WHERE project_id = ? ORDER BY updated DESC, rowid DESC", [projectID]) { statement in
+            let decoder = JSONDecoder()
+            var chats: [StudioAgentConversation] = []
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_DONE: return chats
+                case SQLITE_ROW:
+                    let payload = String(cString: sqlite3_column_text(statement, 0))
+                    chats.append(try decoder.decode(StudioAgentConversation.self, from: Data(payload.utf8)))
+                default: throw databaseError
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func saveAgentChat(_ chat: StudioAgentConversation, projectID: String, isNew: Bool) throws -> Bool {
+        let payload = String(decoding: try JSONEncoder().encode(chat), as: UTF8.self)
+        let sql = isNew
+            ? "INSERT INTO agent_chats (payload, updated, id, project_id) VALUES (?, ?, ?, ?)"
+            : "UPDATE agent_chats SET payload = ?, updated = ? WHERE id = ? AND project_id = ?"
+        return try statement(sql, [payload, String(chat.updatedAt.timeIntervalSince1970), chat.id.uuidString, projectID]) { statement in
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
+            return sqlite3_changes(handle) == 1
+        }
+    }
+
+    func hasAgentChats() throws -> Bool {
+        try statement("SELECT EXISTS(SELECT 1 FROM agent_chats)") { statement in
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw databaseError }
+            return sqlite3_column_int(statement, 0) == 1
+        }
+    }
+
+    func deleteAgentChats(projectID: String, chatID: UUID?) throws {
+        let sql = chatID == nil ? "DELETE FROM agent_chats" : "DELETE FROM agent_chats WHERE project_id = ? AND id = ?"
+        let values = chatID.map { [projectID, $0.uuidString] } ?? []
+        try statement(sql, values) { statement in
             guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
         }
     }

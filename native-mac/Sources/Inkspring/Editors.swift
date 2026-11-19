@@ -4,15 +4,105 @@ import ImageIO
 import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
+import InkspringSchedule
+
+struct StudioEditorPage<Content: View, Actions: View>: View {
+    let title: String
+    @ViewBuilder let actions: () -> Actions
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                PageHeading(title: title, titleSize: 30)
+                Spacer()
+                actions()
+            }
+            .padding(.horizontal, 36)
+            .padding(.vertical, 20)
+            StudioRule()
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+struct PostInlineEditor: View {
+    @Environment(\.studioPalette) private var palette
+    let record: WorkspaceRecord
+    let workspace: Workspace
+    let back: () -> Void
+    let saved: () -> Void
+    let onDirty: (Bool) -> Void
+    @State private var title = ""
+    @State private var markdown = ""
+    @State private var format = ""
+    @State private var message: String?
+
+    private var dirty: Bool { title != record.title || markdown != record.body || format != record["format"] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Button("Back", systemImage: "chevron.left", action: back)
+                    .help("Back to the post")
+                    .keyboardShortcut(.cancelAction)
+                if let reference = record.referenceID {
+                    StudioCopyReference(reference: reference)
+                }
+                Spacer()
+                Button("Save", action: save)
+                    .modifier(PrimaryActionStyle())
+                    .keyboardShortcut("s")
+                    .disabled(!dirty)
+            }
+            DraftTitleField(title: $title)
+            StudioProofreadAction(document: .init(title: title, body: markdown),
+                                  check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
+                title = $0.title
+                markdown = $0.body
+            }
+            DraftPostText(record: record, text: $markdown, format: $format, label: "Markdown", minHeight: 100)
+                .frame(maxHeight: .infinity)
+            if ["queued", "due"].contains(record.scheduleStatus) {
+                Text("Saving changes moves this post to Ready to schedule.").foregroundStyle(.secondary)
+            }
+            if let message { Text(message).foregroundStyle(palette.danger) }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .onAppear { title = record.title; markdown = record.body; format = record["format"] }
+        .onChange(of: dirty) { _, changed in onDirty(changed) }
+    }
+
+    private func save() {
+        do {
+            try workspace.updatePostText(record, title: title, text: markdown, format: format)
+            saved()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+}
 
 struct RecordEditor: View {
     @Environment(\.studioPalette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
+    @FocusState private var newsletterField: NewsletterField?
     @State var record: WorkspaceRecord
     let workspace: Workspace
     let saved: (WorkspaceRecord) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let closeRecord: () -> Void
+    let closeNewsletter: () -> Void
+    let newsletterDirtyChanged: (Bool) -> Void
+    let newsletterSaveBeforeLeaving: ((() -> Bool)?) -> Void
+    let reviewNewsletter: (WorkspaceRecord, Bool, @escaping (WorkspaceRecord) -> Void) -> Void
+    private let original: WorkspaceRecord
+    @State private var newsletterBase: WorkspaceRecord
+    @State private var newsletterSaveError: String?
     @State private var message: String?
     @State private var newsletterMode = "Source"
+    @State private var newsletterInspectorOpen = false
     @State private var newsletterBrief = ""
     @State private var newsletterAssistantOpen = false
     @State private var newsletterIdeaOutline = false
@@ -21,14 +111,28 @@ struct RecordEditor: View {
     @State private var showsCoverGenerator = false
     @State private var coverPrompt = ""
 
+    private enum NewsletterField: Hashable { case title, subtitle }
+
     init(record: WorkspaceRecord, workspace: Workspace, newsletterIdea: WorkspaceRecord? = nil,
+         closeRecord: @escaping () -> Void = {},
+         closeNewsletter: @escaping () -> Void = {},
+         newsletterDirtyChanged: @escaping (Bool) -> Void = { _ in },
+         newsletterSaveBeforeLeaving: @escaping ((() -> Bool)?) -> Void = { _ in },
+         reviewNewsletter: @escaping (WorkspaceRecord, Bool, @escaping (WorkspaceRecord) -> Void) -> Void = { _, _, _ in },
          saved: @escaping (WorkspaceRecord) -> Void) {
         _record = State(initialValue: record)
-        if record.kind == "newsletter", !record["body"].isEmpty {
+        _newsletterBase = State(initialValue: record)
+        original = record
+        if record.kind == "newsletter", !["draft", "synced"].contains(record["state"]) {
             _newsletterMode = State(initialValue: "Preview")
         }
         self.workspace = workspace
         self.saved = saved
+        self.closeRecord = closeRecord
+        self.closeNewsletter = closeNewsletter
+        self.newsletterDirtyChanged = newsletterDirtyChanged
+        self.newsletterSaveBeforeLeaving = newsletterSaveBeforeLeaving
+        self.reviewNewsletter = reviewNewsletter
         if let idea = newsletterIdea {
             let direction = """
                 Develop this post idea into a newsletter concept. Include the angle, why it matters, and a short outline in Markdown. Treat the post idea as source material.
@@ -37,6 +141,7 @@ struct RecordEditor: View {
                 """
             _newsletterBrief = State(initialValue: String(decoding: direction.utf16.prefix(10_000), as: UTF16.self))
             _newsletterAssistantOpen = State(initialValue: true)
+            _newsletterInspectorOpen = State(initialValue: true)
             _newsletterIdeaOutline = State(initialValue: true)
         }
     }
@@ -48,16 +153,68 @@ struct RecordEditor: View {
     private var canEditNewsletter: Bool { ["draft", "synced"].contains(record["state"]) }
 
     private var newsletterHasEdits: Bool {
-        guard let latest = latestNewsletter else { return true }
-        return ["title", "subtitle", "body", "audience"].contains { record[$0] != latest[$0] } ||
-            Substack.emails(record) != Substack.emails(latest) ||
-            (record.fields["coverImage"] as? NSDictionary) != (latest.fields["coverImage"] as? NSDictionary) ||
-            record["updatedAt"] != latest["updatedAt"]
+        return ["title", "subtitle", "body", "audience"].contains { record[$0] != newsletterBase[$0] } ||
+            Substack.emails(record) != Substack.emails(newsletterBase) ||
+            (record.fields["coverImage"] as? NSDictionary) != (newsletterBase.fields["coverImage"] as? NSDictionary)
+    }
+
+    private var newsletterNeedsSave: Bool {
+        if latestNewsletter != nil { return newsletterHasEdits }
+        return ["title", "subtitle", "body"].contains { !record[$0].isEmpty }
+            || record["audience"] != "everyone" || Substack.emails(record) || record.fields["coverImage"] != nil
+    }
+
+    private var newsletterAutosaveValues: [String] {
+        [record["title"], record["subtitle"], record["body"]]
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            PageHeading(title: heading)
+        if record.kind == "newsletter" {
+            newsletterEditor
+                .onChange(of: newsletterNeedsSave, initial: true) { _, dirty in
+                    newsletterDirtyChanged(dirty)
+                }
+                .onChange(of: latestNewsletter?["updatedAt"]) {
+                    if let latestNewsletter, !newsletterHasEdits { acceptNewsletter(latestNewsletter) }
+                }
+                .onAppear { newsletterSaveBeforeLeaving(saveNewsletter) }
+                .task(id: newsletterAutosaveValues) {
+                    guard newsletterNeedsSave else { return }
+                    do { try await Task.sleep(for: .milliseconds(750)) }
+                    catch { return }
+                    _ = saveNewsletter()
+                }
+                .onChange(of: newsletterField) { previous, _ in
+                    if previous != nil { _ = saveNewsletter() }
+                }
+                .onChange(of: newsletterMode) { _, mode in
+                    if mode == "Preview" { _ = saveNewsletter() }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase != .active { _ = saveNewsletter() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    _ = saveNewsletter()
+                }
+                .onDisappear {
+                    newsletterWriting?.cancel()
+                    _ = saveNewsletter()
+                    newsletterSaveBeforeLeaving(nil)
+                }
+        } else {
+            recordPage
+        }
+    }
+
+    private var recordPage: some View {
+        StudioEditorPage(title: heading) {
+            Button("Cancel", role: .cancel, action: closeRecord)
+                .keyboardShortcut(.cancelAction)
+            Button("Save", action: saveRecord)
+                .modifier(PrimaryActionStyle())
+                .keyboardShortcut("s")
+                .disabled(!hasRecordEdits)
+        } content: {
             StudioScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch record.kind {
@@ -80,89 +237,195 @@ struct RecordEditor: View {
                         field("Notes", "text", multiline: true, height: 160)
                     case "idea":
                         field("Topic", "topic")
-                        field("Idea", "text", multiline: true, height: 120)
+                        field("Idea", "text", multiline: true, height: 235)
                         field("Media plan", "mediaPlan")
                         field("Notes", "notes", multiline: true)
                         StudioLabeledChoice(title: "Status", selection: value("status"),
                                             options: ["draft", "picked", "skipped"],
                                             label: { $0 == "draft" ? "Open" : $0.capitalized })
-                    case "newsletter":
-                        newsletterFields
-                        if latestNewsletter != nil {
-                            NewsletterSubstackControls(workspace: workspace, record: record,
-                                                       hasEdits: newsletterHasEdits,
-                                                       updated: { record = $0 }, report: { message = $0 })
-                                .disabled(newsletterWriting != nil)
-                            if !canEditNewsletter {
-                                Button("Make a new local copy", systemImage: "doc.on.doc") {
-                                    record = NewsletterDocument.localCopy(of: record)
-                                    newsletterBrief = ""
-                                    newsletterSources.removeAll()
-                                    message = nil
-                                }
-                                .disabled(newsletterUnavailable)
-                            }
-                        }
                     default:
                         EmptyView()
                     }
+                    if let message { Text(message).foregroundStyle(palette.danger) }
                 }
-                .padding(.bottom, 8)
-            }
-            if let message { Text(message).foregroundStyle(.red) }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                Spacer()
-                Button(record.kind == "newsletter" && !newsletterHasEdits ? "Done" : "Save") {
-                    do {
-                        if record.kind == "newsletter" && !newsletterHasEdits {
-                            dismiss()
-                            return
-                        }
-                        if record.kind == "source" && record["origin"].isEmpty { record["origin"] = "Imported" }
-                        let isNewWriting = ["idea", "newsletter"].contains(record.kind)
-                            && !record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            && !workspace.records.contains { $0.id == record.id }
-                        let result = try workspace.save(record)
-                        if isNewWriting { InkspringReview.recordActivity() }
-                        if record.kind == "newsletter" {
-                            record = result
-                            message = nil
-                        } else {
-                            saved(result)
-                            dismiss()
-                        }
-                    } catch { message = error.localizedDescription }
-                }
-                .disabled(record.kind == "newsletter" && (!canEditNewsletter && newsletterHasEdits || newsletterUnavailable))
-                .keyboardShortcut(.defaultAction)
+                .frame(maxWidth: 920, alignment: .leading)
+                .padding(.horizontal, 36)
+                .padding(.vertical, 24)
+                .frame(maxWidth: .infinity)
             }
         }
-        .padding(24)
-        .frame(width: record.kind == "newsletter" ? 780 : 540, height: record.kind == "newsletter" ? 650 : 490)
-        .onDisappear { newsletterWriting?.cancel() }
+    }
+
+    private var hasRecordEdits: Bool {
+        (original.fields as NSDictionary) != (record.fields as NSDictionary)
+    }
+
+    private func saveRecord() {
+        do {
+            if record.kind == "source" && record["origin"].isEmpty { record["origin"] = "Imported" }
+            let isNewIdea = record.kind == "idea"
+                && !record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !workspace.records.contains { $0.id == record.id }
+            let result = try workspace.save(record)
+            if isNewIdea { InkspringReview.recordActivity() }
+            saved(result)
+        } catch {
+            message = error.localizedDescription
+        }
     }
 
     private var newsletterUnavailable: Bool { workspace.substackBusy || newsletterWriting != nil }
 
-    private var newsletterFields: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Group {
-                field("Title", "title")
-                field("Subtitle", "subtitle")
+    private var newsletterEditor: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Button("Back", systemImage: "chevron.left", action: closeNewsletter)
+                    .help("Back to newsletters")
+                    .keyboardShortcut(.cancelAction)
+                if let reference = latestNewsletter?.referenceID {
+                    StudioCopyReference(reference: reference)
+                }
+                Spacer()
+                StudioSegmentedControl(selection: $newsletterMode, options: ["Source", "Preview"], label: Text.init)
+                    .accessibilityLabel("Newsletter view")
+                Spacer()
+                let inspectorTitle = newsletterInspectorOpen ? "Hide newsletter settings" : "Show newsletter settings"
+                Button(inspectorTitle, systemImage: "sidebar.right") { newsletterInspectorOpen.toggle() }
+                    .labelStyle(.iconOnly)
+                    .help(inspectorTitle)
+                VStack(alignment: .trailing, spacing: 3) {
+                    if newsletterSaveError != nil {
+                        Text("Unsaved changes")
+                    } else if newsletterNeedsSave && canEditNewsletter {
+                        Text("Saving…")
+                            .accessibilityIdentifier("newsletter.autosaveStatus")
+                    }
+                    if let updatedAt = latestNewsletter.flatMap({ scheduleDate($0["updatedAt"]) }) {
+                        Text("Last updated \(updatedAt.formatted(date: .abbreviated, time: .standard))")
+                            .multilineTextAlignment(.trailing)
+                            .accessibilityIdentifier("newsletter.lastUpdated")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(palette.muted)
+            }
+            .padding(18)
+            StudioRule()
+            HStack(spacing: 0) {
+                newsletterCanvas
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if newsletterInspectorOpen {
+                    StudioRule(axis: .vertical)
+                    StudioScrollView {
+                        newsletterSettings
+                            .padding(.vertical, 18)
+                            .padding(.leading, 16)
+                    }
+                    .frame(idealWidth: 320, maxWidth: 320)
+                    .background(palette.sidebar)
+                }
+            }
+            if let detail = newsletterSaveError {
+                newsletterNotice("Couldn’t save changes", detail: detail) {
+                    Button("Retry save") { _ = saveNewsletter() }
+                }
+                .accessibilityIdentifier("newsletter.saveNotice")
+            } else if let message {
+                newsletterNotice("Newsletter needs attention", detail: message) {
+                    Button("Dismiss") { self.message = nil }
+                }
+            }
+        }
+    }
+
+    private func newsletterNotice<Actions: View>(_ title: String, detail: String,
+                                                 @ViewBuilder actions: () -> Actions) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(palette.danger)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.callout.weight(.semibold)).foregroundStyle(palette.text)
+                Text(detail).font(.caption).foregroundStyle(palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            actions()
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .studioSurface(12, fill: palette.panel)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder private var newsletterCanvas: some View {
+        if newsletterMode == "Source" {
+            VStack(alignment: .leading, spacing: 14) {
+                newsletterTextField("Title", key: "title", focus: .title)
+                newsletterTextField("Subtitle", key: "subtitle", focus: .subtitle)
+                StudioProofreadAction(document: .init(title: record["title"], subtitle: record["subtitle"], body: record["body"]),
+                                      check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
+                    record["title"] = $0.title
+                    record["subtitle"] = $0.subtitle
+                    record["body"] = $0.body
+                }
+                DraftBodyField(text: value("body"), label: "Markdown", minHeight: 200,
+                               onFocusLost: { _ = saveNewsletter() })
+                    .frame(maxHeight: .infinity)
             }
             .disabled(!canEditNewsletter || newsletterUnavailable)
-            StudioSegmentedControl(selection: $newsletterMode, options: ["Source", "Preview"], label: Text.init)
-                .accessibilityLabel("Newsletter view")
-            if newsletterMode == "Source" {
-                field("Markdown", "body", multiline: true, height: 300)
-                    .disabled(!canEditNewsletter || newsletterUnavailable)
-            } else {
+            .padding(22)
+        } else {
+            StudioScrollView {
                 NewsletterPreview(title: record["title"], subtitle: record["subtitle"],
                                   markdown: record["body"], cover: workspace.mediaURL(record))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: 880)
+                    .frame(maxWidth: .infinity)
+                    .padding(22)
             }
-            HStack {
+        }
+    }
+
+    private func newsletterTextField(_ label: String, key: String, focus: NewsletterField) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            TextField(label, text: value(key))
+                .studioInput()
+                .focused($newsletterField, equals: focus)
+                .onSubmit { _ = saveNewsletter() }
+        }
+    }
+
+    @discardableResult private func saveNewsletter() -> Bool {
+        guard newsletterNeedsSave else {
+            newsletterSaveError = nil
+            return true
+        }
+        guard canEditNewsletter else { return false }
+        do {
+            let isNewWriting = latestNewsletter == nil
+                && !record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            acceptNewsletter(try workspace.saveNewsletterEditor(record, basedOn: newsletterBase))
+            if isNewWriting { InkspringReview.recordActivity() }
+            newsletterSaveError = nil
+            return true
+        } catch {
+            newsletterSaveError = error.localizedDescription
+            return false
+        }
+    }
+
+    private func acceptNewsletter(_ updated: WorkspaceRecord) {
+        record = updated
+        newsletterBase = updated
+        newsletterSaveError = nil
+    }
+
+    private var newsletterSettings: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if canEditNewsletter { newsletterAssistant }
+            VStack(alignment: .leading, spacing: 9) {
                 Button("Import Markdown…", action: importMarkdown).disabled(!canEditNewsletter || newsletterUnavailable)
                 Button("Export Markdown…") {
                     let subtitle = record["subtitle"].isEmpty ? "" : "*" + record["subtitle"] + "*\n\n"
@@ -174,16 +437,22 @@ struct RecordEditor: View {
             if newsletterMode == "Source" { AttachedMedia(url: workspace.mediaURL(record)) }
             GroupBox("Cover image") {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack {
+                    VStack(alignment: .leading, spacing: 8) {
                         Button("Generate cover…", systemImage: "sparkles") { showsCoverGenerator.toggle() }
                         Button("Attach cover image…", systemImage: "photo") {
                             if let url = workspace.chooseMedia([.png, .jpeg, .webP]) {
-                                do { record.fields["coverImage"] = try workspace.attachImage(url) }
+                                do {
+                                    record.fields["coverImage"] = try workspace.attachImage(url)
+                                    saveNewsletter()
+                                }
                                 catch { message = error.localizedDescription }
                             }
                         }
                         if record.fields["coverImage"] is [String: Any] {
-                            Button("Remove cover") { record.fields["coverImage"] = nil }
+                        Button("Remove cover") {
+                            record.fields["coverImage"] = nil
+                            saveNewsletter()
+                        }
                         }
                     }
                     if showsCoverGenerator {
@@ -206,21 +475,38 @@ struct RecordEditor: View {
             .disabled(!canEditNewsletter || newsletterUnavailable)
             GroupBox("Audience and delivery") {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 18) {
-                        StudioChoicePicker(title: "Audience", selection: value("audience"),
-                                           options: ["everyone", "only_paid", "founding"], label: Substack.audienceLabel)
-                        Spacer()
-                        Toggle("Email subscribers", isOn: Binding(
-                            get: { Substack.emails(record) }, set: { record.fields["sendEmail"] = $0 }
-                        ))
-
-                        .tint(palette.accent)
-                    }
+                    StudioChoicePicker(title: "Audience", selection: Binding(get: { record["audience"] }, set: {
+                        record["audience"] = $0
+                        saveNewsletter()
+                    }),
+                                       options: ["everyone", "only_paid", "founding"], label: Substack.audienceLabel)
+                    Toggle("Email subscribers", isOn: Binding(
+                        get: { Substack.emails(record) }, set: {
+                            record.fields["sendEmail"] = $0
+                            saveNewsletter()
+                        }
+                    ))
+                    .tint(palette.accent)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .disabled(!canEditNewsletter || newsletterUnavailable)
-            if canEditNewsletter { newsletterAssistant }
+            if latestNewsletter != nil {
+                NewsletterSubstackControls(workspace: workspace, record: record, hasEdits: newsletterHasEdits,
+                                           updated: acceptNewsletter, report: { message = $0 },
+                                           reviewSend: { scheduling in reviewNewsletter(record, scheduling, acceptNewsletter) })
+                    .disabled(newsletterWriting != nil)
+                if !canEditNewsletter {
+                    Button("Make a new local copy", systemImage: "doc.on.doc") {
+                        acceptNewsletter(NewsletterDocument.localCopy(of: record))
+                        newsletterBrief = ""
+                        newsletterSources.removeAll()
+                        newsletterMode = "Source"
+                        message = nil
+                    }
+                    .disabled(newsletterUnavailable)
+                }
+            }
         }
     }
 
@@ -236,6 +522,7 @@ struct RecordEditor: View {
                 try Task.checkCancellation()
                 let file = try workspace.writeGeneratedImage(bytes, fileExtension: fileExtension)
                 record.fields["coverImage"] = ["file": file, "origin": providers.imageProvider.name, "prompt": prompt]
+                saveNewsletter()
                 showsCoverGenerator = false
             } catch is CancellationError {
             } catch { message = error.localizedDescription }
@@ -281,7 +568,7 @@ struct RecordEditor: View {
     }
 
     private func writeNewsletter() {
-        guard !newsletterUnavailable else { return }
+        guard !newsletterUnavailable, saveNewsletter() else { return }
         message = nil
         let draft = record
         let direction = newsletterBrief
@@ -289,8 +576,8 @@ struct RecordEditor: View {
         newsletterWriting = Task {
             defer { newsletterWriting = nil }
             do {
-                record = try await ContentStudio(workspace: workspace)
-                    .writeNewsletter(draft, brief: direction, sourceIDs: sources)
+                acceptNewsletter(try await ContentStudio(workspace: workspace)
+                    .writeNewsletter(draft, brief: direction, sourceIDs: sources))
                 newsletterIdeaOutline = false
                 workspace.notice = "Newsletter draft saved for review."
             } catch is CancellationError {
@@ -312,9 +599,8 @@ struct RecordEditor: View {
     private var heading: String {
         switch record.kind {
         case "project": record["name"].isEmpty ? "New project" : "Edit project"
-        case "source": "Research reference"
-        case "idea": "Post idea"
-        case "newsletter": "Newsletter"
+        case "source": original["title"].isEmpty ? "New research reference" : "Edit research reference"
+        case "idea": original["topic"].isEmpty ? "New idea" : "Edit idea"
         default: "Edit"
         }
     }
@@ -372,6 +658,8 @@ struct DraftStudio: View {
     let workspace: Workspace
     let onDirty: (Bool) -> Void
     let showSchedule: (WorkspaceRecord) -> Void
+    let reviewPublication: (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void
+    let isActive: Bool
     @Environment(\.openURL) private var openURL
     @State private var dirty = false
     @State private var generation: Task<Void, Never>?
@@ -380,20 +668,23 @@ struct DraftStudio: View {
     @State private var selectedSources: Set<String> = []
     @State private var promptDirection = ""
     @State private var rewriteNotes = ""
-    @State private var draftForReview: WorkspaceRecord?
     @State private var linkedInDestinations: [LinkedInDestination] = []
     @State private var showsImageGeneration = false
     @State private var mediaChoice: DraftMediaKind?
     @State private var mediaPreview: DraftMediaPreview?
 
     init(initial: WorkspaceRecord, workspace: Workspace, onDirty: @escaping (Bool) -> Void,
-         showSchedule: @escaping (WorkspaceRecord) -> Void) {
+         showSchedule: @escaping (WorkspaceRecord) -> Void,
+         reviewPublication: @escaping (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void,
+         isActive: Bool) {
         var draft = initial
         if !draft["title"].isEmpty { draft["title"] = draft.draftTitle }
         _initial = State(initialValue: draft)
         self.workspace = workspace
         self.onDirty = onDirty
         self.showSchedule = showSchedule
+        self.reviewPublication = reviewPublication
+        self.isActive = isActive
     }
 
     var body: some View {
@@ -402,6 +693,9 @@ struct DraftStudio: View {
                 HStack {
                     PageHeading(title: initial["format"] == "reply" ? "Have the last word." : "Find the words.", titleSize: 32)
                     Spacer()
+                    if let reference = initial.referenceID {
+                        StudioCopyReference(reference: reference)
+                    }
                     Button("Save draft", systemImage: "square.and.arrow.down") { save() }
                         .modifier(PrimaryActionStyle())
                         .keyboardShortcut("s")
@@ -411,9 +705,9 @@ struct DraftStudio: View {
                                        options: ["x", "linkedin", "instagram", "reddit", "tiktok"],
                                        label: platformName, icon: PlatformMark.image)
                     .disabled(initial.fields["manualQuote"] as? Bool == true)
-                    StudioFilterMenu(title: "Post format", value: initial["format"].capitalized) {
+                    StudioFilterMenu(title: "Post format", value: XPostStyle(rawValue: initial["format"])?.title ?? initial["format"].capitalized) {
                         Picker("Format", selection: value("format")) {
-                            ForEach(formats, id: \.self) { Text($0.capitalized).tag($0) }
+                            ForEach(formats, id: \.self) { Text(XPostStyle(rawValue: $0)?.title ?? $0.capitalized).tag($0) }
                         }
                         .pickerStyle(.inline)
                     }
@@ -456,7 +750,14 @@ struct DraftStudio: View {
                 StudioRule()
                 DraftTitleField(title: value("title"))
                 mediaSection
-                DraftBodyField(text: value("content"), label: "Post text", minHeight: 260)
+                if !["posting", "posted"].contains(initial.scheduleStatus) {
+                    StudioProofreadAction(document: .init(title: initial["title"], body: initial.body),
+                                          check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
+                        initial["title"] = $0.title
+                        initial["content"] = $0.body
+                    }
+                }
+                DraftPostText(record: initial, text: value("content"), format: value("format"), label: "Post text", minHeight: 260)
                 if !initial.body.isEmpty && !["posting", "posted"].contains(initial.scheduleStatus) {
                     rewriteControls
                 }
@@ -493,7 +794,7 @@ struct DraftStudio: View {
                 .padding(15)
             }
         }
-        .modifier(InkspringRatingPrompt(isIdle: !dirty && generation == nil && draftForReview == nil && workspace.error == nil))
+        .modifier(InkspringRatingPrompt(isIdle: isActive && !dirty && generation == nil && workspace.error == nil))
         .onAppear {
             selectedSources = Set(initial.fields["sourceIds"] as? [String] ?? [])
         }
@@ -503,14 +804,6 @@ struct DraftStudio: View {
         }
         .sheet(item: $mediaPreview) { preview in
             DraftMediaSheet(preview: preview).studioAppearance(palette)
-        }
-        .sheet(item: $draftForReview) { draft in
-            PublicationReview(draft: draft, workspace: workspace) { _ in
-                if var current = workspace.drafts.first(where: { $0.id == draft.id }) {
-                    current["title"] = current.draftTitle
-                    initial = current
-                }
-            }
         }
     }
 
@@ -559,7 +852,12 @@ struct DraftStudio: View {
                   current["updatedAt"] == initial["updatedAt"] else {
                 throw WorkspaceError("The draft changed. Reopen it before publishing.")
             }
-            draftForReview = current
+            reviewPublication(current, nil) { _ in
+                if var updated = workspace.drafts.first(where: { $0.id == current.id }) {
+                    updated["title"] = updated.draftTitle
+                    initial = updated
+                }
+            }
         }
     }
 
@@ -981,7 +1279,7 @@ struct DraftStudio: View {
         switch initial["platform"] {
         case "tiktok": ["image", "video"]
         case "instagram": ["image"]
-        case "x": ["post", "thread", "image", "reply"]
+        case "x": ["post", "followup", "thread", "image", "reply"]
         case "reddit": ["post", "image"]
         default: ["post"]
         }
@@ -1173,24 +1471,57 @@ struct DraftTitleField: View {
     }
 }
 
+private struct DraftPostText: View {
+    let record: WorkspaceRecord
+    @Binding var text: String
+    @Binding var format: String
+    let label: String
+    let minHeight: CGFloat
+
+    private var supportsFollowUp: Bool {
+        record["platform"] == "x" && XPostStyle(rawValue: format) != nil
+            && record.fields["manualQuote"] as? Bool != true
+            && record.fields["image"] == nil && record.fields["video"] == nil
+            && !["posting", "posted"].contains(record.scheduleStatus)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if supportsFollowUp {
+                StudioXPostEditor(text: $text, format: $format)
+            } else {
+                DraftBodyField(text: $text, label: label, minHeight: minHeight)
+            }
+        }
+    }
+}
+
 struct DraftBodyField: View {
     @Environment(\.studioPalette) private var palette
+    @FocusState private var editorFocused: Bool
     @Binding var text: String
     let label: String
     let minHeight: CGFloat
+    var onFocusLost: (() -> Void)? = nil
+    var focusRequest = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             draftFieldLabel(label)
             TextEditor(text: $text)
-                .font(InkspringTypography.editorial(16))
+                .focused($editorFocused)
+                .onChange(of: focusRequest) { editorFocused = true }
+                .onChange(of: editorFocused) { previous, focused in
+                    if previous && !focused { onFocusLost?() }
+                }
+                .font(label == "Markdown" ? .system(size: 14, design: .monospaced) : InkspringTypography.interface(16))
                 .lineSpacing(4)
                 .frame(minHeight: minHeight)
                 .accessibilityLabel(label)
                 .scrollContentBackground(.hidden)
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
-                        draftPrompt(label == "Post text" ? "Write your post…" : "Describe the idea and angle…", color: palette.muted)
+                        draftPrompt(label == "Idea and angle" ? "Describe the idea and angle…" : label == "Markdown" ? "Write in Markdown…" : "Write your post…", color: palette.muted)
                             .padding(.leading, 5)
                             .padding(.top, 3)
                             .accessibilityHidden(true)

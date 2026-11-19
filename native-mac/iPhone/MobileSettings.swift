@@ -194,6 +194,7 @@ struct MobileSettingsView: View {
             "Last iCloud response: \(timestamp(library.lastCloudContact))",
             "Mac snapshot: \(timestamp(library.snapshot?.updatedAt))"
         ]
+        if let status = library.newsletterSyncSummary { lines.append("Newsletter sync: \(status)") }
         if let code = library.syncErrorCode { lines.append("Error code: \(code)") }
         return lines.joined(separator: "\n")
     }
@@ -203,6 +204,10 @@ struct MobileSettingsView: View {
             LabeledContent("Apple Account", value: library.accountStatus)
                 .accessibilityIdentifier("settings.libraryStatus")
             LabeledContent("Mac workspace", value: workspaceStatus)
+            if let status = library.newsletterSyncSummary {
+                LabeledContent("Newsletter sync", value: status)
+                    .accessibilityIdentifier("settings.newsletterSync")
+            }
             LabeledContent("Last check", value: timestamp(library.lastCheck))
             LabeledContent("Last iCloud response", value: timestamp(library.lastCloudContact))
             if let snapshot = library.snapshot {

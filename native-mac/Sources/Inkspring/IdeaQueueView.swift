@@ -1,4 +1,5 @@
 import SwiftUI
+import InkspringSchedule
 
 struct IdeaQueueView: View {
     @Environment(\.studioPalette) private var palette
@@ -7,11 +8,13 @@ struct IdeaQueueView: View {
     let edit: (WorkspaceRecord) -> Void
     let openDraft: (WorkspaceRecord) -> Void
     let openNewsletter: (WorkspaceRecord) -> Void
+    let showAction: (WorkspaceRecord, IdeaAction) -> Void
 
     @State private var filter = "draft"
-    @State private var selection: IdeaActionRequest?
     @State private var busy = false
     @State private var message: String?
+
+    private let cardSpacing: CGFloat = 20
 
     private var ideas: [WorkspaceRecord] {
         workspace.ideas.filter { matches($0, filter) }
@@ -40,7 +43,8 @@ struct IdeaQueueView: View {
                     ContentUnavailableView(emptyTitle, systemImage: "newspaper")
                         .frame(maxWidth: .infinity)
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 15)], alignment: .leading, spacing: 15) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: cardSpacing)],
+                              alignment: .leading, spacing: cardSpacing) {
                         ForEach(ideas) { idea in
                             ideaCard(idea)
                         }
@@ -48,13 +52,6 @@ struct IdeaQueueView: View {
                 }
             }
             .studioPage()
-        }
-        .sheet(item: $selection) { request in
-            IdeaActionSheet(idea: request.idea, action: request.action, workspace: workspace) { drafts in
-                let noun = drafts.count == 1 ? "draft" : "drafts"
-                workspace.notice = "Created \(drafts.count) \(noun)"
-            }
-            .studioAppearance(palette)
         }
     }
 
@@ -76,33 +73,12 @@ struct IdeaQueueView: View {
 
     private func ideaCard(_ idea: WorkspaceRecord) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(idea.title)
-                .font(InkspringTypography.editorial(23, relativeTo: .title2))
-                .lineLimit(2)
-                .accessibilityAddTraits(.isHeader)
-            Text(idea.body)
-                .font(InkspringTypography.interface(14))
-                .lineSpacing(3)
-                .lineLimit(5)
-                .foregroundStyle(.secondary)
+            IdeaExcerpt(title: idea.title, text: idea.body)
             Spacer(minLength: 3)
             StudioRule()
             switch filter == "picked" ? "picked" : idea["status"] {
             case "draft":
-                HStack(spacing: 7) {
-                    Button("Draft from idea…", systemImage: "square.and.pencil") {
-                        selection = IdeaActionRequest(idea: idea, action: .draft)
-                    }
-                        .modifier(PrimaryActionStyle())
-                        .disabled(["x", "linkedin", "instagram"].allSatisfy { idea.draftVersions[$0] != nil })
-                    Button("Give feedback…") { selection = IdeaActionRequest(idea: idea, action: .feedback) }
-                    Spacer(minLength: 0)
-                    StudioMoreMenu(title: "More actions for \(idea.title)", size: 35) {
-                        newsletterButton(idea)
-                        Button("Edit idea…") { edit(idea) }
-                        Button("Skip idea") { change(idea, to: "skipped") }
-                    }
-                }
+                draftActions(idea)
             case "skipped":
                 HStack {
                     Button("Restore to Open", systemImage: "arrow.uturn.backward") { change(idea, to: "draft") }
@@ -115,9 +91,41 @@ struct IdeaQueueView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .studioSurface()
+    }
+
+    private func draftActions(_ idea: WorkspaceRecord) -> some View {
+        let draft = Button("Draft from idea…", systemImage: "square.and.pencil") {
+            showAction(idea, .draft)
+        }
+        .modifier(PrimaryActionStyle())
+        .disabled(["x", "linkedin", "instagram"].allSatisfy { idea.draftVersions[$0] != nil })
+        let feedback = Button("Give feedback…") {
+            showAction(idea, .feedback)
+        }
+        let more = StudioMoreMenu(title: "More actions for \(idea.title)", size: 35) {
+            newsletterButton(idea)
+            Button("Edit idea…") { edit(idea) }
+            Button("Skip idea") { change(idea, to: "skipped") }
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 7) {
+                draft
+                feedback
+                Spacer(minLength: 0)
+                more
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    draft
+                    Spacer(minLength: 0)
+                    more
+                }
+                feedback
+            }
+        }
     }
 
     @ViewBuilder private func linkedDrafts(_ idea: WorkspaceRecord) -> some View {
@@ -184,6 +192,56 @@ struct IdeaQueueView: View {
     }
 }
 
+private struct IdeaExcerpt: View {
+    @Environment(\.studioPalette) private var palette
+    let title: String
+    let text: String
+    @State private var expanded = false
+    @State private var visibleHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            excerpt(limited: !expanded)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { visibleHeight = $0 }
+                .background(alignment: .topLeading) {
+                    if !expanded {
+                        excerpt(limited: false)
+                            .hidden()
+                            .accessibilityHidden(true)
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { fullHeight = $0 }
+                    }
+                }
+            if expanded || fullHeight > visibleHeight + 1 {
+                Button(expanded ? "Show less" : "Show more",
+                       systemImage: expanded ? "chevron.up" : "chevron.down") { expanded.toggle() }
+                    .buttonStyle(.plain)
+                    .font(InkspringTypography.interface(13).weight(.medium))
+                    .foregroundStyle(palette.accent)
+                    .padding(.vertical, 4)
+                    .accessibilityHint(expanded ? "Collapse this idea" : "Read the complete idea")
+            }
+        }
+    }
+
+    private func excerpt(limited: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(InkspringTypography.editorial(23, relativeTo: .title2))
+                .lineLimit(limited ? 2 : nil)
+                .accessibilityAddTraits(.isHeader)
+            Text(text)
+                .font(InkspringTypography.interface(14))
+                .lineSpacing(3)
+                .lineLimit(limited ? 5 : nil)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 enum IdeaAction {
     case draft, feedback
 
@@ -195,21 +253,16 @@ enum IdeaAction {
     }
 }
 
-private struct IdeaActionRequest: Identifiable {
-    let idea: WorkspaceRecord
-    let action: IdeaAction
-    var id: String { idea.id }
-}
-
-struct IdeaActionSheet: View {
+struct IdeaActionPage: View {
     @State var idea: WorkspaceRecord
     let action: IdeaAction
     let workspace: Workspace
+    let close: () -> Void
     let completed: ([WorkspaceRecord]) -> Void
 
     @Environment(\.studioPalette) private var palette
-    @Environment(\.dismiss) private var dismiss
     @State private var chosen: Set<String> = []
+    @State private var xFormat = "post"
     @State private var notes = ""
     @State private var progress: String?
     @State private var failure: Error?
@@ -225,11 +278,21 @@ struct IdeaActionSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeading(title: action.title)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 16)
-            StudioRule()
+        StudioEditorPage(title: action.title) {
+            Button(action == .feedback ? "Done" : "Cancel", role: .cancel, action: close)
+                .disabled(busy)
+                .keyboardShortcut(.cancelAction)
+            switch action {
+            case .draft:
+                Button(createLabel) { write(Array(chosen)) }
+                    .modifier(PrimaryActionStyle())
+                    .disabled(busy || chosen.isEmpty)
+            case .feedback:
+                Button("Apply feedback") { applyFeedback() }
+                    .modifier(PrimaryActionStyle())
+                    .disabled(busy || notes.utf16.count > 4000 || notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        } content: {
             StudioScrollView {
                 VStack(alignment: .leading, spacing: 17) {
                     ideaPreview
@@ -237,18 +300,12 @@ struct IdeaActionSheet: View {
                     case .draft: platformChoices
                     case .feedback: feedbackEditor
                     }
+                    feedbackStatus
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 18)
+                .frame(maxWidth: 920, alignment: .leading)
+                .studioPage()
             }
-            .frame(height: action == .draft ? 285 : 320)
-            StudioRule()
-            footer
         }
-        .frame(width: 550)
-        .background(palette.canvas)
-        .studioAppearance(palette)
-        .interactiveDismissDisabled(busy)
     }
 
     private var ideaPreview: some View {
@@ -293,6 +350,13 @@ struct IdeaActionSheet: View {
                 }
             }
             .padding(.vertical, 4)
+            if chosen.contains("x"), linked["x"] == nil {
+                Picker("X post type", selection: $xFormat) {
+                    ForEach(XPostStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .disabled(busy)
+                .accessibilityIdentifier("idea.xPostType")
+            }
             if XQuoteComposer.source(in: idea) != nil, linked["x"] == nil {
                 Button { write(["x"], manualQuote: true) } label: {
                     StudioPlatformLabel(name: "x", title: "Create X quote draft")
@@ -333,7 +397,7 @@ struct IdeaActionSheet: View {
         }
     }
 
-    private var footer: some View {
+    private var feedbackStatus: some View {
         VStack(alignment: .leading, spacing: 9) {
             if let failure {
                 Group {
@@ -356,25 +420,7 @@ struct IdeaActionSheet: View {
                 Label("Drafts go to Ready to schedule. You choose when they go out.", systemImage: "calendar")
                     .font(.callout).foregroundStyle(palette.muted)
             }
-            HStack {
-                Button(action == .feedback ? "Done" : "Cancel", role: .cancel) { dismiss() }
-                    .disabled(busy)
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                switch action {
-                case .draft:
-                    Button(createLabel) { write(Array(chosen)) }
-                        .modifier(PrimaryActionStyle())
-                        .disabled(busy || chosen.isEmpty)
-                case .feedback:
-                    Button("Apply feedback") { applyFeedback() }
-                        .modifier(PrimaryActionStyle())
-                        .disabled(busy || notes.utf16.count > 4000 || notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 13)
     }
 
     private func applyFeedback() {
@@ -390,9 +436,9 @@ struct IdeaActionSheet: View {
         Task {
             await run(platforms.count == 1 ? "Writing your draft…" : "Writing your drafts…") {
                 let (_, drafts) = try await ContentStudio(workspace: workspace)
-                    .pick(idea, platforms: platforms, manualQuote: manualQuote)
+                    .pick(idea, platforms: platforms, manualQuote: manualQuote, xFormat: xFormat)
                 completed(drafts)
-                dismiss()
+                close()
             }
         }
     }

@@ -7,8 +7,8 @@ Inkspring for Mac is built with SwiftUI. It uses system Liquid Glass on macOS 26
 Run the following from the repository root on a Mac with Xcode installed.
 
 ```sh
-native-mac/build-app.sh "$PWD/.build/local"
-open "$PWD/.build/local/Inkspring.app"
+native-mac/build-app.sh
+open "/Volumes/Expand/Codex Media/Inkspring Native/Inkspring.app"
 ```
 
 The build script accepts an absolute output directory as its first argument. For a disposable workspace, create a separate directory and open the app with `open -n -a <app-path> --env "INKSPRING_NATIVE_WORKSPACE=<workspace-path>"`.
@@ -34,7 +34,7 @@ In **Settings → Storage & backups**, select **Import Workspace Folder…** and
 The migration command snapshots the source database with SQLite, copies and checks its images and videos, and creates a new native workspace directory. The source stays available for recovery. The destination must be a new folder. The copy retains all records and pauses automation and agent access until the native app is configured.
 
 ```sh
-"$PWD/.build/local/Inkspring.app/Contents/MacOS/Inkspring" \
+"/Volumes/Expand/Codex Media/Inkspring Native/Inkspring.app/Contents/MacOS/Inkspring" \
   --stage-workspace "<absolute source workspace path>" "<new absolute native workspace path>"
 ```
 
@@ -42,7 +42,15 @@ The migration command snapshots the source database with SQLite, copies and chec
 
 Open **Settings → AI agents** and turn on **Let AI agents use Inkspring**. Claude Code can save a project connection from this screen. For Codex, use the command and argument shown in the Codex tab. The Swift executable speaks STDIO MCP and reads and writes the same SQLite database as the app. Vault reading and immediate X or LinkedIn posting each require their own permission. Suggestions wait for review in Settings.
 
+For already-written social copy, use MCP **save_draft** with `project_id`, `platform`, `title`, and `content`. It saves the exact text locally without a model, API key, scheduling, or publication. Optional `request_key` prevents duplicate creation on identical retries. Use **edit_draft** with the last-read `expected_updated_at` for revisions. **write_post** also accepts `content` for local saving; use its `idea` argument only when requesting model generation through the configured writing connection. Keep LinkedIn URLs in the supplied body when desired.
+
 **Ask my agent** opens a chat in the Mac app. Select a locally installed, signed-in Codex or Claude Code. Chat can read drafts, ideas, and newsletters in the open project and suggest wording. It cannot change drafts, schedule, or publish. The selected agent handles the model request using its existing sign-in.
+
+Copy the ID shown on a post or newsletter, such as `PRO-001`, and give it to your agent. The Inkspring MCP tool `get_content` reads either kind by that ID. Posts and newsletters share a sequence within each project. IDs stay the same when you rename a project or edit an item. The iPhone companion shows the IDs after it syncs with an updated Mac.
+
+Choose **Proofread** while editing a post or newsletter. Inkspring shows each suggested spelling, grammar, or punctuation correction and its reason. **Apply corrections** puts them into the editor. The Mac uses the selected Claude or Codex agent. On iPhone and iPad, Apple Intelligence runs the check on the device.
+
+For X drafts, choose **Single post**, **Post with reply**, or **Thread** before generating. The opening and each follow-up have separate editors and character counts. On iPhone and iPad, open a follow-up to edit it, then return to the draft to add replies or save. **Draft for X** on an idea and **New X draft** queue generation on your Mac using its writing connection. Keep Inkspring open on the Mac for generation and publishing. Scheduling sends the entire thread in order, with each reply attached to the preceding post.
 
 To reuse credentials already in a secret manager, turn on **Let agents set API keys and R2 credentials** in **Settings → AI agents**. Ask an agent with local command access to retrieve the selected credentials from the secret manager, launch a local Inkspring `--mcp` session with them in its environment, and call the setup tool in that session. Keep the raw values out of chat, tool arguments, and saved MCP configuration files.
 

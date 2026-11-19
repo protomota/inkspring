@@ -6,7 +6,7 @@ struct PublicationReview: View {
     let workspace: Workspace
     var scheduleAt: Date? = nil
     let completed: (WorkspaceRecord) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
     @State private var plan: SocialPublishPlan?
     @State private var message: String?
     @State private var publishing = false
@@ -21,83 +21,82 @@ struct PublicationReview: View {
 
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            Text(scheduleAt == nil ? "Review & publish" : "Review & schedule").font(.title2)
-            if let scheduleAt {
-                Label(scheduleAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-            }
+        StudioEditorPage(title: scheduleAt == nil ? "Review & publish" : "Review & schedule") {
+            Button("Close", role: .cancel, action: close).disabled(publishing)
+                .keyboardShortcut(.cancelAction)
+            if publishing { ProgressView().controlSize(.small) }
             if let plan {
-                StudioPlatformLabel(name: plan.platform.rawValue, title: "\(plan.platform.name) · \(plan.accountName)")
-                if let tiktok = plan.tiktok {
-                    Text(TikTokCreator.privacyLabels[tiktok.privacy] ?? tiktok.privacy)
-                        .font(.headline)
-                    if tiktok.branded { Text("Branded content") }
+                Button(scheduleAt == nil ? "Publish on \(plan.platform.name)" : "Schedule TikTok post") {
+                    Task { await publish(plan) }
                 }
-                if let subreddit = plan.subreddit { Text("r/" + subreddit).font(.headline) }
-                if let hosting = plan.r2 {
-                    Label("R2 bucket: " + hosting.bucket, systemImage: "externaldrive")
-                }
-                if let image = plan.publicImage { Text(image.absoluteString).lineLimit(2).textSelection(.enabled) }
-                StudioScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let tiktok = plan.tiktok, !isTikTokVideo, !tiktok.title.isEmpty {
-                            Text(tiktok.title).font(.headline)
-                        }
-                        ForEach(Array((plan.tiktok.map { [$0.caption] } ?? plan.posts).enumerated()), id: \.offset) { _, post in
-                            Text(post).textSelection(.enabled)
-                            if plan.posts.count > 1 { Divider() }
-                        }
-                        AttachedMedia(url: plan.image)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 350)
-            } else if reviewing {
-                ProgressView("Checking the connected account…")
+                .modifier(PrimaryActionStyle())
+                .disabled(publishing || message != nil)
             } else if needsOptions {
-                if draft["platform"] == "instagram" {
-                    if r2 != nil, workspace.mediaURL(draft) != nil {
-                        Toggle("Host the attached image in my R2 bucket", isOn: $options.useR2)
-                    }
-                    if !options.useR2 {
-                        TextField("Public HTTPS JPEG URL", text: $options.imageURL)
-                            .studioInput()
-                    }
-                } else if draft["platform"] == "tiktok" {
-                    if let creator {
-                        StudioScrollView { tikTokFields(creator) }
-                            .frame(maxHeight: 440)
-                    } else if message == nil {
-                        ProgressView("Loading TikTok posting options…")
-                    }
-                } else {
-                    TextField("Subreddit (r/example)", text: $options.subreddit)
-                        .studioInput()
-                    TextField("Flair ID (optional)", text: $options.flair)
-                        .studioInput()
-                }
+                Button("Review") { Task { await review() } }
+                    .modifier(PrimaryActionStyle())
+                    .disabled(reviewing || draft["platform"] == "tiktok" && (creator == nil || !tiktok.consent))
             }
-            if let message { Text(message).foregroundStyle(.red).textSelection(.enabled) }
-            HStack {
-                Button("Close", role: .cancel) { dismiss() }.disabled(publishing)
-                Spacer()
-                if publishing { ProgressView().controlSize(.small) }
-                if let plan {
-                    Button(scheduleAt == nil ? "Publish on \(plan.platform.name)" : "Schedule TikTok post") {
-                        Task { await publish(plan) }
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let scheduleAt {
+                        Label(scheduleAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
                     }
-                        .modifier(PrimaryActionStyle())
-                        .disabled(publishing || message != nil)
-                } else if needsOptions {
-                    Button("Review") { Task { await review() } }
-                        .disabled(reviewing || draft["platform"] == "tiktok" && (creator == nil || !tiktok.consent))
+                    if let plan {
+                        StudioPlatformLabel(name: plan.platform.rawValue, title: "\(plan.platform.name) · \(plan.accountName)")
+                        if let tiktok = plan.tiktok {
+                            Text(TikTokCreator.privacyLabels[tiktok.privacy] ?? tiktok.privacy)
+                                .font(.headline)
+                            if tiktok.branded { Text("Branded content") }
+                        }
+                        if let subreddit = plan.subreddit { Text("r/" + subreddit).font(.headline) }
+                        if let hosting = plan.r2 {
+                            Label("R2 bucket: " + hosting.bucket, systemImage: "externaldrive")
+                        }
+                        if let image = plan.publicImage { Text(image.absoluteString).lineLimit(2).textSelection(.enabled) }
+                        Group {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if let tiktok = plan.tiktok, !isTikTokVideo, !tiktok.title.isEmpty {
+                                    Text(tiktok.title).font(.headline)
+                                }
+                                ForEach(Array((plan.tiktok.map { [$0.caption] } ?? plan.posts).enumerated()), id: \.offset) { _, post in
+                                    Text(post).textSelection(.enabled)
+                                    if plan.posts.count > 1 { Divider() }
+                                }
+                                AttachedMedia(url: plan.image)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else if reviewing {
+                        ProgressView("Checking the connected account…")
+                    } else if needsOptions {
+                        if draft["platform"] == "instagram" {
+                            if r2 != nil, workspace.mediaURL(draft) != nil {
+                                Toggle("Host the attached image in my R2 bucket", isOn: $options.useR2)
+                            }
+                            if !options.useR2 {
+                                TextField("Public HTTPS JPEG URL", text: $options.imageURL)
+                                    .studioInput()
+                            }
+                        } else if draft["platform"] == "tiktok" {
+                            if let creator {
+                                tikTokFields(creator)
+                            } else if message == nil {
+                                ProgressView("Loading TikTok posting options…")
+                            }
+                        } else {
+                            TextField("Subreddit (r/example)", text: $options.subreddit)
+                                .studioInput()
+                            TextField("Flair ID (optional)", text: $options.flair)
+                                .studioInput()
+                        }
+                    }
+                    if let message { Text(message).foregroundStyle(.red).textSelection(.enabled) }
                 }
+                .frame(maxWidth: 920, alignment: .leading)
+                .studioPage()
             }
         }
-        .padding(24)
-        .frame(width: 480)
-        .studioAppearance(palette)
-        .interactiveDismissDisabled(publishing)
         .task {
             if draft["platform"] == "instagram" {
                 r2 = try? R2Profile.saved()?.configuration
@@ -166,13 +165,13 @@ struct PublicationReview: View {
                 let scheduled = try workspace.scheduleDraft(draft, at: scheduleAt, tiktok: plan)
                 workspace.notice = "TikTok post scheduled"
                 completed(scheduled)
-                dismiss()
+                close()
                 return
             }
             let receipt = try await SocialPublisher(workspace: workspace).publish(plan)
             workspace.notice = "Published on \(plan.platform.name)"
             completed(receipt)
-            dismiss()
+            close()
         } catch {
             message = error.localizedDescription
         }

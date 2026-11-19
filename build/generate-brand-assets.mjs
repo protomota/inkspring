@@ -1,6 +1,6 @@
 // Regenerate shipped logo images from the editable SVG, retaining each asset's layout.
 // Run from the desktop repo: node build/generate-brand-assets.mjs
-// An optional output directory holds temporary renders and generated assets.
+// Render on Expand, then copy the small shipped assets into their source locations.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,8 +8,8 @@ import { chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const output = path.resolve(process.argv[2] ?? path.join(root, '.build', 'brand-assets'));
-const hasWebsite = await fs.stat(path.join(root, 'website', 'public')).then(stat => stat.isDirectory(), () => false);
+const output = '/Volumes/Expand/Codex Media/inkspring/brand-assets';
+await fs.access('/Volumes/Expand');
 await fs.mkdir(output, { recursive: true });
 const master = await fs.readFile(path.join(root, 'public/inkspring-mark.svg'), 'utf8');
 const paths = [...master.matchAll(/<path[^>]*d="([^"]+)"/g)].map(match => `<path d="${match[1]}"/>`).join('');
@@ -26,7 +26,7 @@ function mark([x, y, width, height], color) {
 
 const paper = '#F5F2EC';
 const accent = '#C4613C';
-const variants = hasWebsite ? [
+const variants = [
   ['website/public/social-card.png', 1024, 1024, [154, 158, 716, 708], accent, paper, 0],
   ['website/public/inkspring-logo.png', 992, 1072, [176, 200, 644, 688], '#000000', 'transparent', 0],
   ['website/public/inkspring-logo-white.png', 992, 1072, [176, 200, 644, 688], '#FFFFFF', 'transparent', 0],
@@ -36,7 +36,7 @@ const variants = hasWebsite ? [
   ['website/public/inkspring-logo-black-on-gradient.png', 400, 400, [110, 112, 182, 180], '#111116', 'gradient', 48],
   ['website/public/inkspring-icon-black-gradient.png', 512, 512, [40, 56, 435, 432], '#111116', 'gradient', 80],
   ['website/public/apple-touch-icon.png', 180, 180, [14.0625, 19.6875, 152.9297, 151.875], '#111116', 'gradient', 28.125],
-] : [];
+];
 for (const size of [16, 32, 128, 256, 512]) {
   for (const retina of [false, true]) {
     const pixels = size * (retina ? 2 : 1);

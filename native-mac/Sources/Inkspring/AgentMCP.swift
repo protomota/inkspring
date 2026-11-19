@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import InkspringSchedule
 
 @MainActor
 struct AgentMCP {
@@ -15,7 +17,7 @@ struct AgentMCP {
             return [.init(name: "get_writing_request", summary: "Read the current one-time Inkspring writing request and its selected context.")]
         }
         guard chatProjectID != nil else { return Self.tools }
-        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter"]
+        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter", "get_content"]
         return Self.tools.filter { names.contains($0.name) }
     }
 
@@ -68,9 +70,12 @@ struct AgentMCP {
         .init(name: "post_now", summary: "Publish a saved X or LinkedIn draft immediately. Requires the author’s separate posting permission.",
               fields: ["draft_id": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
         .init(name: "list_projects", summary: "List projects with their voice, audience and research focus."),
-        .init(name: "write_post", summary: "Generate and save a local post draft using Inkspring’s selected writing connection.",
-              fields: ["project_id": "string", "platform": "string", "format": "string", "idea": "string", "tone": "string", "with_image": "boolean"],
-              required: ["platform", "idea"], writes: true, usesNetwork: true),
+        .init(name: "save_draft", summary: "Save supplied post text exactly as an unpublished local draft. No model, API key or network call. Use this when you have already written the copy. Optional request_key makes creation retries idempotent; use edit_draft for existing drafts.",
+              fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string"],
+              required: ["platform", "content"], writes: true),
+        .init(name: "write_post", summary: "Supply content to save already-written copy locally without a model or API key. Supply idea instead only to request generation through the configured writing connection. Prefer save_draft for supplied copy.",
+              fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string", "idea": "string", "tone": "string", "with_image": "boolean"],
+              required: ["platform"], writes: true, usesNetwork: true),
         .init(name: "write_reply", summary: "Write a local X reply from pasted text or a post link using the selected writing connection.",
               fields: ["project_id": "string", "post_url": "string", "post_text": "string", "author": "string", "angle": "string", "with_image": "boolean"],
               writes: true, usesNetwork: true),
@@ -80,8 +85,8 @@ struct AgentMCP {
               fields: ["draft_id": "string", "prompt": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
         .init(name: "refresh_ideas", summary: "Fill the open ideas queue using project evidence and the selected writing connection.",
               fields: ["project_id": "string", "research": "boolean"], writes: true, usesNetwork: true),
-        .init(name: "pick_idea", summary: "Turn one open idea into local drafts for the chosen platforms using the selected writing connection.",
-              fields: ["idea_id": "string", "platforms": "strings"], required: ["idea_id", "platforms"], writes: true, usesNetwork: true),
+        .init(name: "pick_idea", summary: "Turn one open idea into local drafts. For X, x_format may be post, followup, or thread.",
+              fields: ["idea_id": "string", "platforms": "strings", "x_format": "string"], required: ["idea_id", "platforms"], writes: true, usesNetwork: true),
         .init(name: "list_linkedin_destinations", summary: "List the saved LinkedIn profile and company-page destinations."),
         .init(name: "suggest_personal_profile", summary: "Propose changes to the author’s profile for human review.",
               fields: ["voice": "string", "imageStyle": "string", "interests": "string", "avoid": "string", "samples": "string",
@@ -90,9 +95,13 @@ struct AgentMCP {
               fields: ["project_id": "string", "title": "string", "summary": "string", "origin": "string"],
               required: ["title", "summary"], writes: true),
         .init(name: "list_drafts", summary: "List recent drafts in a project.", fields: ["project_id": "string", "platform": "string", "limit": "integer"]),
-        .init(name: "get_draft", summary: "Read a saved draft in full.", fields: ["draft_id": "string"], required: ["draft_id"]),
+        .init(name: "get_draft", summary: "Read a saved post in full by its UUID or copyable ID (e.g. PRO-001).", fields: ["draft_id": "string"], required: ["draft_id"]),
+        .init(name: "get_content", summary: "Read a post or newsletter in full by its Inkspring ID (e.g. PRO-001) or UUID. Returns the item kind and content, including items in Trash.",
+              fields: ["id": "string"], required: ["id"]),
+        .init(name: "save_x_thread", summary: "Save supplied X posts as one local thread draft for review.",
+              fields: ["project_id": "string", "title": "string", "posts": "strings"], required: ["title", "posts"], writes: true),
         .init(name: "edit_draft", summary: "Edit a saved draft locally. Pass expected_updated_at to protect against overwriting newer edits.",
-              fields: ["draft_id": "string", "title": "string", "content": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
+              fields: ["draft_id": "string", "title": "string", "content": "string", "format": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
         .init(name: "list_ideas", summary: "Read saved ideas in a project.", fields: ["project_id": "string", "status": "string"]),
         .init(name: "edit_idea", summary: "Edit the text of an open idea.", fields: ["idea_id": "string", "text": "string"], required: ["idea_id", "text"], writes: true),
         .init(name: "skip_idea", summary: "Skip an open idea or undo a skip.", fields: ["idea_id": "string", "undo": "boolean"], required: ["idea_id"], writes: true),
@@ -101,7 +110,7 @@ struct AgentMCP {
               fields: ["draft_id": "string", "at": "string", "minute": "integer", "linkedin_destination_urn": "string"], required: ["draft_id"], writes: true),
         .init(name: "unschedule_post", summary: "Move a scheduled draft back to Ready to schedule.", fields: ["draft_id": "string"], required: ["draft_id"], writes: true),
         .init(name: "list_newsletters", summary: "List local newsletters and their revisions.", fields: ["project_id": "string"]),
-        .init(name: "get_newsletter", summary: "Read a newsletter in full, including its Markdown body and revision.", fields: ["newsletter_id": "string"], required: ["newsletter_id"]),
+        .init(name: "get_newsletter", summary: "Read a newsletter in full by UUID or copyable ID, including its Markdown body and revision.", fields: ["newsletter_id": "string"], required: ["newsletter_id"]),
         .init(name: "save_newsletter", summary: "Save a local newsletter draft. Include the current revision when editing.", fields: [
             "project_id": "string", "newsletter_id": "string", "revision": "integer", "title": "string",
             "subtitle": "string", "body": "string", "audience": "string", "send_email": "boolean"
@@ -170,7 +179,7 @@ struct AgentMCP {
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": "inkspring", "title": "Inkspring",
                                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"],
-                "instructions": "Use the author's Inkspring workspace for local writing. Read before editing. Keep drafts unpublished until the author reviews them."
+                "instructions": "Use save_draft to save text you have written locally without a model or API key. Use edit_draft for existing posts. Request generation only when the author wants it. Read before editing. Keep drafts unpublished until the author reviews them."
             ])
         case "ping":
             return success(id, [:])
@@ -192,7 +201,8 @@ struct AgentMCP {
                 if let chatProjectID {
                     arguments["project_id"] = chatProjectID
                     for key in ["draft_id", "newsletter_id"] where tool.required.contains(key) {
-                        guard workspace.records.contains(where: { $0.id == arguments[key] as? String && $0.projectID == chatProjectID }) else {
+                        let value = arguments[key] as? String ?? ""
+                        guard workspace.records.contains(where: { $0.matchesID(value) && $0.projectID == chatProjectID }) else {
                             throw WorkspaceError("This item is not in the project open in chat.")
                         }
                     }
@@ -207,6 +217,8 @@ struct AgentMCP {
                         throw WorkspaceError("The writing request is unavailable.")
                     }
                     result = context
+                } else if name == "write_post", arguments["content"] != nil {
+                    result = try workspace.updateFromAgent { try call("save_draft", arguments) }
                 } else if tool.usesNetwork {
                     result = try await networkCall(name, arguments)
                 } else if tool.writes {
@@ -231,7 +243,7 @@ struct AgentMCP {
         func project() throws -> String { try projectID(value("project_id")) }
         func record(_ kind: String, _ key: String) throws -> WorkspaceRecord {
             let id = value(key)
-            guard let item = workspace.records.first(where: { $0.kind == kind && $0.id == id }) else {
+            guard let item = workspace.records.first(where: { $0.kind == kind && $0.matchesID(id) }) else {
                 throw WorkspaceError("No \(kind) has that ID.")
             }
             return item
@@ -288,10 +300,62 @@ struct AgentMCP {
             }
             return try await ResearchDiscovery(studio: studio).discover(platform, projectID: project()).fields
         case "pick_idea":
-            let (idea, posts) = try await studio.pick(record("idea", "idea_id"), platforms: arguments["platforms"] as? [String] ?? [])
+            let (idea, posts) = try await studio.pick(record("idea", "idea_id"), platforms: arguments["platforms"] as? [String] ?? [],
+                                                    xFormat: value("x_format").isEmpty ? "post" : value("x_format"))
             return ["idea": view(idea, full: true), "versions": posts.map { view($0, full: true) }]
         default: throw WorkspaceError("Unknown tool: \(name)")
         }
+    }
+
+    private func saveSuppliedDraft(_ arguments: [String: Any], projectID: String) throws -> WorkspaceRecord {
+        guard let platform = arguments["platform"] as? String,
+              ["x", "linkedin", "instagram", "reddit", "tiktok"].contains(platform),
+              let content = arguments["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              content.utf16.count <= 40_000, !content.contains("\0") else {
+            throw WorkspaceError("Choose a supported platform and supply post text up to 40,000 characters. No API key is needed to save a draft.")
+        }
+        let format = arguments["format"] as? String ?? "post"
+        let title = arguments["title"] as? String ?? ""
+        guard ["post", "image", "video", "followup", "thread"].contains(format),
+              !["followup", "thread"].contains(format) || platform == "x",
+              format != "video" || platform == "tiktok",
+              title.utf16.count <= 200, !title.contains("\0") else {
+            throw WorkspaceError("Choose a supported draft format and a title up to 200 characters.")
+        }
+        if ["followup", "thread"].contains(format), !XThreadText.valid(content, format: format) {
+            throw WorkspaceError("Keep each X post within 280 characters and separate replies with a blank line.")
+        }
+        let requestKey = arguments["request_key"] as? String ?? ""
+        guard requestKey.utf16.count <= 128, !requestKey.contains("\0"),
+              arguments["request_key"] == nil || !requestKey.isEmpty else {
+            throw WorkspaceError("Use a nonempty request_key up to 128 characters, or omit it.")
+        }
+        let payload = try JSONSerialization.data(withJSONObject: ["platform": platform, "format": format,
+                                                                 "title": title, "content": content], options: .sortedKeys)
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        if !requestKey.isEmpty,
+           let previous = (workspace.records + workspace.trashedRecords).first(where: {
+               $0.kind == "draft" && $0.projectID == projectID && $0["mcpDraftRequestKey"] == requestKey
+           }) {
+            guard workspace.records.contains(where: { $0.id == previous.id }) else {
+                throw WorkspaceError("The draft created with this request_key is in Trash. Restore it before editing.")
+            }
+            guard previous["mcpDraftRequestDigest"] == digest else {
+                throw WorkspaceError("This request_key was used for different copy. Use edit_draft with the current revision, or a new request_key for a new draft.")
+            }
+            return previous
+        }
+        var draft = WorkspaceRecord.new("draft", projectID: projectID)
+        draft["platform"] = platform
+        draft["format"] = format
+        draft["title"] = title
+        draft["content"] = content
+        if !requestKey.isEmpty {
+            draft["mcpDraftRequestKey"] = requestKey
+            draft["mcpDraftRequestDigest"] = digest
+        }
+        return try workspace.save(draft)
     }
 
     private func projectID(_ id: String) throws -> String {
@@ -307,7 +371,7 @@ struct AgentMCP {
         func project() throws -> String { try projectID(argument("project_id")) }
         func record(_ kind: String, _ key: String) throws -> WorkspaceRecord {
             let id = argument(key)
-            guard let record = workspace.records.first(where: { $0.kind == kind && $0.id == id }) else {
+            guard let record = workspace.records.first(where: { $0.kind == kind && $0.matchesID(id) }) else {
                 throw WorkspaceError("No \(kind) has that ID.")
             }
             return record
@@ -322,6 +386,8 @@ struct AgentMCP {
         switch name {
         case "set_provider_key", "set_r2_credentials":
             return try setCredentials(name, arguments)
+        case "save_draft":
+            return view(try saveSuppliedDraft(arguments, projectID: project()), full: true)
         case "list_vault_notes":
             let result = try workspace.connectedVault(agent: true).list(query: argument("query"))
             return ["notes": result.notes, "total": result.total, "limited": result.limited]
@@ -345,6 +411,26 @@ struct AgentMCP {
             let rows = argument("project_id").isEmpty ? workspace.records.filter { $0.kind == "draft" } : try items(["draft"])
             return list(Array(rows.filter { platform.isEmpty || $0["platform"] == platform }.prefix(limit)))
         case "get_draft": return view(try record("draft", "draft_id"), full: true)
+        case "get_content":
+            let id = argument("id")
+            let available = chatProjectID == nil ? workspace.records + workspace.trashedRecords : workspace.records
+            guard let item = available.first(where: {
+                ["draft", "newsletter"].contains($0.kind) && $0.matchesID(id)
+                    && (chatProjectID == nil || $0.projectID == chatProjectID)
+            }) else { throw WorkspaceError("No post or newsletter has that ID.") }
+            return ["kind": item.kind == "draft" ? "post" : "newsletter", "item": view(item, full: true)]
+        case "save_x_thread":
+            let posts = (arguments["posts"] as? [String] ?? []).map(XThreadText.singlePost)
+            guard (2...XThreadText.limit).contains(posts.count),
+                  posts.allSatisfy({ !$0.isEmpty && !$0.contains("\u{0}") && SocialPublishPlan.xWeight($0) <= 280 }) else {
+                throw WorkspaceError("Use 2 to 25 X posts with up to 280 characters each.")
+            }
+            var draft = WorkspaceRecord.new("draft", projectID: try project())
+            draft["platform"] = "x"
+            draft["format"] = "thread"
+            draft["title"] = argument("title")
+            draft["content"] = posts.joined(separator: XThreadText.separator)
+            return view(try workspace.save(draft), full: true)
         case "edit_draft":
             var draft = try record("draft", "draft_id")
             if let expected = arguments["expected_updated_at"] as? String {
@@ -354,6 +440,12 @@ struct AgentMCP {
             }
             if let title = arguments["title"] as? String { draft["title"] = title }
             if let content = arguments["content"] as? String { draft["content"] = content }
+            if let format = arguments["format"] as? String {
+                guard draft["platform"] == "x", XPostStyle(rawValue: format) != nil else {
+                    throw WorkspaceError("Choose an X single post, post with reply, or thread.")
+                }
+                draft["format"] = format
+            }
             return view(try workspace.save(draft), full: true)
         case "list_ideas":
             let status = argument("status").isEmpty ? "draft" : argument("status")
@@ -459,11 +551,6 @@ struct AgentMCP {
             }
             if let send = arguments["send_email"] as? Bool { newsletter.fields["sendEmail"] = send }
             if newsletter["title"].isEmpty { newsletter["title"] = "Untitled newsletter" }
-            guard newsletter["title"].utf16.count <= 300, newsletter["subtitle"].utf16.count <= 1000,
-                  newsletter["body"].utf16.count <= 200_000,
-                  ["everyone", "only_paid", "founding"].contains(newsletter["audience"]) else {
-                throw WorkspaceError("The newsletter has an invalid audience or exceeds the allowed length.")
-            }
             return view(try workspace.save(newsletter), full: true)
         case "list_research": return list(try items(["source", "discovery"]), full: true)
         case "get_personal_profile": return workspace.settings["personalProfile"] as? [String: Any] ?? [:]
@@ -522,6 +609,9 @@ struct AgentMCP {
 
     private func view(_ record: WorkspaceRecord, full: Bool) -> [String: Any] {
         var result = record.fields
+        if record["platform"] == "x", ["followup", "thread"].contains(record["format"]) {
+            result["posts"] = XThreadText.posts(in: record.body)
+        }
         if !full {
             for key in ["content", "text", "body"] {
                 if let body = result[key] as? String, body.count > 600 { result[key] = String(body.prefix(600)) + "…" }

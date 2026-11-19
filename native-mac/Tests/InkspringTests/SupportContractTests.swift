@@ -2,6 +2,21 @@ import Foundation
 import Testing
 @testable import InkspringSchedule
 
+@Test func supportSignInAndPurchaseReadinessStaySeparateAndRequireTheExactProduct() throws {
+    let decoder = JSONDecoder()
+    for (payload, signIn, purchase) in [
+        (#"{}"#, false, false),
+        (#"{"nativeConfigured":false,"paidSupportConfigured":true,"supportProductID":"com.protomota.inkspring.support.ticket"}"#, false, false),
+        (#"{"nativeConfigured":true,"paidSupportConfigured":false,"supportProductID":"com.protomota.inkspring.support.ticket"}"#, true, false),
+        (#"{"nativeConfigured":true,"paidSupportConfigured":true,"supportProductID":"com.protomota.inkspring.support.ticket"}"#, true, true),
+        (#"{"nativeConfigured":true,"paidSupportConfigured":true,"supportProductID":"com.protomota.jotley.support.ticket"}"#, true, false)
+    ] {
+        let configuration = try decoder.decode(InkspringSupportConfiguration.self, from: Data(payload.utf8))
+        #expect(configuration.canSignIn == signIn)
+        #expect(configuration.canPurchaseTicket == purchase)
+    }
+}
+
 @Test func supportRequestsStayOnTheSharedBackendAndSelectInkspring() throws {
     for route in ["configuration", "auth/native", "me", "apple/claim", "tickets", "reply", "messages?ticket=example&before=2026-11-15"] {
         let url = try #require(InkspringSupportURLs.api(route))

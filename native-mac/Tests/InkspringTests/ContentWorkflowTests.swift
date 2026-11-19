@@ -622,6 +622,58 @@ private func tool(_ agent: AgentMCP, _ name: String, _ arguments: [String: Any])
     #expect(edit["isError"] as? Bool == true)
 }
 
+@Test @MainActor func contentIDsAreSharedByPostsAndNewslettersAndResolveInMCP() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    try workspace.set("mcpEnabled", to: true)
+    var project = WorkspaceRecord.new("project")
+    project["name"] = "Protomota"
+    project = try workspace.save(project)
+    var other = WorkspaceRecord.new("project")
+    other["name"] = "Production"
+    other = try workspace.save(other)
+    #expect(project["projectKey"] == "PRO")
+    #expect(other["projectKey"] != project["projectKey"])
+
+    var draft = WorkspaceRecord.new("draft", projectID: project.id)
+    draft["title"] = "First post"
+    draft["content"] = "Post content"
+    draft = try workspace.save(draft)
+    var newsletter = WorkspaceRecord.new("newsletter", projectID: project.id)
+    newsletter["title"] = "First newsletter"
+    newsletter["body"] = "Newsletter content"
+    newsletter = try workspace.save(newsletter)
+    #expect(draft.referenceID == "PRO-001")
+    #expect(newsletter.referenceID == "PRO-002")
+
+    project["name"] = "Studio"
+    _ = try workspace.save(project)
+    let external = AgentMCP(workspace: workspace)
+    let readPost = await tool(external, "get_content", ["id": " pro-001 "])
+    #expect(readPost["kind"] as? String == "post")
+    #expect((readPost["item"] as? [String: Any])?["id"] as? String == draft.id)
+    let readNewsletter = await tool(external, "get_newsletter", ["newsletter_id": "PRO-002"])
+    #expect(readNewsletter["id"] as? String == newsletter.id)
+    #expect(readNewsletter["body"] as? String == "Newsletter content")
+    let chat = AgentMCP(workspace: workspace, chatProjectID: other.id)
+    let scoped = await tool(chat, "get_content", ["id": "PRO-001"])
+    #expect(scoped["isError"] as? Bool == true)
+
+    let snapshot = workspace.makeCompanionLibrary(workspaceID: UUID())
+    #expect(snapshot.items.first { $0.id == draft.id }?.referenceID == draft.referenceID)
+    #expect(snapshot.newsletters?.first { $0.id == newsletter.id }?.referenceID == newsletter.referenceID)
+
+    let secondConnection = try WorkspaceDatabase(url: folder.appending(path: "workspace.sqlite"))
+    try secondConnection.remove(draft.id, kind: draft.kind)
+    var replacement = WorkspaceRecord.new("draft", projectID: project.id)
+    replacement["title"] = "Another post"
+    replacement = try workspace.save(replacement)
+    #expect(replacement.referenceID == "PRO-003")
+    let removed = await tool(external, "get_content", ["id": "PRO-001"])
+    #expect(removed["isError"] as? Bool == true)
+}
+
 @Test @MainActor func repliesPageWithoutDroppingCursorAndReuseDraft() async throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }

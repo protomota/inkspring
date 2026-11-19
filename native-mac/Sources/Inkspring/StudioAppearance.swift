@@ -1,4 +1,155 @@
 import SwiftUI
+#if os(macOS)
+import InkspringSchedule
+#endif
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+struct StudioXPostEditor: View {
+    @Environment(\.studioPalette) private var palette
+    @Binding var text: String
+    @Binding var format: String
+
+    private var posts: [String] {
+        format == "post" ? [text] : text.components(separatedBy: XThreadText.separator)
+    }
+
+    var body: some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 12) { controls }
+        #else
+        controls
+        #endif
+    }
+
+    @ViewBuilder private var controls: some View {
+            Picker("X post type", selection: Binding(get: { format }, set: changeFormat)) {
+                ForEach(XPostStyle.allCases) { style in Text(style.title).tag(style.rawValue) }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("x.postType")
+            ForEach(posts.indices, id: \.self) { index in
+                let title = index == 0 ? "Opening post" : "Follow-up reply \(index)"
+                #if os(iOS)
+                NavigationLink {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextEditor(text: part(index))
+                            .font(.body).scrollContentBackground(.hidden)
+                            .padding(10).studioSurface()
+                            .accessibilityIdentifier("x.postText.\(index)")
+                        counter(posts[index])
+                    }
+                    .padding(16).background(palette.canvas)
+                    .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(title).font(.subheadline.weight(.semibold))
+                        Text(posts[index].isEmpty ? "Write this post…" : posts[index])
+                            .font(.body).lineLimit(3).foregroundStyle(palette.text)
+                        counter(posts[index])
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                }
+                .accessibilityIdentifier("x.editPost.\(index)")
+                #else
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(title).font(.callout.weight(.semibold))
+                        Spacer()
+                        counter(posts[index])
+                    }
+                    TextEditor(text: part(index))
+                        .font(InkspringTypography.interface(16)).lineSpacing(4)
+                        .scrollContentBackground(.hidden).frame(minHeight: 110)
+                        .padding(10).studioSurface()
+                        .accessibilityIdentifier("x.postText.\(index)")
+                }
+                #endif
+                if index > 0 { Button("Remove reply", role: .destructive) { remove(index) } }
+            }
+            if format != "post" {
+                Button("Add follow-up reply", systemImage: "plus") {
+                    format = "thread"
+                    text += XThreadText.separator
+                }
+                .disabled(posts.count >= XThreadText.limit || posts.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true)
+                .accessibilityIdentifier("x.addReply")
+            }
+    }
+
+    private func counter(_ post: String) -> some View {
+        let weight = XThreadText.weight(post)
+        return Text("\(weight)/280").font(.caption).foregroundStyle(weight > 280 ? palette.danger : palette.muted)
+    }
+
+    private func part(_ index: Int) -> Binding<String> {
+        Binding(get: { posts.indices.contains(index) ? posts[index] : "" }, set: { value in
+            var values = posts
+            guard values.indices.contains(index) else { return }
+            values[index] = value.replacingOccurrences(of: #"\r?\n\s*\r?\n"#, with: "\n", options: .regularExpression)
+            text = values.joined(separator: XThreadText.separator)
+        })
+    }
+
+    private func changeFormat(_ value: String) {
+        guard value != format else { return }
+        var values = format == "post" ? [XThreadText.singlePost(text)] : posts
+        if value == "post" {
+            text = values.joined(separator: "\n")
+        } else {
+            if value == "followup", values.count > 2 { values = [values[0], values.dropFirst().joined(separator: "\n")] }
+            while values.count < (value == "followup" ? 2 : 3) { values.append("") }
+            text = values.joined(separator: XThreadText.separator)
+        }
+        format = value
+    }
+
+    private func remove(_ index: Int) {
+        var values = posts
+        guard values.indices.contains(index) else { return }
+        values.remove(at: index)
+        text = values.joined(separator: XThreadText.separator)
+        format = values.count == 1 ? "post" : values.count == 2 ? "followup" : "thread"
+    }
+}
+
+struct StudioCopyReference: View {
+    @Environment(\.studioPalette) private var palette
+    let reference: String
+    @State private var copiedReference: String?
+
+    var body: some View {
+        Button {
+            #if os(macOS)
+            NSPasteboard.general.clearContents()
+            guard NSPasteboard.general.setString(reference, forType: .string) else { return }
+            #else
+            UIPasteboard.general.string = reference
+            #endif
+            copiedReference = reference
+        } label: {
+            Label {
+                Text(reference).monospaced()
+            } icon: {
+                Image(systemName: copiedReference == reference ? "checkmark" : "doc.on.doc")
+            }
+        }
+        #if os(macOS)
+        .buttonStyle(StudioActionStyle())
+        #else
+        .buttonStyle(.bordered)
+        .tint(palette.accent)
+        #endif
+        .accessibilityLabel(copiedReference == reference ? "Copied \(reference)" : "Copy ID \(reference)")
+        .accessibilityIdentifier("content.copyID")
+        #if os(macOS)
+        .help("Copy ID \(reference)")
+        #endif
+    }
+}
 
 enum StudioTheme: String, CaseIterable, Identifiable {
     case graphite

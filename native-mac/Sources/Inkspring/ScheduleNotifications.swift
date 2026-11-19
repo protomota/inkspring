@@ -34,6 +34,10 @@ enum ScheduleNotifications {
     static let settingKey = "scheduleNotificationsEnabled"
     static let draftKey = "scheduleDraftID"
 
+    static func isDenied() async -> Bool {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus == .denied
+    }
+
     static func requestPermission() async throws {
         guard try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) else {
             throw WorkspaceError("Allow notifications for Inkspring in System Settings → Notifications.")
@@ -51,12 +55,8 @@ enum ScheduleNotifications {
 }
 
 extension Workspace {
-    func setScheduleNotifications(_ enabled: Bool) async {
-        do {
-            if enabled { try await ScheduleNotifications.requestPermission() }
-            try set(ScheduleNotifications.settingKey, to: enabled)
-        } catch {
-            self.error = error.localizedDescription
-        }
+    func setScheduleNotifications(_ enabled: Bool) async throws {
+        if enabled { try await ScheduleNotifications.requestPermission() }
+        try set(ScheduleNotifications.settingKey, to: enabled)
     }
 }

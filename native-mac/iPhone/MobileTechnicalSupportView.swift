@@ -54,7 +54,10 @@ struct InkspringSupportTicketsView: View {
                     signInView
                 }
             }
-            .navigationTitle("Inkspring Support")
+            .navigationTitle("Support")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
@@ -66,8 +69,9 @@ struct InkspringSupportTicketsView: View {
                     Button { Task { await store.refresh() } } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
-                    .labelStyle(.titleAndIcon)
+                    .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh support")
                     .disabled(store.busy)
                     .accessibilityIdentifier("supportRefresh")
                 }
@@ -112,6 +116,9 @@ struct InkspringSupportTicketsView: View {
             if id != nil { requestPresentation = nil }
         }
         .onReceive(NotificationCenter.default.publisher(for: ASAuthorizationAppleIDProvider.credentialRevokedNotification)) { _ in store.signOut() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await store.refresh() } }
+        }
         .task {
             await store.load()
             while !Task.isCancelled {
@@ -240,11 +247,31 @@ struct InkspringSupportTicketsView: View {
                     Text("Use your Apple account to buy a ticket and follow replies. Hide My Email works too.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    appleSignInControl
-                    if !store.available && !store.busy {
-                        Text("Personal support purchases aren’t available yet. You can still get help through Protomota Support below.")
+                    if store.available {
+                        appleSignInControl
+                        if !store.purchasesAvailable {
+                            Text("Sign in to follow your existing tickets. New ticket purchases are temporarily unavailable.")
+                                .font(.caption)
+                                .foregroundStyle(palette.muted)
+                        }
+                    } else if store.busy && !store.configurationLoaded && !store.configurationFailed {
+                        ProgressView("Checking support…")
+                            .accessibilityIdentifier("supportCheckingConnection")
+                    } else {
+                        Label(store.configurationFailed ? "Support couldn’t connect" : "Apple sign-in is temporarily unavailable",
+                              systemImage: "exclamationmark.circle")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(palette.text)
+                            .accessibilityIdentifier("supportConnectionStatus")
+                        Text("Try again, or use Get App Help below. Your writing and any purchased tickets are kept.")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(palette.muted)
+                        Button("Try again", systemImage: "arrow.clockwise") {
+                            Task { await store.load() }
+                        }
+                        .buttonStyle(TechnicalSupportButtonStyle())
+                        .disabled(store.busy)
+                        .accessibilityIdentifier("supportRetryConnection")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

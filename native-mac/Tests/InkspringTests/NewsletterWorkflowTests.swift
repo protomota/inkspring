@@ -2,6 +2,39 @@ import Foundation
 import Testing
 @testable import Inkspring
 
+@Test @MainActor func newsletterEditorSavesDraftsWithMissingDeliverySettings() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspace = Workspace(directory: root)
+    let database = try #require(workspace.database)
+    var legacy = WorkspaceRecord.new("newsletter", projectID: workspace.projectID)
+    legacy["title"] = "A saved newsletter"
+    legacy["body"] = "We has a plan."
+    legacy.fields["revision"] = 4
+    legacy.fields["audience"] = nil
+    legacy.fields["sendEmail"] = nil
+    legacy = try database.put(legacy)
+
+    var edited = legacy
+    edited["body"] = "We have a plan."
+    let saved = try workspace.saveNewsletterEditor(edited, basedOn: legacy)
+    #expect(saved.body == "We have a plan.")
+    #expect(saved["audience"] == "everyone")
+    #expect(saved.fields["sendEmail"] as? Bool == false)
+    #expect(saved.fields["revision"] as? Int == 5)
+    #expect(saved["state"] == "draft")
+
+    var invalid = saved
+    invalid["subtitle"] = String(repeating: "a", count: 1_001)
+    do {
+        _ = try workspace.saveNewsletterEditor(invalid, basedOn: saved)
+        Issue.record("An overlong subtitle should not save.")
+    } catch {
+        #expect(error.localizedDescription == "Shorten the subtitle to 1,000 characters or less.")
+    }
+    #expect(try database.records().first { $0.id == saved.id }?.fields["revision"] as? Int == 5)
+}
+
 @Test @MainActor func newsletterMarkdownMatchesElectronFingerprint() throws {
     let markdown = """
     ## Heading

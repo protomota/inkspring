@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Darwin
+import InkspringSchedule
 
 struct SocialPublishOptions {
     var imageURL = ""
@@ -72,18 +73,19 @@ struct SocialPublishPlan {
         subreddit = platform == .reddit ? redditName : nil
         flair = platform == .reddit && !options.flair.isEmpty ? options.flair : nil
         if platform == .x {
-            guard ["post", "thread", "image", "reply"].contains(draft["format"]) else {
+            guard ["post", "followup", "thread", "image", "reply"].contains(draft["format"]) else {
                 throw WorkspaceError("Choose an X post, thread, image post or reply.")
             }
-            if draft["format"] == "thread" {
-                posts = text.replacingOccurrences(of: #"\r?\n\s*\r?\n"#, with: "\u{0}", options: .regularExpression)
-                    .split(separator: "\u{0}").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
+            if ["followup", "thread"].contains(draft["format"]) {
+                posts = XThreadText.posts(in: text)
             } else {
                 posts = [text]
             }
-            let limit = draft.fields["longPost"] as? Bool == true && draft["format"] != "thread" ? 25_000 : 280
-            guard (1...25).contains(posts.count), posts.allSatisfy({ Self.xWeight($0) <= limit }) else {
+            let limit = draft.fields["longPost"] as? Bool == true && !["followup", "thread"].contains(draft["format"]) ? 25_000 : 280
+            if draft["format"] == "followup", posts.count != 2 {
+                throw WorkspaceError("A post with reply needs an opening post and one follow-up.")
+            }
+            guard (1...XThreadText.limit).contains(posts.count), posts.allSatisfy({ Self.xWeight($0) <= limit }) else {
                 throw WorkspaceError("Use up to 25 thread posts and keep each post within the X character limit.")
             }
             if draft["format"] == "reply" {
@@ -203,10 +205,8 @@ struct SocialPublishPlan {
         return url
     }
 
-    private static func xWeight(_ text: String) -> Int {
-        let links = text.replacingOccurrences(of: #"https?://\S+"#, with: String(repeating: "x", count: 23),
-                                              options: .regularExpression)
-        return links.unicodeScalars.reduce(0) { $0 + ($1.value > 0x10ff ? 2 : 1) }
+    static func xWeight(_ text: String) -> Int {
+        XThreadText.weight(text)
     }
 }
 

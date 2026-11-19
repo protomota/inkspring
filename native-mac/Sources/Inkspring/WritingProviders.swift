@@ -31,7 +31,8 @@ struct WritingProviders {
     static func draftInstructions(format: String) -> String {
         let directions = switch format {
         case "reply": "Write one specific, witty reply to the supplied X post. Keep it to one or two sentences and at most 280 characters."
-        case "thread": "Write a thread, separating posts with a blank line. Each X post can use at most 280 characters."
+        case "followup": "Write exactly two X posts separated by one blank line. The opening makes the main point without URLs. Put all supplied URLs in the follow-up reply. Each post uses at most 280 weighted X characters. No labels, numbering, or blank lines within a post."
+        case "thread": "Write a coherent thread of 3 to 8 posts separated by one blank line. Each X post uses at most 280 weighted characters. Put supplied URLs in the final reply. No labels, numbering, or blank lines within a post."
         case "video": "Write a caption for the existing video using only the user's brief. You cannot see the video. Limit the caption to 2,200 UTF-16 characters."
         default: "Write one finished post. Follow the platform's length limits. For X, use at most 280 characters."
         }

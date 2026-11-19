@@ -1,7 +1,251 @@
+import CryptoKit
 import Foundation
 @testable import InkspringSchedule
 import Testing
 @testable import Inkspring
+
+@Test @MainActor func mobileNewsletterEditPreservesMarkdownAndRejectsOutdatedRevisions() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let mac = Workspace(directory: folder)
+    var newsletter = WorkspaceRecord.new("newsletter", projectID: mac.projectID)
+    newsletter["title"] = "Friday newsletter"
+    newsletter["subtitle"] = "Studio update"
+    newsletter["body"] = "Original article"
+    newsletter = try mac.save(newsletter)
+
+    let workspaceID = UUID()
+    var library = mac.makeCompanionLibrary(workspaceID: workspaceID)
+    #expect(library.supportsNewsletterEdits == true)
+    let markdown = "## Heading\n\n[Read more](https://example.com/)  \nNext line.\n"
+    let edit = CompanionLibrary.Change(action: .editDraft, itemID: newsletter.id,
+                                       revision: newsletter["updatedAt"], text: markdown, editsNewsletter: true)
+    try library.enqueue(edit)
+    #expect(try JSONDecoder().decode(CompanionLibrary.self, from: JSONEncoder().encode(library)).pending == [edit])
+    let receipt = try mac.applyCompanionLibraryChange(edit)
+    #expect(receipt.error == nil)
+    #expect(try mac.applyCompanionLibraryChange(edit) == receipt)
+
+    let saved = try #require(mac.records.first { $0.id == newsletter.id })
+    #expect(saved.body == markdown)
+    #expect(receipt.newsletterRevision == saved["updatedAt"])
+    #expect(saved.title == newsletter.title)
+    #expect(saved["subtitle"] == "Studio update")
+    #expect(saved["state"] == "draft")
+    #expect((saved.fields["revision"] as? Int) == (newsletter.fields["revision"] as? Int).map { $0 + 1 })
+    let staleEdit = CompanionLibrary.Change(action: .editDraft, itemID: saved.id,
+                                            revision: edit.revision, text: "Old copy", editsNewsletter: true)
+    #expect(try mac.applyCompanionLibraryChange(staleEdit).error != nil)
+    #expect(mac.makeCompanionLibrary(workspaceID: workspaceID).newsletters?.first?.body == markdown)
+}
+
+@Test func mobileNewsletterOutboxWaitsForCompatibleMac() throws {
+    let workspaceID = UUID()
+    var library = CompanionLibrary(workspaceID: workspaceID)
+    library.supportsDraftEdits = true
+    let markdown = "  Keep [the link](https://example.com/) and spacing.  \n"
+    var outbox = CompanionLibraryOutbox()
+    outbox.entries = [.init(id: UUID(), action: .editDraft, itemID: "newsletter", revision: "1",
+                            title: "", text: markdown, workspaceID: workspaceID, account: "test",
+                            editsNewsletter: true)]
+    #expect(outbox.prepare(for: library, account: "test").isEmpty)
+    let pending = try #require(outbox.entries.first?.change)
+    #expect(pending.text == markdown)
+    #expect(throws: CompanionLibraryError.self) { try library.enqueue(pending) }
+    library.supportsNewsletterEdits = true
+    #expect(outbox.prepare(for: library, account: "test") == [pending])
+    try library.enqueue(pending)
+    #expect(outbox.prepare(for: library, account: "test").isEmpty)
+    library.acknowledge([.init(id: pending.id)])
+    #expect(outbox.prepare(for: library, account: "test").isEmpty)
+    #expect(outbox.entries.isEmpty)
+}
+
+@Test @MainActor func newsletterEditsMergeAcrossMacAndMobileThroughTheLibrary() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let mac = Workspace(directory: folder)
+    var newsletter = WorkspaceRecord.new("newsletter", projectID: mac.projectID)
+    newsletter["title"] = "Newsletter"
+    newsletter["body"] = "Original heading\n\nOriginal closing\n"
+    let base = try mac.save(newsletter)
+    let workspaceID = UUID()
+    var outbox = CompanionLibraryOutbox()
+    func edit(_ text: String, basedOn markdown: String) -> CompanionLibraryOutbox.Entry {
+        .init(id: UUID(), action: .editDraft, itemID: base.id, revision: base["updatedAt"], title: "",
+              text: text, workspaceID: workspaceID, account: "test", editsNewsletter: true, baseNewsletterText: markdown)
+    }
+    outbox.queueNewsletterEdit(edit("Mobile heading\n\nOriginal closing\n", basedOn: base.body))
+    var library = mac.makeCompanionLibrary(workspaceID: workspaceID)
+    let changes = outbox.prepare(for: library, account: "test")
+    let pending = try #require(changes.first)
+    try library.enqueue(pending)
+    outbox.queueNewsletterEdit(edit("Mobile heading\n\nMobile addition\n\nOriginal closing\n", basedOn: pending.text))
+
+    newsletter = base
+    newsletter["body"] = "Original heading\n\nMac closing\n"
+    newsletter["subtitle"] = "Changed on Mac"
+    let macEdit = try mac.save(newsletter)
+    let firstReceipt = try mac.applyCompanionLibraryChange(pending)
+    #expect(firstReceipt.error == nil)
+    #expect(mac.records.first { $0.id == base.id }?.body == "Mobile heading\n\nMac closing\n")
+    library = mac.makeCompanionLibrary(workspaceID: workspaceID)
+    library.acknowledge([firstReceipt])
+    let successor = try #require(outbox.prepare(for: library, account: "test").first)
+    let secondReceipt = try mac.applyCompanionLibraryChange(successor)
+    #expect(secondReceipt.error == nil)
+    #expect(mac.records.first { $0.id == base.id }?.body == "Mobile heading\n\nMobile addition\n\nMac closing\n")
+
+    var desktopEditor = macEdit
+    desktopEditor["body"] += "\nMac postscript"
+    let final = try mac.saveNewsletterEditor(desktopEditor, basedOn: macEdit)
+    #expect(final.body == "Mobile heading\n\nMobile addition\n\nMac closing\n\nMac postscript")
+    #expect(final["subtitle"] == "Changed on Mac")
+    let conflict = CompanionLibrary.Change(action: .editDraft, itemID: base.id, revision: base["updatedAt"],
+                                           text: "Conflicting heading\n\nOriginal closing\n", editsNewsletter: true,
+                                           baseNewsletterText: base.body)
+    #expect(try mac.applyCompanionLibraryChange(conflict).error?.contains("same part") == true)
+    #expect(mac.records.first { $0.id == base.id }?.body == final.body)
+}
+
+@Test func coalescedNewsletterEditKeepsItsOriginalBase() {
+    let workspaceID = UUID()
+    var outbox = CompanionLibraryOutbox()
+    func edit(_ text: String, basedOn base: String) -> CompanionLibraryOutbox.Entry {
+        .init(id: UUID(), action: .editDraft, itemID: "letter", revision: "1", title: "",
+              text: text, workspaceID: workspaceID, account: "test", editsNewsletter: true, baseNewsletterText: base)
+    }
+    outbox.queueNewsletterEdit(edit("First save", basedOn: "Original newsletter"))
+    outbox.queueNewsletterEdit(edit("Second save", basedOn: "First save"))
+    #expect(outbox.entries.first?.text == "Second save")
+    #expect(outbox.entries.first?.baseNewsletterText == "Original newsletter")
+}
+
+@Test func repeatedNewsletterSavesKeepLatestAndWaitForTheConfirmedRevision() throws {
+    var library = CompanionLibrary(workspaceID: UUID())
+    library.supportsDraftEdits = true
+    var outbox = CompanionLibraryOutbox()
+    let account = "test"
+    func edit(_ markdown: String) -> CompanionLibraryOutbox.Entry {
+        .init(id: UUID(), action: .editDraft, itemID: "letter", revision: "1", title: "", text: markdown,
+              workspaceID: library.workspaceID, account: account, editsNewsletter: true)
+    }
+    outbox.queueNewsletterEdit(edit("First save"))
+    #expect(outbox.prepare(for: library, account: account).isEmpty)
+    outbox.queueNewsletterEdit(edit("Second save"))
+    #expect(outbox.entries.map(\.text) == ["Second save"])
+
+    library.supportsNewsletterEdits = true
+    let sent = try #require(outbox.prepare(for: library, account: account).first)
+    try library.enqueue(sent)
+    outbox.queueNewsletterEdit(edit("Third save"))
+    outbox.queueNewsletterEdit(edit("Fourth save"))
+    #expect(outbox.entries.map(\.text) == ["Second save", "Fourth save"])
+    #expect(outbox.prepare(for: library, account: account).isEmpty)
+    outbox = try JSONDecoder().decode(CompanionLibraryOutbox.self, from: JSONEncoder().encode(outbox))
+
+    library.newsletters = [.init(id: "letter", revision: "2", kind: .newsletter, projectID: "test",
+                                 title: "Letter", body: "", shortened: true, platform: "substack", status: "draft", notes: [])]
+    library.acknowledge([.init(id: sent.id, newsletterRevision: "2")])
+    var conflict = outbox
+    var changedLibrary = library
+    changedLibrary.newsletters = [.init(id: "letter", revision: "3", kind: .newsletter, projectID: "test",
+                                        title: "Letter", body: "Mac edits", shortened: false, platform: "substack", status: "draft", notes: [])]
+    #expect(conflict.prepare(for: changedLibrary, account: account).isEmpty)
+    #expect(conflict.entries.first?.text == "Fourth save")
+    #expect(conflict.entries.first?.error != nil)
+
+    let newest = try #require(outbox.prepare(for: library, account: account).first)
+    #expect(newest.text == "Fourth save")
+    #expect(newest.revision == "2")
+    #expect(outbox.entries.count == 1)
+}
+
+@Test @MainActor func newsletterSyncKeepsTitlesAndAllStatesWithoutChangingLegacyItems() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    let database = try #require(workspace.database)
+    let draft = try #require(workspace.drafts.first)
+    let states = ["draft", "synced", "scheduled", "published"]
+    for index in 0..<64 {
+        var newsletter = WorkspaceRecord.new("newsletter", projectID: workspace.projectID)
+        newsletter["title"] = "Newsletter \(index)"
+        newsletter["body"] = String(repeating: "A long issue. ", count: 1_000)
+        newsletter = try workspace.save(newsletter)
+        newsletter["state"] = states[index % states.count]
+        try database.put(newsletter)
+    }
+    try workspace.reload()
+    let snapshot = workspace.makeCompanionLibrary(workspaceID: UUID())
+    let newsletters = try #require(snapshot.newsletters)
+    #expect(newsletters.count == 64)
+    #expect(newsletters.allSatisfy { $0.kind == .newsletter && $0.platform == "substack" && !$0.shortened })
+    #expect(Set(newsletters.map(\.status)) == Set(states))
+    #expect(newsletters.allSatisfy { $0.body == String(repeating: "A long issue. ", count: 1_000) })
+    #expect(snapshot.hasMoreNewsletters == false)
+    #expect(snapshot.items.contains { $0.id == draft.id })
+    #expect(snapshot.items.allSatisfy { $0.kind != .newsletter })
+    let data = try JSONEncoder().encode(snapshot)
+    #expect(try JSONDecoder().decode(CompanionLibrary.self, from: data) == snapshot)
+    let oldSnapshot = CompanionLibrary(workspaceID: snapshot.workspaceID)
+    #expect(try JSONDecoder().decode(CompanionLibrary.self, from: JSONEncoder().encode(oldSnapshot)).newsletters == nil)
+}
+
+@Test func fullTextSurvivesMultipleCloudRecordsAndRejectsIncompleteData() throws {
+    let randomText = Data((0..<14_000).flatMap { SHA256.hash(data: Data(String($0).utf8)) }).base64EncodedString()
+    let post = randomText + "\nEnd of post. 🎨"
+    let newsletter = String(randomText.reversed()) + "\nEnd of newsletter. 📰"
+    var library = CompanionLibrary(workspaceID: UUID())
+    library.items = [.init(id: "post", revision: "1", kind: .draft, projectID: "studio",
+                           title: "Post", body: post, shortened: false, platform: "linkedin", status: "draft", notes: [])]
+    library.newsletters = [.init(id: "letter", revision: "1", kind: .newsletter, projectID: "studio",
+                                 title: "Newsletter", body: newsletter, shortened: false, platform: "substack", status: "published", notes: [])]
+    let separated = try library.separateFullText()
+    let data = try #require(separated)
+    #expect(try #require(library.fullText).partCount > 1)
+    #expect(library.items[0].shortened && library.items[0].body.isEmpty)
+    var received = try JSONDecoder().decode(CompanionLibrary.self, from: JSONEncoder().encode(library))
+    #expect(throws: CompanionScheduleError.changed) { try received.applyFullText(Data(data.dropLast())) }
+    #expect(received == library)
+    try received.applyFullText(data)
+    #expect(received.items[0].body == post && !received.items[0].shortened)
+    #expect(received.newsletters?.first?.body == newsletter && received.newsletters?.first?.shortened == false)
+}
+
+@Test @MainActor func syncedRevisionCommentRunsOnMacOnceAndUpdatesTheNextSnapshot() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let mac = Workspace(directory: folder)
+    let draft = try #require(mac.drafts.first)
+    let request = CompanionLibrary.Change(action: .note, itemID: draft.id,
+                                          revision: draft["updatedAt"], text: "Open with a shorter sentence.")
+    #expect(try mac.applyCompanionLibraryChange(request).error == nil)
+    #expect(try mac.applyCompanionLibraryChange(request).error == nil)
+    let cloudID = UUID()
+    let waiting = mac.makeCompanionLibrary(workspaceID: cloudID).items.first { $0.id == draft.id }
+    #expect(waiting?.notes == ["Open with a shorter sentence."])
+    #expect(waiting?.noteStates == ["pending"])
+    var calls = 0
+    let model = ContentStudio.Model(provider: "fixture", name: "fixture", draft: { _, _ in [:] }, object: { _, context in
+        calls += 1
+        #expect(context["notes"] as? String == "Open with a shorter sentence.")
+        return ["text": "Keep the tools you use."]
+    }, prompt: { _ in "" }, image: { _ in (Data(), "") }, imageProvider: "fixture")
+    await mac.runDraftRevisionComments(model: model)
+    #expect(calls == 0)
+    try mac.set("mcpEnabled", to: true)
+    await mac.runDraftRevisionComments(model: model)
+    await mac.runDraftRevisionComments(model: model)
+    #expect(calls == 1)
+    let updated = try #require(mac.drafts.first { $0.id == draft.id })
+    #expect(updated.body == "Keep the tools you use.")
+    #expect(updated["previousContent"] == draft.body)
+    #expect(updated.scheduleStatus == draft.scheduleStatus)
+    let synced = mac.makeCompanionLibrary(workspaceID: cloudID).items.first { $0.id == draft.id }
+    #expect(synced?.noteStates == ["applied"])
+    #expect(synced?.body == updated.body)
+}
 
 @Test @MainActor func trashRoundTripPreservesContentAndRejectsStaleEditors() throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
@@ -144,8 +388,9 @@ import Testing
     defer { try? FileManager.default.removeItem(at: folder) }
     let mac = Workspace(directory: folder)
     var draft = try #require(mac.drafts.first)
-    draft["content"] = String(repeating: "a", count: 20_000)
-    draft = try mac.save(draft)
+    draft["content"] = String(repeating: "a", count: 60_000)
+    try #require(mac.database).put(draft)
+    try mac.reload()
     for index in 0..<55 {
         var idea = WorkspaceRecord.new("idea", projectID: mac.projectID)
         idea["topic"] = "Idea \(index)"

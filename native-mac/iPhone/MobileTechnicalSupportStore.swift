@@ -71,6 +71,8 @@ final class InkspringSupportStore: ObservableObject {
     @Published private(set) var product: StoreKit.Product?
     @Published private(set) var busy = false
     @Published private(set) var available = false
+    @Published private(set) var configurationLoaded = false
+    @Published private(set) var configurationFailed = false
     @Published private(set) var purchasesAvailable = false
     @Published private(set) var verifiedSupportPurchaseID: String?
     private var checkoutAvailable = false
@@ -199,22 +201,35 @@ final class InkspringSupportStore: ObservableObject {
     }
     func load() async {
         await perform {
-            struct Configuration: Decodable { let nativeConfigured: Bool?; let paidSupportConfigured: Bool?; let supportProductID: String? }
-            let configuration: Configuration = try await self.api("configuration", authenticated: false)
-            self.available = configuration.nativeConfigured == true
-            self.purchasesAvailable = configuration.paidSupportConfigured == true && configuration.supportProductID == Self.productID
-            self.checkoutAvailable = false
-            if Self.usesAppStore {
-                self.product = try? await StoreKit.Product.products(for: [Self.productID]).first { $0.id == Self.productID && $0.type == .consumable }
-            }
+            try await self.refreshConfiguration()
             if self.session != nil { try await self.refreshAccount(); try await self.reconcilePurchases() }
+        }
+    }
+    private func refreshConfiguration() async throws {
+        do {
+            let configuration: InkspringSupportConfiguration = try await api("configuration", authenticated: false)
+            if available != configuration.canSignIn { available = configuration.canSignIn }
+            if purchasesAvailable != configuration.canPurchaseTicket { purchasesAvailable = configuration.canPurchaseTicket }
+            configurationLoaded = true
+            configurationFailed = false
+            checkoutAvailable = false
+        } catch {
+            available = false
+            purchasesAvailable = false
+            configurationFailed = true
+            throw error
+        }
+        if Self.usesAppStore && product == nil {
+            product = try? await StoreKit.Product.products(for: [Self.productID]).first { $0.id == Self.productID && $0.type == .consumable }
         }
     }
     func refresh() async {
         guard !busy else { return }
-        if !available || (Self.usesAppStore && product == nil) { await load(); return }
-        guard session != nil else { return }
         do {
+            // Launch switches can change while this screen is open. Refresh
+            // them even after sign-in becomes available, including purchases.
+            try await refreshConfiguration()
+            guard session != nil else { return }
             try await refreshAccount()
             if let id = selectedTicketID { try await loadMessages(id, reset: false) }
             if pendingVerification {

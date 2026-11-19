@@ -120,17 +120,14 @@ private struct SubstackLoginPage: NSViewRepresentable {
 }
 
 struct NewsletterSubstackControls: View {
-    @Environment(\.studioPalette) private var palette
     let workspace: Workspace
     let record: WorkspaceRecord
     let hasEdits: Bool
     let updated: (WorkspaceRecord) -> Void
     let report: (String?) -> Void
 
-    @State private var reviewing = false
-    @State private var scheduling = false
-    @State private var selectedDate = Date.now.addingTimeInterval(3600)
-    @State private var review: SubstackReview?
+    let reviewSend: (Bool) -> Void
+
     @State private var cancelling = false
     @State private var acknowledging = false
 
@@ -165,9 +162,10 @@ struct NewsletterSubstackControls: View {
                             .disabled(hasEdits || service.selected == nil)
                     }
                     if state == "synced" {
-                        Button("Review send…") { reviewing = true }
-                            .disabled(hasEdits || service.selected == nil ||
-                                      record.fields["revision"] as? Int != record.fields["syncedRevision"] as? Int)
+                        Button("Review & publish…") { reviewSend(false) }
+                            .disabled(hasEdits)
+                        Button("Choose a time…") { reviewSend(true) }
+                            .disabled(hasEdits)
                     }
                     if state == "scheduled" {
                         Button("Cancel schedule…") { cancelling = true }
@@ -182,43 +180,6 @@ struct NewsletterSubstackControls: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .sheet(isPresented: $reviewing) {
-            VStack(alignment: .leading, spacing: 16) {
-                PageHeading(title: "Review newsletter send")
-                if let review {
-                    Text(review.title).font(.headline)
-                    LabeledContent("Publication", value: review.publication.name)
-                    LabeledContent("Audience", value: Substack.audienceLabel(review.audience))
-                    LabeledContent("Email subscribers", value: review.sendEmail ? "Yes" : "No")
-                    if let date = review.scheduledAt { LabeledContent("Scheduled", value: date.formatted(date: .long, time: .shortened)) }
-                } else {
-                    StudioLabeledChoice(title: "Send", selection: $scheduling,
-                                        options: [false, true], label: { $0 ? "Schedule" : "Publish now" })
-                    if scheduling {
-                        StudioDateTimePicker(selection: $selectedDate)
-                    }
-                }
-                HStack {
-                    Button("Cancel", role: .cancel) { reviewing = false }
-                    Spacer()
-                    if workspace.substackBusy { ProgressView().controlSize(.small) }
-                    if let review {
-                        Button(review.scheduledAt == nil ? "Publish now" : "Schedule newsletter") {
-                            reviewing = false
-                            run { try await service.commit(review) }
-                        }
-                        .modifier(PrimaryActionStyle())
-                    } else {
-                        Button("Review in Inkspring") { prepare() }
-                    }
-                }
-                .disabled(workspace.substackBusy)
-            }
-            .padding(24)
-            .frame(width: 430)
-            .studioAppearance(palette)
-            .onDisappear { review = nil }
-        }
         .confirmationDialog("Cancel the send in Substack?", isPresented: $cancelling) {
             Button("Cancel schedule", role: .destructive) { run { try await service.cancel(record.id) } }
         }
@@ -226,17 +187,6 @@ struct NewsletterSubstackControls: View {
             Button("I checked Substack") { run { try await service.acknowledge(record.id) } }
         } message: {
             Text("Check your drafts, scheduled posts, and published posts before continuing.")
-        }
-    }
-
-    private func prepare() {
-        let time = Date(timeIntervalSince1970: floor(selectedDate.timeIntervalSince1970 / 60) * 60)
-        Task {
-            do { review = try await service.prepare(record.id, at: scheduling ? time : nil) }
-            catch {
-                reviewing = false
-                report(error.localizedDescription)
-            }
         }
     }
 
@@ -248,6 +198,129 @@ struct NewsletterSubstackControls: View {
                 if let latest = workspace.records.first(where: { $0.id == record.id }) { updated(latest) }
                 report(error.localizedDescription)
             }
+        }
+    }
+}
+
+struct NewsletterSendPage: View {
+    @Environment(\.studioPalette) private var palette
+    let record: WorkspaceRecord
+    let workspace: Workspace
+    let scheduling: Bool
+    let close: () -> Void
+    let completed: (WorkspaceRecord) -> Void
+    @State private var date = Date.now.addingTimeInterval(3600)
+    @State private var review: SubstackReview?
+    @State private var working = false
+    @State private var confirmingCancellation = false
+    @State private var message: String?
+
+    private var service: Substack { Substack(workspace: workspace) }
+    private var item: WorkspaceRecord? { workspace.records.first { $0.id == record.id && $0.kind == "newsletter" } }
+    private var isScheduled: Bool { item?["state"] == "scheduled" }
+    private var busy: Bool { working || workspace.substackBusy }
+    private var canSend: Bool { item.map { ["draft", "synced"].contains($0["state"]) } ?? false }
+    private var hasText: Bool { item.map { !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false }
+    private var needsSync: Bool {
+        guard let item else { return false }
+        return item["remoteId"].isEmpty || item["state"] != "synced"
+            || item.fields["syncedRevision"] as? Int != item.fields["revision"] as? Int
+    }
+
+    var body: some View {
+        StudioEditorPage(title: scheduling ? "Choose a newsletter time" : "Review newsletter send") {
+            Button("Back", systemImage: "chevron.left", action: close)
+                .keyboardShortcut(.cancelAction)
+                .disabled(busy)
+            if busy { ProgressView().controlSize(.small) }
+            if let review {
+                Button(review.scheduledAt == nil ? "Publish newsletter" : "Schedule newsletter") {
+                    self.review = nil
+                    run {
+                        completed(try await service.commit(review))
+                        close()
+                    }
+                }
+                .modifier(PrimaryActionStyle())
+                .disabled(busy)
+            } else if canSend, service.selected != nil {
+                if needsSync {
+                    Button("Save to Substack") { run { _ = try await service.sync(record.id) } }
+                        .modifier(PrimaryActionStyle())
+                        .disabled(!hasText || busy)
+                } else {
+                    Button(scheduling ? "Review schedule" : "Review newsletter") { prepare() }
+                        .modifier(PrimaryActionStyle())
+                        .disabled(busy)
+                }
+            }
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(item?.title ?? record.title).font(InkspringTypography.editorial(24))
+                    if let review {
+                        LabeledContent("Publication", value: review.publication.name)
+                        LabeledContent("Audience", value: Substack.audienceLabel(review.audience))
+                        LabeledContent("Email subscribers", value: review.sendEmail ? "Yes" : "No")
+                        if let scheduled = review.scheduledAt {
+                            LabeledContent("Scheduled", value: scheduled.formatted(date: .long, time: .shortened))
+                        }
+                        Button(scheduling ? "Change time" : "Back to details") { self.review = nil }
+                    } else {
+                        if let publication = service.selected {
+                            LabeledContent("Publication", value: publication.name)
+                        } else {
+                            Text("Connect Substack and choose a publication in Settings → Connections.")
+                                .foregroundStyle(palette.muted)
+                        }
+                        if scheduling {
+                            StudioDateTimePicker(selection: $date)
+                                .disabled(busy || isScheduled)
+                        }
+                        if isScheduled {
+                            Text("Cancel the current schedule before choosing a different time.")
+                                .foregroundStyle(palette.muted)
+                            Button("Cancel current schedule…", role: .destructive) { confirmingCancellation = true }
+                                .disabled(busy || service.selected == nil)
+                        } else if !canSend {
+                            Text("Check the newsletter’s status in Substack before continuing.")
+                                .foregroundStyle(palette.muted)
+                        } else if !hasText {
+                            Text("Add newsletter text before sending.").foregroundStyle(palette.muted)
+                        } else if needsSync, service.selected != nil {
+                            Text("Save the draft to Substack before reviewing the send.")
+                                .foregroundStyle(palette.muted)
+                        }
+                    }
+                    if let message { Text(message).foregroundStyle(palette.danger).textSelection(.enabled) }
+                }
+                .frame(maxWidth: 760, alignment: .leading)
+                .studioPage()
+            }
+        }
+        .onAppear {
+            if let date = scheduleDate(record["scheduledAt"]) { self.date = date }
+        }
+        .confirmationDialog("Cancel the current newsletter schedule?", isPresented: $confirmingCancellation) {
+            Button("Cancel schedule", role: .destructive) { run { _ = try await service.cancel(record.id) } }
+        } message: {
+            Text("The newsletter stays saved as a draft on Substack. Choose and confirm a new time to reschedule it.")
+        }
+    }
+
+    private func prepare() {
+        let minute = Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / 60) * 60)
+        run { review = try await service.prepare(record.id, at: scheduling ? minute : nil) }
+    }
+
+    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard !busy else { return }
+        working = true
+        message = nil
+        Task {
+            defer { working = false }
+            do { try await operation() }
+            catch { message = error.localizedDescription }
         }
     }
 }

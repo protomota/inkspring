@@ -1,5 +1,17 @@
 import Foundation
 
+struct InkspringSupportConfiguration: Decodable {
+    let nativeConfigured: Bool?
+    let paidSupportConfigured: Bool?
+    let supportProductID: String?
+
+    var canSignIn: Bool { nativeConfigured == true }
+    var canPurchaseTicket: Bool {
+        canSignIn && paidSupportConfigured == true
+            && supportProductID == "com.protomota.inkspring.support.ticket"
+    }
+}
+
 struct InkspringSupportPurchase: Decodable, Identifiable {
     let id: String
     let provider: String

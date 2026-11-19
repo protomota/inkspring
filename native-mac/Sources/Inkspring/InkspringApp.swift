@@ -140,6 +140,7 @@ final class WorkspaceLifecycle: NSObject, NSApplicationDelegate, UNUserNotificat
         tasks.append(Task { await workspace.refreshDailyBackupRegistration() })
         repeatEvery(.seconds(30)) { await workspace.syncCompanion() }
         repeatEvery(.seconds(25)) { await workspace.syncCompanionLibrary() }
+        repeatEvery(.seconds(300)) { await workspace.runDraftRevisionComments() }
         repeatEvery(.seconds(60)) { [weak self] in
             workspace.recoverInterruptedPublications()
             self?.updateScheduledActivity()
