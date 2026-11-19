@@ -4,6 +4,7 @@ import SwiftUI
 struct MobileSettingsView: View {
     @Binding var theme: StudioTheme
     let library: MobileLibrary
+    let openSetup: () -> Void
 
     @Environment(\.studioPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
@@ -27,6 +28,11 @@ struct MobileSettingsView: View {
                     Text("Appearance").foregroundStyle(palette.muted)
                 }
                 .listRowBackground(palette.card)
+
+                Section {
+                    Button(action: openSetup) { supportRow("Getting started", icon: "desktopcomputer", external: false) }
+                        .accessibilityIdentifier("settings.gettingStarted")
+                }.listRowBackground(palette.card)
 
                 syncSection
 

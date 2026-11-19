@@ -29,7 +29,15 @@ final class MobileLibrary {
     private var accountRevision = UUID()
     private var store: CloudScheduleStore?
     private var syncedText: (workspace: UUID, version: CompanionLibrary.TextVersion, data: Data)?
-    private let defaults = UserDefaults.standard
+    static let preferences: UserDefaults = {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--unpaired-fixture"),
+           let id = ProcessInfo.processInfo.environment["INKSPRING_FIXTURE_ID"],
+           let suite = UserDefaults(suiteName: "inkspring.onboarding.tests." + id) { return suite }
+#endif
+        return .standard
+    }()
+    private let defaults = MobileLibrary.preferences
     private static let outboxKey = "inkspring.mobile.libraryOutbox.v1"
     private static let legacyIdeasKey = "inkspring.mobile.localIdeas.v1"
     private var outbox: CompanionLibraryOutbox { state.outbox }
@@ -392,6 +400,7 @@ final class MobileLibrary {
         do {
             try loadOutbox()
 #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--unpaired-fixture") { return }
             if ProcessInfo.processInfo.arguments.contains("--library-fixture") {
                 account = "fixture"
                 if var stale = staleFixtureSnapshot {
@@ -1078,6 +1087,8 @@ struct MobileReviewView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let library: MobileLibrary
     let isSelected: Bool
+    let writeIdea: () -> Void
+    let openSetup: () -> Void
     let openSettings: () -> Void
     @Environment(\.studioPalette) private var palette
     @State private var selection: String?
@@ -1157,7 +1168,24 @@ struct MobileReviewView: View {
     }
 
     var body: some View {
-        if askingInkspring { assistantView }
+        if library.snapshot == nil {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Image(systemName: "tray").font(.largeTitle).foregroundStyle(palette.iconAccent)
+                        Text("Your writing workspace").font(.title2.bold())
+                        Text("Your drafts will appear here when your Mac library syncs. In the meantime, you can save ideas on this device.")
+                            .foregroundStyle(palette.muted)
+                        Button("Write an idea", systemImage: "square.and.pencil", action: writeIdea)
+                            .buttonStyle(.borderedProminent)
+                        Button("Mac setup guide", systemImage: "desktopcomputer", action: openSetup)
+                        Button("Check sync in Settings", systemImage: "icloud", action: openSettings)
+                    }.frame(maxWidth: 480, alignment: .leading).padding(24)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }.mobileCanvas().mobilePageTitle("Review", wide: wideLayout, background: palette.canvas)
+                    .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
+            }
+        } else if askingInkspring { assistantView }
         else { reviewBody }
     }
 
@@ -1205,16 +1233,7 @@ struct MobileReviewView: View {
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
                     .listSectionSpacing(.compact)
-                } else if library.busy {
-                    ProgressView("Checking iCloud…")
-                } else {
-                    ContentUnavailableView {
-                        Label("Library unavailable", systemImage: "icloud")
-                    } description: {
-                        Text(library.error ?? "Turn on library sync in Settings on your Mac and use the same Apple Account.")
-                    } actions: {
-                        Button("Open Settings", action: openSettings).buttonStyle(.bordered)
-                    }
+
                 }
             }
             .mobileCanvas()

@@ -37,6 +37,24 @@ private struct MobileHome: View {
     @StateObject private var technicalSupport = InkspringSupportStore()
     @State private var tab = Self.startingTab
 
+    @AppStorage("inkspring.mobile.completedWelcome", store: MobileLibrary.preferences) private var completedWelcome = MobileHome.previouslyUsed
+    @State private var reviewingSetup = false
+
+    private static let previouslyUsed: Bool = {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--library-fixture") { return true }
+        if ProcessInfo.processInfo.arguments.contains("--unpaired-fixture") { return false }
+#endif
+        return ["inkspring.mobile.libraryOutbox.v1", "inkspring.mobile.localIdeas.v1", "inkspring.mobile.draftSort"]
+            .contains { UserDefaults.standard.object(forKey: $0) != nil }
+    }()
+
+    private func finishWelcome(_ destination: Tab) {
+        tab = destination
+        completedWelcome = true
+        reviewingSetup = false
+    }
+
     private static var startingTab: Tab {
 #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
@@ -48,6 +66,43 @@ private struct MobileHome: View {
 
     var body: some View {
         let palette = StudioPalette(theme: theme.resolve(for: colorScheme))
+        Group {
+            if !completedWelcome || reviewingSetup {
+                MobileWelcomeView(connected: library.snapshot != nil, replay: reviewingSetup,
+                                  write: { finishWelcome(.ideas) },
+                                  enter: { finishWelcome(reviewingSetup ? tab : .review) })
+            } else {
+                mainLayout(palette: palette)
+            }
+        }
+        .environment(\.studioPalette, palette)
+        .labelStyle(StudioIconLabelStyle())
+        .environment(tips)
+        .environmentObject(technicalSupport)
+        .task(id: technicalSupport.verifiedSupportPurchaseID) {
+            if let purchase = technicalSupport.verifiedSupportPurchaseID {
+                tips.recordVerifiedSupport(purchase)
+            }
+        }
+        .task { await tips.observeTransactions() }
+        .task { await tips.recoverPurchases() }
+        .preferredColorScheme(theme == .system ? nil : palette.colorScheme)
+        .tint(palette.accent)
+        .onReceive(NotificationCenter.default.publisher(for: .CKAccountChanged)) { _ in
+            library.accountChanged()
+            Task { await library.refresh() }
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await library.refresh()
+                do { try await Task.sleep(for: .seconds(25)) }
+                catch { return }
+            }
+        }
+    }
+
+    private func mainLayout(palette: StudioPalette) -> some View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 if geometry.size.width >= 800 {
@@ -81,36 +136,12 @@ private struct MobileHome: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .environment(\.studioPalette, palette)
-        .labelStyle(StudioIconLabelStyle())
-        .environment(tips)
-        .environmentObject(technicalSupport)
-        .task(id: technicalSupport.verifiedSupportPurchaseID) {
-            if let purchase = technicalSupport.verifiedSupportPurchaseID {
-                tips.recordVerifiedSupport(purchase)
-            }
-        }
-        .task { await tips.observeTransactions() }
-        .task { await tips.recoverPurchases() }
-        .preferredColorScheme(theme == .system ? nil : palette.colorScheme)
-        .tint(palette.accent)
-        .onReceive(NotificationCenter.default.publisher(for: .CKAccountChanged)) { _ in
-            library.accountChanged()
-            Task { await library.refresh() }
-        }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            while !Task.isCancelled {
-                await library.refresh()
-                do { try await Task.sleep(for: .seconds(25)) }
-                catch { return }
-            }
-        }
     }
 
     private func compactTabs(palette: StudioPalette) -> some View {
         TabView(selection: $tab) {
-            MobileReviewView(library: library, isSelected: tab == .review) { tab = .settings }
+            MobileReviewView(library: library, isSelected: tab == .review, writeIdea: { tab = .ideas },
+                             openSetup: { reviewingSetup = true }, openSettings: { tab = .settings })
                 .tabItem { tabLabel(.review, palette: palette) }
                 .tag(Tab.review)
             MobileIdeasView(library: library, isSelected: tab == .ideas)
@@ -119,7 +150,7 @@ private struct MobileHome: View {
             CompanionScheduleView(library: library, isSelected: tab == .schedule)
                 .tabItem { tabLabel(.schedule, palette: palette) }
                 .tag(Tab.schedule)
-            MobileSettingsView(theme: $theme, library: library)
+            MobileSettingsView(theme: $theme, library: library, openSetup: { reviewingSetup = true })
                 .tabItem { tabLabel(.settings, palette: palette) }
                 .tag(Tab.settings)
         }
@@ -139,6 +170,54 @@ private struct MobileHome: View {
                 Image(uiImage: symbol.withTintColor(UIColor(color), renderingMode: .alwaysOriginal))
             }
         }
+    }
+}
+
+private struct MobileWelcomeView: View {
+    @Environment(\.studioPalette) private var palette
+    let connected: Bool
+    let replay: Bool
+    let write: () -> Void
+    let enter: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Image("InkspringBrand").resizable().scaledToFit().frame(width: 64, height: 64)
+                        .clipShape(.rect(cornerRadius: 15)).shadow(color: .black.opacity(0.13), radius: 5, y: 2)
+                        .accessibilityHidden(true)
+                    Text("Welcome to Inkspring").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+                    Text("Save an idea here as soon as it comes to you. Connect Inkspring on your Mac to edit posts and newsletters, work on scripts, and schedule posts on the go.")
+                        .foregroundStyle(palette.muted)
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("Set up your Mac", systemImage: "desktopcomputer").font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Open Inkspring on a Mac signed in to the same Apple Account as this device.")
+                    Link("Get Inkspring for Mac ↗", destination: URL(string: "https://inkspring.ai/download")!)
+                        .font(.subheadline.weight(.semibold))
+                    Divider()
+                    Text("In Inkspring on your Mac, open **Settings** and choose **Storage & backups → iPhone and iPad**. Turn on **schedule sync**, then **library sync**.")
+                    Text("Keep your Mac awake with Inkspring open for the first sync and when you want scheduled posts to go out.")
+                        .font(.subheadline).foregroundStyle(palette.muted)
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(palette.card, in: .rect(cornerRadius: 18))
+                    .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(palette.line) }
+                VStack(spacing: 8) {
+                    Button(action: connected || replay ? enter : write) {
+                        Text(replay ? "Done" : connected ? "Open my workspace" : "Write my first idea")
+                            .font(.headline).foregroundStyle(palette.accentText).frame(maxWidth: .infinity).padding(.vertical, 6)
+                    }.buttonStyle(.borderedProminent).controlSize(.large).buttonBorderShape(.capsule)
+                        .accessibilityIdentifier("welcome.primary")
+                    if !replay {
+                        Button(connected ? "Write an idea" : "Continue to workspace", action: connected ? write : enter)
+                            .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
+                    }
+                }
+            }.foregroundStyle(palette.text).frame(maxWidth: 500).padding(24)
+                .frame(maxWidth: .infinity)
+        }.background(palette.canvas.ignoresSafeArea())
     }
 }
 

@@ -44,6 +44,11 @@ struct MobileIdeasView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if library.snapshot == nil {
+                    captureForm
+                    recentlySaved
+                }
+
                 Section {
                     TextField("What would you like ideas about?", text: $topic, axis: .vertical)
                         .lineLimit(2...4)
@@ -72,58 +77,9 @@ struct MobileIdeasView: View {
                 }
                 .listRowBackground(palette.card)
 
-                Section("Save an idea") {
-                    if let projects = library.snapshot?.projects, projects.count > 1 {
-                        Picker("Project", selection: $projectID) {
-                            Text("Default project").tag(String?.none)
-                            ForEach(projects) { project in
-                                Text(project.name).tag(Optional(project.id))
-                            }
-                        }
-                    }
-                    TextField("Title", text: $title).focused($focusedField, equals: .title)
-                    TextField("Angle or notes", text: $bodyText, axis: .vertical)
-                        .lineLimit(3...8)
-                        .focused($focusedField, equals: .angle)
-                    Toggle("Include a plan", isOn: $includesPlan)
-                        .disabled(library.snapshot?.supportsContentPlans != true)
-                    Button("Save idea", systemImage: "plus") { saveIdea() }
-                        .disabled(!canSave)
-                }
-                .listRowBackground(palette.card)
-
-                if !library.pendingIdeas.isEmpty {
-                    Section("Recently saved") {
-                        ForEach(library.pendingIdeas) { idea in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(idea.title).font(.headline)
-                                Text(idea.text).textSelection(.enabled)
-                                if let error = idea.error {
-                                    Label(error, systemImage: "exclamationmark.icloud")
-                                } else if library.snapshot?.pending.contains(where: { $0.id == idea.id }) == true {
-                                    Label("Saved to iCloud", systemImage: "checkmark")
-                                } else {
-                                    Label("Saved · iCloud sync pending", systemImage: "icloud")
-                                }
-                            }
-                            .font(.footnote)
-                            .padding(.vertical, 3)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button("Skip", systemImage: "trash") {
-                                    do { try library.skipPendingIdea(idea) }
-                                    catch { message = error.localizedDescription }
-                                }.tint(palette.iconAccent)
-                            }
-                            .contextMenu {
-                                Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = idea.text }
-                                Button("Skip idea", systemImage: "trash") {
-                                    do { try library.skipPendingIdea(idea) }
-                                    catch { message = error.localizedDescription }
-                                }
-                            }
-                        }
-                    }
-                    .listRowBackground(palette.card)
+                if library.snapshot != nil {
+                    captureForm
+                    recentlySaved
                 }
             }
             .scrollContentBackground(.hidden)
@@ -147,6 +103,65 @@ struct MobileIdeasView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { checkAvailability() }
         }
+    }
+
+    @ViewBuilder private var recentlySaved: some View {
+        if !library.pendingIdeas.isEmpty {
+            Section("Recently saved") {
+                ForEach(library.pendingIdeas) { idea in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(idea.title).font(.headline)
+                        Text(idea.text).textSelection(.enabled)
+                        if let error = idea.error {
+                            Label(error, systemImage: "exclamationmark.icloud")
+                        } else if library.snapshot?.pending.contains(where: { $0.id == idea.id }) == true {
+                            Label("Saved to iCloud", systemImage: "checkmark")
+                        } else {
+                            Label(library.snapshot == nil ? "Saved on this device" : "Saved · iCloud sync pending", systemImage: "icloud")
+                        }
+                    }
+                    .font(.footnote)
+                    .padding(.vertical, 3)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button("Skip", systemImage: "trash") {
+                            do { try library.skipPendingIdea(idea) }
+                            catch { message = error.localizedDescription }
+                        }.tint(palette.iconAccent)
+                    }
+                    .contextMenu {
+                        Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = idea.text }
+                        Button("Skip idea", systemImage: "trash") {
+                            do { try library.skipPendingIdea(idea) }
+                            catch { message = error.localizedDescription }
+                        }
+                    }
+                }
+            }
+            .listRowBackground(palette.card)
+        }
+    }
+
+    private var captureForm: some View {
+        Section("Save an idea") {
+            if let projects = library.snapshot?.projects, projects.count > 1 {
+                Picker("Project", selection: $projectID) {
+                    Text("Default project").tag(String?.none)
+                    ForEach(projects) { project in
+                        Text(project.name).tag(Optional(project.id))
+                    }
+                }
+            }
+            TextField("Title", text: $title).focused($focusedField, equals: .title)
+            TextField("Angle or notes", text: $bodyText, axis: .vertical)
+                .lineLimit(3...8)
+                .focused($focusedField, equals: .angle)
+            if library.snapshot?.supportsContentPlans == true {
+                Toggle("Include a plan", isOn: $includesPlan)
+            }
+            Button("Save idea", systemImage: "plus") { saveIdea() }
+                .disabled(!canSave)
+        }
+        .listRowBackground(palette.card)
     }
 
     private var canSave: Bool {

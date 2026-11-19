@@ -384,6 +384,41 @@ final class WalkthroughTests: XCTestCase {
         capture("Linked article open for editing", app)
     }
 
+    func testFirstLaunchSavesAnIdeaBeforeMacSetup() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--unpaired-fixture"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Welcome to Inkspring"].waitForExistence(timeout: 10))
+        capture("01 Welcome", app)
+        let proceed = app.buttons["welcome.primary"]
+        if !proceed.isHittable { app.swipeUp() }
+        proceed.tap()
+        let title = app.textFields["Title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        capture("02 Capture an idea", app)
+        title.tap()
+        title.typeText("A field guide to native apps")
+        let notes = app.descendants(matching: .any).matching(identifier: "Angle or notes").firstMatch
+        notes.tap()
+        notes.typeText("Compare how the same draft feels on iPhone and Mac.")
+        app.buttons["Save idea"].tap()
+        XCTAssertTrue(app.staticTexts["Saved on this device"].firstMatch.waitForExistence(timeout: 6))
+        capture("03 Saved on this device", app)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your writing workspace"].waitForExistence(timeout: 8))
+        capture("04 Workspace", app)
+        app.buttons["Mac setup guide"].tap()
+        XCTAssertTrue(app.staticTexts["Welcome to Inkspring"].waitForExistence(timeout: 5))
+        let done = app.buttons["welcome.primary"]
+        if !done.isHittable { app.swipeUp() }
+        done.tap()
+        app.buttons["Write an idea"].tap()
+        XCTAssertTrue(app.staticTexts["A field guide to native apps"].firstMatch.waitForExistence(timeout: 5))
+    }
+
     private func capture(_ name: String, _ app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name
