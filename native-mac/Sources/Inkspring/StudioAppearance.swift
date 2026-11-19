@@ -992,19 +992,51 @@ private struct MobileXReplyEditor: View {
 #endif
 
 #if os(macOS)
+// The page owns scrolling, so keyboard navigation and Find must reveal their range in that page.
+private final class MacDocumentTextView: NSTextView {
+    override func scrollRangeToVisible(_ range: NSRange) {
+        super.scrollRangeToVisible(range)
+        let length = (string as NSString).length
+        guard let document = enclosingScrollView?.documentView, let layout = layoutManager,
+              let container = textContainer, range.location <= length, length > 0 else { return }
+        let character = NSRange(location: min(range.location, length - 1), length: 1)
+        layout.ensureLayout(forCharacterRange: character)
+        let glyph = layout.glyphRange(forCharacterRange: character, actualCharacterRange: nil)
+        var line = layout.boundingRect(forGlyphRange: glyph, in: container)
+        if range.location == length, !layout.extraLineFragmentRect.isEmpty { line = layout.extraLineFragmentRect }
+        let target = convert(line.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y), to: document)
+        let visible = document.visibleRect
+        if target.minY < visible.minY || target.maxY > visible.maxY {
+            document.scroll(NSPoint(x: visible.minX, y: max(0, target.midY - visible.height / 2)))
+        }
+    }
+}
+
 struct MacWritingTextView: NSViewRepresentable {
     @Binding var text: String
     var findRequest = 0
     var focusRequest = 0
     var monospaced = false
+    var documentMinimumHeight: CGFloat?
     var onFocusLost: (() -> Void)? = nil
     @Environment(\.studioPalette) private var palette
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        scroll.drawsBackground = false
-        let view = scroll.documentView as! NSTextView
+    func makeNSView(context: Context) -> NSView {
+        let root: NSView
+        let view: NSTextView
+        if documentMinimumHeight != nil {
+            view = MacDocumentTextView(usingTextLayoutManager: false)
+            view.isHorizontallyResizable = false
+            view.isVerticallyResizable = true
+            view.textContainer?.widthTracksTextView = true
+            root = view
+        } else {
+            let scroll = NSTextView.scrollableTextView()
+            scroll.drawsBackground = false
+            view = scroll.documentView as! NSTextView
+            root = scroll
+        }
         view.delegate = context.coordinator
         view.isRichText = false
         view.allowsUndo = true
@@ -1013,21 +1045,36 @@ struct MacWritingTextView: NSViewRepresentable {
         view.drawsBackground = false
         view.textContainerInset = NSSize(width: 8, height: 10)
         view.string = text
-        return scroll
+        return root
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        guard let documentMinimumHeight, let width = proposal.width, width.isFinite, width > 0,
+              let view = nsView as? NSTextView, let storage = view.textStorage else { return nil }
+        // SwiftUI may probe several widths. Measure those without rewrapping the live editor.
+        let measure = context.coordinator.measurement
+        if measure.textStorage !== storage { storage.addLayoutManager(measure) }
+        guard let container = measure.textContainers.first else { return nil }
+        let inset = view.textContainerInset
+        container.containerSize = NSSize(width: max(1, width - inset.width * 2), height: .greatestFiniteMagnitude)
+        measure.ensureLayout(for: container)
+        let bottom = max(measure.usedRect(for: container).maxY, measure.extraLineFragmentRect.maxY)
+        return CGSize(width: width, height: max(documentMinimumHeight, ceil(bottom + inset.height * 2)))
+    }
+
+    func updateNSView(_ root: NSView, context: Context) {
         context.coordinator.parent = self
-        guard let view = scroll.documentView as? NSTextView else { return }
+        let scroll = root as? NSScrollView
+        guard let view = (root as? NSTextView) ?? (scroll?.documentView as? NSTextView) else { return }
         let font: NSFont = monospaced ? .monospacedSystemFont(ofSize: 14, weight: .regular) : .systemFont(ofSize: 16)
         if view.font != font { view.font = font }
         view.textColor = NSColor(palette.text)
         view.insertionPointColor = NSColor(palette.iconAccent)
         if view.string != text, !view.hasMarkedText() {
             let selection = view.selectedRange()
-            let origin = scroll.contentView.bounds.origin
+            let origin = scroll?.contentView.bounds.origin
             view.string = text
             view.setSelectedRange(NSRange(location: min(selection.location, (text as NSString).length), length: 0))
-            scroll.contentView.scroll(to: origin)
+            if let origin { scroll?.contentView.scroll(to: origin) }
         }
         if context.coordinator.focusRequest != focusRequest {
             context.coordinator.focusRequest = focusRequest
@@ -1044,12 +1091,23 @@ struct MacWritingTextView: NSViewRepresentable {
         }
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
+        lazy var measurement: NSLayoutManager = {
+            let layout = NSLayoutManager()
+            layout.addTextContainer(NSTextContainer())
+            return layout
+        }()
         var parent: MacWritingTextView
         var findRequest = 0
         var focusRequest = 0
         init(_ parent: MacWritingTextView) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             if let view = notification.object as? NSTextView { parent.text = view.string }
+        }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let view = notification.object as? MacDocumentTextView,
+                  view.enclosingScrollView?.isFindBarVisible == true,
+                  view.selectedRange().length > 0 else { return }
+            view.scrollRangeToVisible(view.selectedRange())
         }
         func textDidEndEditing(_ notification: Notification) { parent.onFocusLost?() }
     }

@@ -464,22 +464,22 @@ struct RecordEditor: View {
     @ViewBuilder private var newsletterCanvas: some View {
         if newsletterMode == "Source" {
             StudioScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                newsletterTextField("Title", key: "title", focus: .title)
-                newsletterTextField("Subtitle", key: "subtitle", focus: .subtitle)
-                StudioProofreadAction(document: .init(title: record["title"], subtitle: record["subtitle"], body: record["body"]),
-                                      check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
-                    record["title"] = $0.title
-                    record["subtitle"] = $0.subtitle
-                    record["body"] = $0.body
+                VStack(alignment: .leading, spacing: 14) {
+                    newsletterTextField("Title", key: "title", focus: .title)
+                    newsletterTextField("Subtitle", key: "subtitle", focus: .subtitle)
+                    DraftBodyField(text: value("body"), label: "Markdown", minHeight: 420,
+                                   onFocusLost: { _ = saveNewsletter() }, findRequest: newsletterFindRequest,
+                                   expandsWithDocument: true)
+                    StudioProofreadAction(document: .init(title: record["title"], subtitle: record["subtitle"], body: record["body"]),
+                                          check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
+                        record["title"] = $0.title
+                        record["subtitle"] = $0.subtitle
+                        record["body"] = $0.body
+                    }
+                    WorkspacePlanSection(record: record, workspace: workspace)
                 }
-                WorkspacePlanSection(record: record, workspace: workspace)
-                DraftBodyField(text: value("body"), label: "Markdown", minHeight: 200,
-                               onFocusLost: { _ = saveNewsletter() }, findRequest: newsletterFindRequest)
-                    .frame(maxHeight: .infinity)
-            }
-            .disabled(!canEditNewsletter || newsletterUnavailable)
-            .padding(22)
+                .disabled(!canEditNewsletter || newsletterUnavailable)
+                .padding(22)
             }
         } else {
             StudioScrollView {
@@ -1708,17 +1708,20 @@ struct DraftBodyField: View {
     var onFocusLost: (() -> Void)? = nil
     var focusRequest = 0
     var findRequest = 0
+    var expandsWithDocument = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 draftFieldLabel(label)
-                Spacer()
-                Button("Find", systemImage: "magnifyingglass") { finding.toggle() }
-                    .keyboardShortcut("f", modifiers: .command)
-                    .accessibilityIdentifier("editor.find")
+                if !expandsWithDocument {
+                    Spacer()
+                    Button("Find", systemImage: "magnifyingglass") { finding.toggle() }
+                        .keyboardShortcut("f", modifiers: .command)
+                        .accessibilityIdentifier("editor.find")
+                }
             }
-            MacWritingTextView(text: $text, findRequest: (finding ? 1 : 0) + findRequest * 2, focusRequest: focusRequest, monospaced: label == "Markdown", onFocusLost: onFocusLost)
+            MacWritingTextView(text: $text, findRequest: (finding ? 1 : 0) + findRequest * 2, focusRequest: focusRequest, monospaced: label == "Markdown", documentMinimumHeight: expandsWithDocument ? minHeight : nil, onFocusLost: onFocusLost)
                 .focused($editorFocused)
                 .onChange(of: focusRequest) { editorFocused = true }
                 .onChange(of: editorFocused) { previous, focused in
@@ -1726,7 +1729,7 @@ struct DraftBodyField: View {
                 }
                 .font(label == "Markdown" ? .system(size: 14, design: .monospaced) : InkspringTypography.interface(16))
                 .lineSpacing(4)
-                .frame(minHeight: minHeight)
+                .frame(minHeight: minHeight, alignment: .topLeading)
                 .accessibilityLabel(label)
                 .scrollContentBackground(.hidden)
                 .overlay(alignment: .topLeading) {
