@@ -115,6 +115,11 @@ final class Workspace {
             throw WorkspaceError("This item was permanently deleted. Create a new draft or idea instead.")
         }
         if record.kind == "draft" { record["title"] = record.draftTitle }
+        if ["script", "article"].contains(record.kind) {
+            record["platform"] = record.kind == "article" ? "x" : "youtube"
+            record["state"] = "draft"
+            for key in ["schedule", "remoteId", "publication", "editUrl", "sendEmail", "audience"] { record.fields[key] = nil }
+        }
         if record.kind == "newsletter" {
             if record.fields["audience"] == nil || record.fields["audience"] as? String == "" { record["audience"] = "everyone" }
             if record.fields["sendEmail"] == nil { record.fields["sendEmail"] = false }
@@ -131,7 +136,7 @@ final class Workspace {
                 throw WorkspaceError("Choose one attachment to keep in Writing Studio before saving.")
             }
         }
-        if let current, record.kind != "newsletter" {
+        if let current, !record.isLongForm {
             guard current["updatedAt"] == record["updatedAt"] else {
                 throw WorkspaceError("This item changed in another window or agent. Reopen the latest version before saving.")
             }
@@ -139,7 +144,7 @@ final class Workspace {
                 record.fields["reviewComments"] = current.fields["reviewComments"]
             }
         }
-        if record.kind == "newsletter" {
+        if record.isLongForm {
             if let current, !["draft", "synced"].contains(current["state"]) {
                 throw WorkspaceError("Check this newsletter in Substack before editing.")
             }
@@ -151,7 +156,7 @@ final class Workspace {
                 guard current["updatedAt"] == record["updatedAt"] else {
                     throw WorkspaceError("Reopen the latest version of this newsletter before saving.")
                 }
-                for key in ["remoteId", "publication", "editUrl", "syncedRevision", "remoteFingerprint", "error"] {
+                for key in record.kind == "newsletter" ? ["remoteId", "publication", "editUrl", "syncedRevision", "remoteFingerprint", "error"] : [] {
                     record.fields[key] = current.fields[key]
                 }
             }
@@ -188,6 +193,33 @@ final class Workspace {
         } catch {
             try? reload()
             throw error
+        }
+    }
+
+    func revisionHistory(for record: WorkspaceRecord) throws -> [ContentRevision] {
+        guard let database else { throw WorkspaceError("The workspace is unavailable.") }
+        return try database.revisionHistory(recordID: record.id)
+    }
+
+    func retainRevision(_ revision: ContentRevision, recordID: String) throws {
+        guard let database else { throw WorkspaceError("The workspace is unavailable.") }
+        try database.storeRevision(revision, recordID: recordID)
+    }
+
+    func restoreRevision(_ revision: ContentRevision, to expected: WorkspaceRecord) throws -> WorkspaceRecord {
+        try withChanges {
+            guard var current = records.first(where: { $0.id == expected.id && $0.kind == expected.kind }),
+                  current["updatedAt"] == expected["updatedAt"],
+                  ["draft", "newsletter", "script", "article"].contains(current.kind),
+                  !["posting", "posted", "uncertain"].contains(current.scheduleStatus),
+                  current.kind != "newsletter" || ["draft", "synced"].contains(current["state"]) else {
+                throw WorkspaceError("This item changed. Reopen the latest version before restoring.")
+            }
+            current["title"] = revision.title
+            current[current.isLongForm ? "body" : "content"] = revision.text
+            if let format = revision.format { current["format"] = format }
+            if let subtitle = revision.subtitle { current["subtitle"] = subtitle }
+            return try save(current)
         }
     }
 
@@ -414,7 +446,7 @@ final class Workspace {
                 }
             }
         }
-        if record.kind == "newsletter" {
+        if record.isLongForm {
             guard record["title"].utf16.count <= 300 else {
                 throw WorkspaceError("Shorten the title to 300 characters or less.")
             }
@@ -427,6 +459,7 @@ final class Workspace {
             guard !record["body"].contains("\0") else {
                 throw WorkspaceError("Remove the invalid control character from the newsletter text.")
             }
+            if ["script", "article"].contains(record.kind) { return }
             guard ["everyone", "only_paid", "founding"].contains(record["audience"]) else {
                 throw WorkspaceError("Choose an audience in Newsletter settings.")
             }
@@ -766,7 +799,7 @@ extension Workspace {
 
     func saveNewsletterEditor(_ edited: WorkspaceRecord, basedOn base: WorkspaceRecord) throws -> WorkspaceRecord {
         try withChanges {
-            guard var current = records.first(where: { $0.kind == "newsletter" && $0.id == edited.id }) else {
+            guard var current = records.first(where: { $0.isLongForm && $0.kind == edited.kind && $0.id == edited.id }) else {
                 guard (base.fields["revision"] as? Int ?? 0) == 0 else {
                     throw WorkspaceError("This newsletter is no longer available.")
                 }

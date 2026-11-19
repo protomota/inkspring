@@ -67,6 +67,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000004 /* iPhone */,
+                B00000000000000000000002 /* UI Tests */,
 				A00000000000000000000005 /* Shared schedule */,
 				A00000000000000000000006 /* Products */,
 				A233B3E130A8FCFB00BCE10F /* Recovered References */,
@@ -180,6 +181,7 @@
 			projectRoot = "";
 			targets = (
 				A00000000000000000000002 /* InkspringCompanion */,
+                B00000000000000000000001 /* UI Tests */,
 			);
 		};
 /* End PBXProject section */
@@ -276,6 +278,16 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+        B00000000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = B00000000000000000000006; buildPhases = (B00000000000000000000007); buildRules = (); dependencies = (B0000000000000000000000A); name = WalkthroughUITests; productName = WalkthroughUITests; productReference = B00000000000000000000003; productType = "com.apple.product-type.bundle.ui-testing";};
+        B00000000000000000000002 = {isa = PBXGroup; children = (B00000000000000000000004); path = UITests; sourceTree = "<group>";};
+        B00000000000000000000003 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WalkthroughUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR;};
+        B00000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests/XPostEditingUITests.swift; sourceTree = SOURCE_ROOT;};
+        B00000000000000000000005 = {isa = PBXBuildFile; fileRef = B00000000000000000000004;};
+        B00000000000000000000006 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000008); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;};
+        B00000000000000000000007 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000005); runOnlyForDeploymentPostprocessing = 0;};
+        B00000000000000000000008 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; TARGETED_DEVICE_FAMILY = "1,2"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.protomota.inkspring.walkthrough.ui; PRODUCT_NAME = WalkthroughUITests; SWIFT_VERSION = 6.0; ALWAYS_SEARCH_USER_PATHS = NO; TEST_TARGET_NAME = InkspringCompanion;};};
+        B00000000000000000000009 = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000002; remoteInfo = InkspringCompanion;};
+        B0000000000000000000000A = {isa = PBXTargetDependency; target = A00000000000000000000002; targetProxy = B00000000000000000000009;};
 	};
 	rootObject = A00000000000000000000001 /* Project object */;
 }

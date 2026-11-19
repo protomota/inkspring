@@ -60,7 +60,7 @@ struct WorkspaceBackup {
     }
 
     private static let supportedKinds: Set<String> = [
-        "project", "draft", "source", "idea", "newsletter", "publication", "personal-inbox",
+        "project", "draft", "source", "idea", "newsletter", "script", "article", "publication", "personal-inbox",
         "discovery", "research-feedback", "brief-run", "idea-queue-state", "reply-inbox",
         "analytics-day", "analytics-post", "analytics-state", "r2-object", "local-video"
     ]

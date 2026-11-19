@@ -7,6 +7,7 @@ import WebKit
 enum WorkspacePage: String, CaseIterable, Identifiable {
     case ideas = "Post ideas", schedule = "Schedule", workspace = "Workspace"
     case research = "Research", replies = "Replies", analytics = "Analytics"
+    case scripts = "YouTube scripts", articles = "X articles"
     case newsletters = "Newsletters", studio = "Writing studio", library = "Library"
     case connections = "Connections", trash = "Trash", about = "About Inkspring", settings = "Settings"
 
@@ -21,6 +22,8 @@ enum WorkspacePage: String, CaseIterable, Identifiable {
         case .replies: "bubble.left.and.bubble.right"
         case .analytics: "chart.bar.xaxis"
         case .newsletters: "envelope"
+        case .scripts: "play.rectangle.fill"
+        case .articles: "doc.richtext"
         case .studio: "pencil.and.outline"
         case .library: "square.stack"
         case .connections: "link"
@@ -67,7 +70,7 @@ struct WorkspaceWindow: View {
 
     private var theme: StudioTheme { StudioTheme(preference: workspace.settings[StudioTheme.preferenceKey]) }
     private var palette: StudioPalette { StudioPalette(theme: theme.resolve(for: systemScheme)) }
-    private var isEditingNewsletter: Bool { page == .newsletters && newsletterDraft != nil }
+    private var isEditingNewsletter: Bool { [.newsletters, .scripts, .articles].contains(page) && newsletterDraft != nil }
     private var showsEditorPage: Bool {
         if case .newsletterSend = editor { return false }
         return editor != nil
@@ -423,10 +426,10 @@ struct WorkspaceWindow: View {
             ResearchView(workspace: workspace, add: { add("source") }, edit: open,
                          editProject: { if let project = workspace.project { open(project) } }, openDraft: open)
                 .id(workspace.projectID)
-        case .newsletters:
+        case .newsletters, .scripts, .articles:
             ZStack {
-                RecordCollection(title: "Newsletters", symbol: page.icon, rows: workspace.items("newsletter"),
-                                 workspace: workspace, action: "New newsletter", add: { add("newsletter") }, edit: open)
+                RecordCollection(title: page.rawValue, symbol: page.icon, rows: workspace.items(page == .scripts ? "script" : page == .articles ? "article" : "newsletter"),
+                                 workspace: workspace, action: page == .scripts ? "New script" : page == .articles ? "New X article" : "New newsletter", add: { add(page == .scripts ? "script" : page == .articles ? "article" : "newsletter") }, edit: open)
                     .opacity(newsletterDraft == nil ? 1 : 0)
                     .disabled(newsletterDraft != nil)
                     .accessibilityHidden(newsletterDraft != nil)
@@ -581,17 +584,17 @@ struct WorkspaceWindow: View {
     }
 
     private func open(_ record: WorkspaceRecord) {
-        if ["draft", "newsletter"].contains(record.kind), record.projectID != workspace.projectID,
+        if ["draft", "newsletter", "script", "article"].contains(record.kind), record.projectID != workspace.projectID,
            workspace.projects.contains(where: { $0.id == record.projectID }) {
             workspace.selectProject(record.projectID)
         }
         if record.kind == "draft" {
             studioDraft = record
             page = .studio
-        } else if record.kind == "newsletter" {
+        } else if record.isLongForm {
             newsletterBackPage = page
             newsletterDraft = record
-            page = .newsletters
+            page = record.kind == "script" ? .scripts : record.kind == "article" ? .articles : .newsletters
         } else {
             editor = .record(record)
         }
@@ -664,7 +667,7 @@ struct RecordCard: View {
         let platform = record.kind == "newsletter" ? "substack" : record["platform"]
         VStack(alignment: .leading, spacing: 9) {
             if !platform.isEmpty {
-                StudioPlatformLabel(name: platform, title: platformName(platform))
+                StudioPlatformLabel(name: platform, title: record.kind == "article" ? "X article" : platformName(platform))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

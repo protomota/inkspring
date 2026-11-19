@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import InkspringSchedule
 @testable import Inkspring
 
 @MainActor private func draftTool(_ agent: AgentMCP, _ name: String, _ arguments: [String: Any]) async -> [String: Any] {
@@ -7,6 +8,22 @@ import Testing
                                 "params": ["name": name, "arguments": arguments]]
     let result = await agent.handle(request)?["result"] as? [String: Any] ?? [:]
     return result["structuredContent"] as? [String: Any] ?? result
+}
+
+@Test @MainActor func mcpThreadEditsKeepParagraphsAndPromoteTwoRepliesToAThread() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    try workspace.set("mcpEnabled", to: true)
+    let agent = AgentMCP(workspace: workspace)
+    let first = await draftTool(agent, "save_draft", ["project_id": workspace.projectID, "platform": "x",
+        "format": "followup", "content": "Opening.\n\nLinks: https://example.com/news"])
+    let posts = ["Opening.\n\nClosing.", "Read the newsletter: https://example.com/news", "Join us: https://example.com/join"]
+    let saved = await draftTool(agent, "edit_draft", ["draft_id": try #require(first["id"] as? String),
+        "expected_updated_at": try #require(first["updatedAt"] as? String), "format": "followup", "posts": posts])
+    #expect(saved["format"] as? String == "thread")
+    #expect(saved["posts"] as? [String] == posts)
+    #expect(XThreadText.parts(in: saved["content"] as? String ?? "") == posts)
 }
 
 @Test @MainActor func suppliedDraftSavesExactCopyWithoutAKeyAndSurvivesRestart() async throws {

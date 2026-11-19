@@ -12,16 +12,20 @@ struct StudioXPostEditor: View {
     @Environment(\.studioPalette) private var palette
     @Binding var text: String
     @Binding var format: String
+    @State private var editingPart: Int?
 
     private var posts: [String] {
-        format == "post" ? [text] : text.components(separatedBy: XThreadText.separator)
+        format == "post" ? [text] : XThreadText.parts(in: text)
     }
 
     var body: some View {
         #if os(macOS)
         VStack(alignment: .leading, spacing: 12) { controls }
         #else
-        controls
+        if let index = editingPart, posts.indices.contains(index) {
+            MobileXReplyEditor(text: part(index), identifier: "x.postText.\(index)", count: XThreadText.weight(posts[index]), back: { editingPart = nil })
+                .id(index)
+        } else { ScrollView { VStack(alignment: .leading, spacing: 16) { controls }.padding(12) } }
         #endif
     }
 
@@ -34,25 +38,14 @@ struct StudioXPostEditor: View {
             ForEach(posts.indices, id: \.self) { index in
                 let title = index == 0 ? "Opening post" : "Follow-up reply \(index)"
                 #if os(iOS)
-                NavigationLink {
-                    VStack(alignment: .leading, spacing: 12) {
-                        TextEditor(text: part(index))
-                            .font(.body).scrollContentBackground(.hidden)
-                            .padding(10).studioSurface()
-                            .accessibilityIdentifier("x.postText.\(index)")
-                        counter(posts[index])
-                    }
-                    .padding(16).background(palette.canvas)
-                    .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-                } label: {
+                Button { editingPart = index } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(title).font(.subheadline.weight(.semibold))
                         Text(posts[index].isEmpty ? "Write this post…" : posts[index])
                             .font(.body).lineLimit(3).foregroundStyle(palette.text)
                         counter(posts[index])
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
-                }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                }.buttonStyle(.plain)
                 .accessibilityIdentifier("x.editPost.\(index)")
                 #else
                 VStack(alignment: .leading, spacing: 6) {
@@ -61,7 +54,7 @@ struct StudioXPostEditor: View {
                         Spacer()
                         counter(posts[index])
                     }
-                    TextEditor(text: part(index))
+                    MacReplyWritingField(text: part(index))
                         .font(InkspringTypography.interface(16)).lineSpacing(4)
                         .scrollContentBackground(.hidden).frame(minHeight: 110)
                         .padding(10).studioSurface()
@@ -73,7 +66,7 @@ struct StudioXPostEditor: View {
             if format != "post" {
                 Button("Add follow-up reply", systemImage: "plus") {
                     format = "thread"
-                    text += XThreadText.separator
+                    text = (posts + [""]).joined(separator: XThreadText.separator)
                 }
                 .disabled(posts.count >= XThreadText.limit || posts.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true)
                 .accessibilityIdentifier("x.addReply")
@@ -89,8 +82,8 @@ struct StudioXPostEditor: View {
         Binding(get: { posts.indices.contains(index) ? posts[index] : "" }, set: { value in
             var values = posts
             guard values.indices.contains(index) else { return }
-            values[index] = value.replacingOccurrences(of: #"\r?\n\s*\r?\n"#, with: "\n", options: .regularExpression)
-            text = values.joined(separator: XThreadText.separator)
+            values[index] = value
+            text = format == "post" ? value : values.joined(separator: XThreadText.separator)
         })
     }
 
@@ -250,6 +243,8 @@ struct PlatformMark: View {
     }
 
     static func image(_ name: String) -> Image? {
+        if name.lowercased() == "x-article" { return image("x") }
+        if name.lowercased() == "youtube" { return Image(systemName: "play.rectangle.fill") }
 #if os(macOS)
         guard let url = assetURL(name), let image = NSImage(contentsOf: url) else { return nil }
         image.size = NSSize(width: 14, height: 14)
@@ -879,6 +874,187 @@ struct StudioTabs<Value: Hashable>: View {
         }
         .scrollIndicators(.hidden)
         .overlay(alignment: .bottom) { StudioRule().opacity(0.6) }
+    }
+}
+#endif
+
+#if os(iOS)
+struct MobileWritingTextView: UIViewRepresentable {
+    @Binding var text: String
+    var identifier: String
+    var findRequest = 0
+    var autofocus = true
+    var monospaced = false
+    var onFocusLost: (() -> Void)? = nil
+    @Environment(\.studioPalette) private var palette
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.isFindInteractionEnabled = true
+        view.backgroundColor = .clear
+        view.alwaysBounceVertical = true
+        view.keyboardDismissMode = .interactive
+        view.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 24, right: 12)
+        view.adjustsFontForContentSizeCategory = true
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.text = text
+        if autofocus { DispatchQueue.main.async { view.becomeFirstResponder() } }
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
+        view.accessibilityIdentifier = identifier
+        view.accessibilityLabel = identifier == "newsletter.markdown" ? "Markdown" : "Post text"
+        let font = monospaced ? UIFontMetrics.default.scaledFont(for: .monospacedSystemFont(ofSize: 17, weight: .regular)) : .preferredFont(forTextStyle: .body)
+        if view.font != font { view.font = font }
+        view.textColor = UIColor(palette.text)
+        view.tintColor = UIColor(palette.iconAccent)
+        // SwiftUI recomputes on autosave/sync. Never assign identical text: UIKit would reset selection.
+        if view.text != text, view.markedTextRange == nil {
+            let selection = view.selectedRange
+            let offset = view.contentOffset
+            view.text = text
+            view.selectedRange = NSRange(location: min(selection.location, (text as NSString).length), length: 0)
+            view.setContentOffset(offset, animated: false)
+        }
+        if context.coordinator.findRequest != findRequest {
+            context.coordinator.findRequest = findRequest
+            view.findInteraction?.presentFindNavigator(showingReplace: false)
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: MobileWritingTextView
+        var findRequest = 0
+        init(_ parent: MobileWritingTextView) { self.parent = parent }
+        func textViewDidChange(_ textView: UITextView) { parent.text = textView.text }
+        func textViewDidEndEditing(_ textView: UITextView) { parent.onFocusLost?() }
+    }
+}
+#endif
+
+#if os(iOS)
+private struct MobileXReplyEditor: View {
+    @Binding var text: String
+    let identifier: String
+    let count: Int
+    let back: () -> Void
+    @State private var findRequest = 0
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Button("Back to thread", systemImage: "chevron.left", action: back).accessibilityIdentifier("x.backToThread")
+                Spacer()
+                Text("\(count)/280").font(.caption)
+            }.padding(.horizontal, 12)
+            MobileWritingTextView(text: $text, identifier: identifier, findRequest: findRequest)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) {
+            Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }.accessibilityIdentifier("editor.find")
+        } }
+    }
+}
+#endif
+
+#if os(macOS)
+struct MacWritingTextView: NSViewRepresentable {
+    @Binding var text: String
+    var findRequest = 0
+    var focusRequest = 0
+    var monospaced = false
+    var onFocusLost: (() -> Void)? = nil
+    @Environment(\.studioPalette) private var palette
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        let view = scroll.documentView as! NSTextView
+        view.delegate = context.coordinator
+        view.isRichText = false
+        view.allowsUndo = true
+        view.usesFindBar = true
+        view.isIncrementalSearchingEnabled = true
+        view.drawsBackground = false
+        view.textContainerInset = NSSize(width: 8, height: 10)
+        view.string = text
+        return scroll
+    }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let view = scroll.documentView as? NSTextView else { return }
+        let font: NSFont = monospaced ? .monospacedSystemFont(ofSize: 14, weight: .regular) : .systemFont(ofSize: 16)
+        if view.font != font { view.font = font }
+        view.textColor = NSColor(palette.text)
+        view.insertionPointColor = NSColor(palette.iconAccent)
+        if view.string != text, !view.hasMarkedText() {
+            let selection = view.selectedRange()
+            let origin = scroll.contentView.bounds.origin
+            view.string = text
+            view.setSelectedRange(NSRange(location: min(selection.location, (text as NSString).length), length: 0))
+            scroll.contentView.scroll(to: origin)
+        }
+        if context.coordinator.focusRequest != focusRequest {
+            context.coordinator.focusRequest = focusRequest
+            view.window?.makeFirstResponder(view)
+        }
+        if context.coordinator.findRequest != findRequest {
+            context.coordinator.findRequest = findRequest
+            DispatchQueue.main.async {
+                view.window?.makeFirstResponder(view)
+                let action = NSMenuItem()
+                action.tag = NSTextFinder.Action.showFindInterface.rawValue
+                view.performFindPanelAction(action)
+            }
+        }
+    }
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MacWritingTextView
+        var findRequest = 0
+        var focusRequest = 0
+        init(_ parent: MacWritingTextView) { self.parent = parent }
+        func textDidChange(_ notification: Notification) {
+            if let view = notification.object as? NSTextView { parent.text = view.string }
+        }
+        func textDidEndEditing(_ notification: Notification) { parent.onFocusLost?() }
+    }
+}
+#endif
+
+#if os(macOS)
+private struct MacReplyWritingField: View {
+    @Binding var text: String
+    @State private var findRequest = 0
+    var body: some View {
+        VStack {
+            HStack { Spacer(); Button("Find", systemImage: "magnifyingglass") { findRequest += 1 } }
+            MacWritingTextView(text: $text, findRequest: findRequest)
+        }
+    }
+}
+#endif
+
+#if os(iOS)
+struct MobileWritingTools: View {
+    @Binding var title: String
+    @Binding var text: String
+    @State private var presented = false
+    @Environment(\.studioPalette) private var palette
+    var body: some View {
+        Button("Writing tools", systemImage: "text.badge.checkmark") { presented = true }
+            .accessibilityIdentifier("writing.tools")
+            .popover(isPresented: $presented) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack { Text("Proofread").font(.headline); Spacer(); Button("Done") { presented = false } }
+                    StudioProofreadAction(document: .init(title: title, body: text), unavailable: MobileProofreading.availabilityMessage,
+                        check: MobileProofreading.check) { title = $0.title; text = $0.body }
+                }.padding(20).frame(minWidth: 280, idealWidth: 360).background(palette.canvas)
+            }
     }
 }
 #endif

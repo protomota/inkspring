@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import SwiftUI
 
 private extension CompanionLibrary.Item {
@@ -42,6 +43,8 @@ final class MobileLibrary {
         let revision: String
         let base: String
         let markdown: String
+        var title: String?
+        var baseTitle: String?
     }
 
     func newsletterRecoveryKey(for itemID: String, workspaceID: UUID) -> String? {
@@ -66,7 +69,7 @@ final class MobileLibrary {
 
     var pendingIdeas: [CompanionLibraryOutbox.Entry] {
         outbox.entries.reversed().filter {
-            $0.action == .addIdea && $0.generatesXDraft != true && ($0.account == nil || $0.account == account)
+            $0.action == .addIdea && $0.generatesXDraft != true && $0.createsScript != true && ($0.account == nil || $0.account == account)
                 && ($0.workspaceID == nil || $0.workspaceID == snapshot?.workspaceID || snapshot == nil)
                 && !isDeleting($0.id.uuidString.lowercased())
         }
@@ -88,6 +91,61 @@ final class MobileLibrary {
     func pendingChanges(for itemID: String) -> [CompanionLibraryOutbox.Entry] {
         outbox.entries.filter {
             $0.itemID == itemID && $0.workspaceID == snapshot?.workspaceID && $0.account == account
+                && $0.action != .saveRevision
+        }
+    }
+
+    private func historyURL(workspaceID: UUID, account: String) -> URL {
+        let scope = SHA256.hash(data: Data((account + workspaceID.uuidString).utf8)).map { String(format: "%02x", $0) }.joined()
+        return URL.applicationSupportDirectory.appending(path: "Inkspring/Revisions/\(scope).json")
+    }
+
+    private func localHistory(workspaceID: UUID, account: String) throws -> [String: [ContentRevision]] {
+        let url = historyURL(workspaceID: workspaceID, account: account)
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        return try JSONDecoder().decode([String: [ContentRevision]].self, from: Data(contentsOf: url))
+    }
+
+    func history(for item: CompanionLibrary.Item) throws -> [ContentRevision] {
+        guard let snapshot, let account else { return item.history ?? [] }
+        let local = try localHistory(workspaceID: snapshot.workspaceID, account: account)[item.id] ?? []
+        let current = (snapshot.items + (snapshot.newsletters ?? []) + (snapshot.scripts ?? []) + (snapshot.articles ?? [])).first { $0.id == item.id } ?? item
+        let all = (current.history ?? []) + local
+        return Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
+            .sorted { ($0.savedAt ?? "") > ($1.savedAt ?? "") }
+    }
+
+    private func recordHistory(_ entry: CompanionLibraryOutbox.Entry) throws {
+        guard entry.action == .editDraft, let itemID = entry.itemID, let workspaceID = entry.workspaceID,
+              let account = entry.account,
+              let item = ((snapshot?.items ?? []) + (snapshot?.newsletters ?? []) + (snapshot?.scripts ?? []) + (snapshot?.articles ?? [])).first(where: { $0.id == itemID }) else { return }
+        var archive = try localHistory(workspaceID: workspaceID, account: account)
+        var versions = archive[itemID] ?? []
+        if !item.shortened, !(versions + (item.history ?? [])).contains(where: { $0.text == item.body && $0.savedAt == item.revision }) {
+            versions.append(.init(savedAt: item.revision, title: item.title, text: item.body,
+                                  format: item.format, source: "Mac"))
+        }
+        versions.append(.init(id: entry.id.uuidString, savedAt: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)),
+                              title: entry.title.isEmpty ? item.title : entry.title, text: entry.text,
+                              format: entry.xFormat ?? item.format, subtitle: entry.subtitle ?? item.history?.first?.subtitle,
+                              source: UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"))
+        archive[itemID] = versions
+        let url = historyURL(workspaceID: workspaceID, account: account)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(archive).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    private func queueHistory(in library: CompanionLibrary, account: String, outbox: inout CompanionLibraryOutbox) throws {
+        guard library.supportsRevisionHistory == true else { return }
+        let items = library.items + (library.newsletters ?? []) + (library.scripts ?? []) + (library.articles ?? [])
+        let existing = Set(items.flatMap { $0.history ?? [] }.map(\.id) +
+            library.pending.compactMap { $0.historySnapshot?.id } + outbox.entries.compactMap { $0.historySnapshot?.id })
+        for (itemID, revisions) in try localHistory(workspaceID: library.workspaceID, account: account) {
+            guard items.contains(where: { $0.id == itemID }) else { continue }
+            for revision in revisions where !existing.contains(revision.id) {
+                outbox.entries.append(.init(id: UUID(), action: .saveRevision, itemID: itemID, revision: "",
+                    title: "", text: "", workspaceID: library.workspaceID, account: account, historySnapshot: revision))
+            }
         }
     }
 
@@ -108,7 +166,7 @@ final class MobileLibrary {
 
     func newsletterSyncStatus(for entry: CompanionLibraryOutbox.Entry) -> NewsletterSyncStatus {
         if entry.error != nil { return .needsReview }
-        if snapshot?.supportsNewsletterEdits != true { return .needsMacUpdate }
+        if entry.editsScript == true ? snapshot?.supportsScripts != true : snapshot?.supportsNewsletterEdits != true { return .needsMacUpdate }
         if snapshot?.pending.contains(where: { $0.id == entry.requestID }) == true { return .waitingForMac }
         return .savedOnDevice
     }
@@ -116,7 +174,7 @@ final class MobileLibrary {
     var newsletterSyncSummary: String? {
         guard let snapshot else { return nil }
         let edits = outbox.entries.filter {
-            $0.editsNewsletter == true && $0.workspaceID == snapshot.workspaceID && $0.account == account
+            $0.isLongFormEdit && $0.workspaceID == snapshot.workspaceID && $0.account == account
         }
         let latestByItem = Dictionary(edits.compactMap { edit in edit.itemID.map { ($0, edit) } },
                                       uniquingKeysWith: { _, newest in newest })
@@ -160,19 +218,40 @@ final class MobileLibrary {
     }
 
     func isChanging(_ itemID: String) -> Bool {
-        pendingChanges(for: itemID).contains { $0.action != .note && $0.error == nil }
-            || snapshot?.pending.contains { $0.itemID == itemID && $0.action != .note } == true
+        pendingChanges(for: itemID).contains { !([CompanionLibrary.Change.Action.note, .saveRevision].contains($0.action)) && $0.error == nil }
+            || snapshot?.pending.contains { $0.itemID == itemID && !([CompanionLibrary.Change.Action.note, .saveRevision].contains($0.action)) } == true
     }
 
     func canDelete(_ itemID: String) -> Bool {
         if !isChanging(itemID) { return true }
         guard let move = pendingTrash(for: itemID) else { return false }
         return pendingChanges(for: itemID).allSatisfy { $0.id == move.id || $0.action == .note || $0.error != nil }
-            && snapshot?.pending.contains { $0.itemID == itemID && $0.id != move.requestID && $0.action != .note } != true
+            && snapshot?.pending.contains { $0.itemID == itemID && $0.id != move.requestID && !([CompanionLibrary.Change.Action.note, .saveRevision].contains($0.action)) } != true
     }
 
     private func pendingTrash(for itemID: String) -> CompanionLibraryOutbox.Entry? {
         pendingChanges(for: itemID).last { $0.movesToTrash && $0.error == nil }
+    }
+
+    var visibleScripts: [CompanionLibrary.Item] {
+        let remote = (snapshot?.scripts ?? []) + (snapshot?.articles ?? [])
+        let ids = Set(remote.map(\.id))
+        let local = outbox.entries.filter {
+            $0.createsScript == true && $0.account == account && $0.workspaceID == snapshot?.workspaceID
+                && !ids.contains($0.id.uuidString.lowercased())
+        }.map { entry in
+            CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: entry.writingKind == "article" ? .article : .script,
+                projectID: entry.itemID ?? "", title: entry.title, body: entry.text, shortened: false,
+                platform: entry.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [])
+        }
+        return remote + local
+    }
+
+    func createScript(projectID: String, kind: String = "script") throws -> String {
+        guard let snapshot else { throw CompanionScheduleError.changed }
+        let change = CompanionLibrary.Change(action: .addIdea, itemID: projectID, title: kind == "article" ? "Untitled X article" : "Untitled YouTube script", createsScript: true, writingKind: kind)
+        try saveChange(change, workspaceID: snapshot.workspaceID)
+        return change.id.uuidString.lowercased()
     }
 
     func saveIdea(title: String, text: String, projectID: String?) throws {
@@ -183,21 +262,27 @@ final class MobileLibrary {
     func saveChange(_ change: CompanionLibrary.Change, workspaceID: UUID) throws {
         guard let account, snapshot?.workspaceID == workspaceID else { throw CompanionScheduleError.changed }
         guard change.valid else { throw CompanionLibraryError.invalid }
-        if change.editsNewsletter == true, try JSONEncoder().encode(change).count > change.payloadLimit {
+        if change.isLongFormEdit, try JSONEncoder().encode(change).count > change.payloadLimit {
             throw CompanionLibraryError.invalid
         }
         if change.action == .scheduleDraft, snapshot?.postingWindows == nil { throw CompanionLibraryError.disabled }
         let afterTrash = change.action == .deleteItem ? pendingTrash(for: change.itemID)?.id : nil
+        let predecessor = change.editsScript == true ? outbox.entries.last {
+            $0.createsScript == true && $0.id.uuidString.lowercased() == change.itemID && $0.account == account
+                && $0.workspaceID == workspaceID
+        }?.requestID : nil
         try queue(.init(id: change.id, action: change.action, itemID: change.itemID, revision: change.revision,
                         title: change.title, text: change.text, workspaceID: workspaceID, account: account,
-                        afterTrash: afterTrash, editsNewsletter: change.editsNewsletter,
-                        baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft))
+                        afterTrash: afterTrash, writingKind: change.writingKind, baseScriptTitle: change.baseScriptTitle, editsScript: change.editsScript, createsScript: change.createsScript, editsNewsletter: change.editsNewsletter, afterNewsletterEdit: predecessor,
+                        baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft,
+                        restoresRevision: change.restoresRevision, subtitle: change.subtitle))
     }
 
     private func queue(_ entry: CompanionLibraryOutbox.Entry) throws {
         try loadOutbox()
+        try recordHistory(entry)
         var next = outbox
-        if entry.editsNewsletter == true {
+        if entry.action == .editDraft {
             next.queueNewsletterEdit(entry)
         } else {
             if [.editDraft, .editIdea, .trashItem, .restoreItem, .deleteItem, .scheduleDraft].contains(entry.action) {
@@ -209,7 +294,7 @@ final class MobileLibrary {
             next.entries.append(entry)
         }
         try persist(next)
-        if entry.editsNewsletter == true && busy {
+        if entry.isLongFormEdit && busy {
             newsletterRefreshPending = true
         } else {
             Task { await refresh() }
@@ -236,6 +321,7 @@ final class MobileLibrary {
 #if DEBUG
     private func prepareChanges(in library: CompanionLibrary, account: String) throws -> [CompanionLibrary.Change] {
         var next = outbox
+        try queueHistory(in: library, account: account, outbox: &next)
         let changes = next.prepare(for: library, account: account)
         try persist(next)
         return changes
@@ -245,6 +331,7 @@ final class MobileLibrary {
     private func acceptSnapshot(_ incoming: CompanionLibrary, account: String) throws -> [CompanionLibrary.Change] {
         guard !isOlderSnapshot(incoming) else { return [] }
         var next = outbox
+        try queueHistory(in: incoming, account: account, outbox: &next)
         let changes = next.prepare(for: incoming, account: account)
         if next != outbox { defaults.set(try JSONEncoder().encode(next), forKey: Self.outboxKey) }
         if snapshot != incoming || next != outbox {
@@ -257,13 +344,13 @@ final class MobileLibrary {
     private func isOlderSnapshot(_ incoming: CompanionLibrary) -> Bool {
         guard let snapshot, incoming.workspaceID == snapshot.workspaceID else { return false }
         if incoming.updatedAt < snapshot.updatedAt { return true }
-        let currentRevisions = Dictionary((snapshot.newsletters ?? []).compactMap { item in
+        let currentRevisions = Dictionary(((snapshot.newsletters ?? []) + (snapshot.scripts ?? []) + (snapshot.articles ?? [])).compactMap { item in
             item.revisionDate.map { (item.id, $0) }
         }, uniquingKeysWith: max)
-        return incoming.newsletters?.contains { item in
+        return ((incoming.newsletters ?? []) + (incoming.scripts ?? []) + (incoming.articles ?? [])).contains { item in
             guard let current = currentRevisions[item.id], let incoming = item.revisionDate else { return false }
             return incoming < current
-        } == true
+        }
     }
 
     private func clearSnapshot() {
@@ -308,6 +395,54 @@ final class MobileLibrary {
                 var fixture = snapshot ?? Self.fixture
                 for change in try prepareChanges(in: fixture, account: "fixture").prefix(24 - fixture.pending.count) {
                     try fixture.enqueue(change)
+                }
+                if ProcessInfo.processInfo.arguments.contains("--history-fixture") {
+                    for change in fixture.pending where change.action == .saveRevision || change.action == .editDraft && change.editsNewsletter != true {
+                        guard let index = fixture.items.firstIndex(where: { $0.id == change.itemID }) else { continue }
+                        if let history = change.historySnapshot {
+                            if fixture.items[index].history?.contains(where: { $0.id == history.id }) != true {
+                                fixture.items[index].history = (fixture.items[index].history ?? []) + [history]
+                            }
+                        } else {
+                            let item = fixture.items[index]
+                            var updated = CompanionLibrary.Item(id: item.id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)),
+                                kind: item.kind, projectID: item.projectID, title: change.title, body: change.text,
+                                shortened: false, platform: item.platform, status: item.status, notes: item.notes, referenceID: item.referenceID)
+                            updated.format = change.xFormat ?? item.format
+                            updated.history = item.history
+                            fixture.items[index] = updated
+                        }
+                        fixture.results.append(.init(id: change.id))
+                    }
+                    let completed = Set(fixture.results.map(\.id))
+                    fixture.pending.removeAll { completed.contains($0.id) }
+                    fixture.updatedAt = .now
+                }
+                if ProcessInfo.processInfo.arguments.contains("--script-fixture") {
+                    var writing = (fixture.scripts ?? []) + (fixture.articles ?? [])
+                    for change in fixture.pending where change.createsScript == true || change.editsScript == true || change.action == .saveRevision {
+                        let id = change.createsScript == true ? change.id.uuidString.lowercased() : change.itemID
+                        if let index = writing.firstIndex(where: { $0.id == id }) {
+                            let item = writing[index]
+                            var updated = CompanionLibrary.Item(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: item.kind,
+                                projectID: item.projectID, title: change.title.isEmpty ? item.title : change.title,
+                                body: change.action == .saveRevision ? item.body : change.text,
+                                shortened: false, platform: item.platform, status: "draft", notes: [], referenceID: item.referenceID)
+                            updated.history = item.history ?? []
+                            if let revision = change.historySnapshot, updated.history?.contains(where: { $0.id == revision.id }) != true {
+                                updated.history?.append(revision)
+                            }
+                            writing[index] = updated
+                        } else if change.createsScript == true {
+                            writing.append(.init(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: change.writingKind == "article" ? .article : .script,
+                                projectID: change.itemID, title: change.title, body: change.text, shortened: false, platform: change.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [], referenceID: "STU–003"))
+                        } else { continue }
+                        fixture.results.append(.init(id: change.id, newsletterRevision: writing.first { $0.id == id }?.revision))
+                    }
+                    fixture.scripts = writing.filter { $0.kind == .script }
+                    fixture.articles = writing.filter { $0.kind == .article }
+                    let completed = Set(fixture.results.map(\.id))
+                    fixture.pending.removeAll { completed.contains($0.id) }
                 }
                 let newsletterEdits = fixture.pending.filter { $0.editsNewsletter == true }
                 let exercisesSyncRace = ProcessInfo.processInfo.arguments.contains("--newsletter-sync-race-fixture")
@@ -458,12 +593,21 @@ final class MobileLibrary {
         }
         value.supportsItemManagement = true
         value.supportsXThreads = true
+        value.supportsXParagraphs = true
+        value.supportsRevisionHistory = true
         if ProcessInfo.processInfo.arguments.contains("--x-thread-fixture") {
             var draft = CompanionLibrary.Item(id: "x-followup-demo", revision: "2026-11-18T16:00:00.000Z", kind: .draft,
-                projectID: "studio", title: "I started a cult", body: "We build useful tools and give them away.\n\nRead more: https://newsletter.protomota.com/\nJoin us: https://protomota.com/discord",
+                projectID: "studio", title: "I started a cult", body: ["We build useful tools and give them away.", "Read more: https://newsletter.protomota.com/", "Join us: https://protomota.com/discord"].joined(separator: XThreadText.separator),
                 shortened: false, platform: "x", status: "draft", notes: [], referenceID: "STU-003")
-            draft.format = "followup"
+            draft.format = "thread"
             value.items.insert(draft, at: 0)
+        }
+        if ProcessInfo.processInfo.arguments.contains("--script-fixture") {
+            value.supportsScripts = true
+            value.scripts = [.init(id: "script-example", revision: "2026-11-19T12:00:00.000Z", kind: .script,
+                projectID: "studio", title: "I started a cult — YouTube script",
+                body: "We build real skills.\n\nWe protect our signal.\n\n" + String(repeating: "We learn by building and testing useful tools.\n\n", count: 50) + "End of the hallway script.",
+                shortened: false, platform: "youtube", status: "draft", notes: [], referenceID: "STU–003")]
         }
         if ProcessInfo.processInfo.arguments.contains("--newsletter-fixture") {
             value.newsletters = [
@@ -524,20 +668,22 @@ final class MobileLibrary {
 private struct MobileNewsletterDetail: View {
     @Environment(\.studioPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
-    @FocusState private var editorFocused: Bool
     let item: CompanionLibrary.Item
     let metadata: String
     let library: MobileLibrary
     let workspaceID: UUID
     @State private var editingRevision: String?
     @State private var editingBaseMarkdown = ""
+    @State private var scriptTitle = ""
+    @State private var baseScriptTitle = ""
+    @State private var findRequest = 0
     @State private var markdown = ""
     @State private var saveError: String?
     @State private var showsMacVersion = false
     @State private var recoveryKey: String?
 
     private var pendingEdit: CompanionLibraryOutbox.Entry? {
-        library.pendingChanges(for: item.id).last { $0.editsNewsletter == true }
+        library.pendingChanges(for: item.id).last { $0.isLongFormEdit }
     }
 
     private var canEdit: Bool {
@@ -557,27 +703,14 @@ private struct MobileNewsletterDetail: View {
         Group {
             if editingRevision != nil {
                 VStack(alignment: .leading, spacing: 12) {
-                    metadataHeader
-                    StudioProofreadAction(document: .init(body: markdown),
-                                          unavailable: MobileProofreading.availabilityMessage,
-                                          begin: { editorFocused = false },
-                                          check: MobileProofreading.check) {
-                        markdown = $0.body
+                    if [.script, .article].contains(item.kind) {
+                        TextField(item.kind == .article ? "Article title" : "Script title", text: $scriptTitle)
+                            .textFieldStyle(.plain).font(.headline)
+                            .accessibilityIdentifier("script.title")
                     }
-                    Text("Markdown").font(.subheadline.weight(.semibold))
-                    TextEditor(text: $markdown)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(palette.text)
-                        .scrollContentBackground(.hidden)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .focused($editorFocused)
-                        .accessibilityLabel("Newsletter Markdown")
-                        .accessibilityIdentifier("newsletter.markdown")
-                        .padding(8)
-                        .frame(maxHeight: .infinity)
+                    MobileWritingTextView(text: $markdown, identifier: "newsletter.markdown", findRequest: findRequest, monospaced: true, onFocusLost: { save() })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .studioSurface()
-                        .task { editorFocused = true }
                     if let saveError {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(saveError).font(.footnote).foregroundStyle(palette.danger)
@@ -587,8 +720,8 @@ private struct MobileNewsletterDetail: View {
                         }
                     }
                 }
-                .padding(16)
-                .frame(maxWidth: 760)
+                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -599,7 +732,7 @@ private struct MobileNewsletterDetail: View {
                         } else {
                             Group {
                                 if previewMarkdown.isEmpty {
-                                    Text("No newsletter text yet.").foregroundStyle(palette.muted)
+                                    Text(item.kind == .article ? "No article text yet. Double-tap to start writing." : item.kind == .script ? "No script text yet. Double-tap to start writing." : "No newsletter text yet.").foregroundStyle(palette.muted)
                                 } else {
                                     MobileNewsletterMarkdown(markdown: previewMarkdown).equatable()
                                 }
@@ -637,21 +770,19 @@ private struct MobileNewsletterDetail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(palette.iconAccent)
-        .navigationTitle("Newsletter")
+        .toolbar(editingRevision == nil ? .visible : .hidden, for: .tabBar)
+        .navigationTitle(item.kind == .article ? "X article" : item.kind == .script ? "YouTube script" : "Newsletter")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: markdown) {
-            guard let editingRevision, let recoveryKey, markdown != editingBaseMarkdown else { return }
-            library.storeNewsletterRecovery(.init(revision: editingRevision, base: editingBaseMarkdown, markdown: markdown),
+        .onChange(of: markdown + "\0" + scriptTitle) {
+            guard let editingRevision, let recoveryKey, markdown != editingBaseMarkdown || scriptTitle != baseScriptTitle else { return }
+            library.storeNewsletterRecovery(.init(revision: editingRevision, base: editingBaseMarkdown, markdown: markdown, title: scriptTitle, baseTitle: baseScriptTitle),
                                             key: recoveryKey)
         }
-        .task(id: markdown) {
-            guard editingRevision != nil, markdown != editingBaseMarkdown else { return }
+        .task(id: markdown + "\0" + scriptTitle) {
+            guard editingRevision != nil, markdown != editingBaseMarkdown || scriptTitle != baseScriptTitle else { return }
             do { try await Task.sleep(for: .milliseconds(750)) }
             catch { return }
             save()
-        }
-        .onChange(of: editorFocused) { previous, focused in
-            if previous && !focused { save() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { save() }
@@ -663,6 +794,9 @@ private struct MobileNewsletterDetail: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if editingRevision != nil {
+                    Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }
+                        .accessibilityIdentifier("editor.find")
+                    MobileWritingTools(title: item.kind == .newsletter ? .constant("") : $scriptTitle, text: $markdown)
                     Button("Done") { save(ending: true) }.fontWeight(.semibold)
                 } else {
                     Menu {
@@ -682,7 +816,7 @@ private struct MobileNewsletterDetail: View {
 
     private func syncMessage(_ status: MobileLibrary.NewsletterSyncStatus) -> String {
         switch status {
-        case .needsMacUpdate: "Saved on this device. The Mac build publishing this workspace cannot accept newsletter edits yet."
+        case .needsMacUpdate: "Saved on this device. Open the latest Inkspring on your Mac to sync this edit."
         case .waitingForMac: "Sent to iCloud. Waiting for Inkspring on your Mac to apply the edit."
         case .savedOnDevice: "Saved on this device. Waiting to upload to iCloud."
         case .needsReview: "Your mobile edit is saved on this device."
@@ -691,9 +825,10 @@ private struct MobileNewsletterDetail: View {
 
     private var metadataHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(item.title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            Text([.script, .article].contains(item.kind) && pendingEdit?.title.isEmpty == false || pendingEdit?.restoresRevision == true ? pendingEdit?.title ?? item.title : item.title)
+                .font(.title2.bold()).accessibilityAddTraits(.isHeader)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                StudioPlatformLabel(name: "substack", title: "Substack")
+                StudioPlatformLabel(name: item.kind == .article ? "x" : item.kind == .script ? "youtube" : "substack", title: item.kind == .article ? "X article" : item.kind == .script ? "YouTube" : "Substack")
                 Text("·").accessibilityHidden(true)
                 Text(metadata)
             }
@@ -708,6 +843,10 @@ private struct MobileNewsletterDetail: View {
                     .foregroundStyle(palette.muted)
                     .accessibilityIdentifier("newsletter.lastUpdated")
             }
+            NavigationLink {
+                MobileRevisionHistory(item: item, library: library, workspaceID: workspaceID)
+            } label: { Label("Revision history", systemImage: "clock.arrow.circlepath") }
+            .accessibilityIdentifier("history.open")
         }
         .foregroundStyle(palette.text)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -719,33 +858,35 @@ private struct MobileNewsletterDetail: View {
         let recovery = recoveryKey.flatMap { library.recoverNewsletterEdit(key: $0) }
         editingBaseMarkdown = recovery?.base ?? previewMarkdown
         markdown = recovery?.markdown ?? editingBaseMarkdown
+        scriptTitle = recovery?.title ?? (pendingEdit?.title.isEmpty == false ? pendingEdit?.title ?? item.title : item.title)
+        baseScriptTitle = recovery?.baseTitle ?? (pendingEdit?.title.isEmpty == false ? pendingEdit?.title ?? item.title : item.title)
         editingRevision = recovery?.revision ?? item.revision
     }
 
     private func endEditing() {
         editingRevision = nil
-        editorFocused = false
         saveError = nil
         recoveryKey = nil
     }
 
     private func save(ending: Bool = false) {
         guard let editingRevision else { return }
-        if markdown == editingBaseMarkdown {
+        if markdown == editingBaseMarkdown && scriptTitle == baseScriptTitle {
             if let recoveryKey { library.storeNewsletterRecovery(nil, key: recoveryKey) }
             if ending { endEditing() }
             return
         }
         do {
-            var edit = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: editingRevision,
-                                                text: markdown, editsNewsletter: true, baseNewsletterText: editingBaseMarkdown)
+            var edit = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: editingRevision, title: [.script, .article].contains(item.kind) ? scriptTitle : "",
+                                                text: markdown, editsNewsletter: item.kind == .newsletter ? true : nil, baseNewsletterText: editingBaseMarkdown, editsScript: [.script, .article].contains(item.kind) ? true : nil, baseScriptTitle: [.script, .article].contains(item.kind) ? baseScriptTitle : nil, writingKind: item.kind == .article ? "article" : nil)
             if !edit.valid || (try? JSONEncoder().encode(edit).count).map({ $0 > edit.payloadLimit }) == true {
-                edit = .init(id: edit.id, action: edit.action, itemID: edit.itemID, revision: edit.revision,
-                             text: edit.text, editsNewsletter: true)
+                edit = .init(id: edit.id, action: edit.action, itemID: edit.itemID, revision: edit.revision, title: edit.title,
+                             text: edit.text, editsNewsletter: item.kind == .newsletter ? true : nil, editsScript: [.script, .article].contains(item.kind) ? true : nil, baseScriptTitle: [.script, .article].contains(item.kind) ? baseScriptTitle : nil, writingKind: item.kind == .article ? "article" : nil)
             }
             try library.saveChange(edit, workspaceID: workspaceID)
             showsMacVersion = false
             editingBaseMarkdown = markdown
+            baseScriptTitle = scriptTitle
             if let recoveryKey { library.storeNewsletterRecovery(nil, key: recoveryKey) }
             saveError = nil
             if ending { endEditing() }
@@ -859,6 +1000,7 @@ struct MobileReviewView: View {
     @State private var deleteItem: CompanionLibrary.Item?
     @State private var actionError: String?
     @State private var creatingXDraft = false
+    @State private var scriptError: String?
 
     private static let filters = ["Drafts", "Ideas", "Trash"]
 
@@ -883,12 +1025,14 @@ struct MobileReviewView: View {
 
     private var drafts: [CompanionLibrary.Item] {
         let posts = library.visibleItems.filter { $0.kind == .draft && $0.isTrashed != true }
-        return posts + (library.snapshot?.newsletters ?? [])
+        return posts + (library.snapshot?.newsletters ?? []) + library.visibleScripts
     }
 
     private var platformOptions: [String] {
         var platforms = Set(drafts.map(\.reviewPlatform).filter { !$0.isEmpty })
         platforms.insert("substack")
+        platforms.insert("youtube")
+        platforms.insert("x-article")
         if let platformFilter { platforms.insert(platformFilter) }
         return platforms.sorted { reviewPlatformName($0).localizedStandardCompare(reviewPlatformName($1)) == .orderedAscending }
     }
@@ -940,86 +1084,7 @@ struct MobileReviewView: View {
                                     .foregroundStyle(.secondary)
                                     .listRowBackground(palette.card)
                             }
-                            ForEach(items) { item in
-                                let selected = wideLayout && selection == item.id
-                                let showsProjectStatus = filter != "Drafts" || item.kind == .newsletter
-                                let showsPlatform = !item.reviewPlatform.isEmpty
-                                NavigationLink(value: item.id) {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(item.title).font(.headline).foregroundStyle(palette.text)
-                                                .lineLimit(wideLayout ? 3 : nil)
-                                            if showsPlatform || showsProjectStatus {
-                                                HStack(spacing: 5) {
-                                                    if showsPlatform {
-                                                        StudioPlatformLabel(name: item.reviewPlatform,
-                                                                            title: reviewPlatformName(item.reviewPlatform))
-                                                    }
-                                                    if showsProjectStatus {
-                                                        if showsPlatform { Text("·").accessibilityHidden(true) }
-                                                        Text([projectName(item, in: snapshot), status(item)].joined(separator: " · "))
-                                                    }
-                                                }
-                                                .font(.caption).foregroundStyle(palette.muted)
-                                            }
-                                            if let attachment = item.attachment {
-                                                MobileAttachmentLabel(attachment: attachment).font(.caption)
-                                            }
-                                            if item.kind == .newsletter,
-                                               let edit = library.pendingChanges(for: item.id).last(where: { $0.editsNewsletter == true }) {
-                                                let syncStatus = library.newsletterSyncStatus(for: edit)
-                                                Label(syncStatus.rawValue, systemImage: syncStatus.icon)
-                                                    .font(.caption).foregroundStyle(palette.muted)
-                                            } else if library.isChanging(item.id) {
-                                                Label("iCloud sync pending", systemImage: "checkmark").font(.caption).foregroundStyle(palette.muted)
-                                            }
-                                        }
-                                        if selected {
-                                            Spacer(minLength: 0)
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundStyle(palette.iconAccent)
-                                                .accessibilityHidden(true)
-                                        }
-                                    }
-                                    .padding(.vertical, 4)
-                                }
-                                .listRowBackground(selected ? palette.well : palette.card)
-                                .accessibilityAddTraits(selected ? .isSelected : [])
-                                .contextMenu {
-                                    if item.kind == .newsletter {
-                                        if !item.shortened && !item.body.isEmpty {
-                                            Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
-                                        }
-                                    } else {
-                                        if item.isTrashed == true {
-                                            Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }
-                                                .disabled(library.isChanging(item.id))
-                                        } else {
-                                            Button("Edit", systemImage: "pencil") { editItem = item }
-                                        }
-                                        Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
-                                            .disabled(item.shortened)
-                                        Button(item.isTrashed == true ? "Delete permanently…" : item.kind == .idea ? "Skip idea" : "Move to Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
-                                            .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
-                                    }
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    if item.kind != .newsletter {
-                                        Button(item.isTrashed == true ? "Delete" : item.kind == .idea ? "Skip" : "Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
-                                            .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
-                                    }
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                    if item.kind != .newsletter {
-                                        if item.isTrashed == true {
-                                            Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }.tint(palette.iconAccent)
-                                                .disabled(library.isChanging(item.id))
-                                        } else {
-                                            Button("Edit", systemImage: "pencil") { editItem = item }.tint(palette.iconAccent)
-                                        }
-                                    }
-                                }
-                            }
+                            ForEach(items) { item in reviewRow(item, in: snapshot) }
                             if filter == "Drafts", platformFilter == "substack", snapshot.hasMoreNewsletters == true {
                                 Text("Open Inkspring on Mac to see the rest of your newsletters.")
                                     .font(.footnote).foregroundStyle(palette.muted)
@@ -1049,23 +1114,32 @@ struct MobileReviewView: View {
             .refreshable { await library.refresh() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if library.snapshot?.supportsXThreads == true {
-                        Button("New X draft", systemImage: "square.and.pencil") { creatingXDraft = true }
-                            .accessibilityIdentifier("x.newDraft")
-                    }
+                    Menu {
+                        if library.snapshot?.supportsScripts == true {
+                            Button { createWriting("article") } label: { Label { Text("New X article") } icon: { PlatformMark.image("x") } }
+                                .accessibilityIdentifier("article.new")
+                            Button { createWriting("script") } label: { Label("New YouTube script", systemImage: "play.rectangle.fill") }
+                                .accessibilityIdentifier("script.new")
+                        }
+                        if library.snapshot?.supportsXThreads == true {
+                            Button("New X post or thread", systemImage: "square.and.pencil") { creatingXDraft = true }
+                                .accessibilityIdentifier("x.newDraft")
+                        }
+                    } label: { Text("New") }.accessibilityIdentifier("writing.new")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await library.refresh() } }
                         .disabled(library.busy)
                 }
             }
+            .alert("Couldn’t create script", isPresented: Binding(get: { scriptError != nil }, set: { if !$0 { scriptError = nil } })) { Button("OK") { scriptError = nil } } message: { Text(scriptError ?? "") }
             .navigationDestination(isPresented: $creatingXDraft) {
                 MobileXGeneration(library: library, idea: nil)
             }
         } detail: {
             Group {
                 if let snapshot = library.snapshot, let item = items.first(where: { $0.id == selection }) {
-                    if item.kind == .newsletter {
+                    if item.isLongForm {
                         MobileNewsletterDetail(item: item, metadata: [projectName(item, in: snapshot), status(item)]
                             .joined(separator: " · "), library: library, workspaceID: snapshot.workspaceID)
                             .id("\(snapshot.workspaceID)-\(item.id)")
@@ -1091,8 +1165,8 @@ struct MobileReviewView: View {
         .onChange(of: projectOptions.map(\.id)) { _, ids in
             if let projectFilter, !ids.contains(projectFilter) { self.projectFilter = nil }
         }
-        .sheet(item: $editItem) { item in
-            if let snapshot = library.snapshot {
+        .navigationDestination(isPresented: Binding(get: { editItem != nil }, set: { if !$0 { editItem = nil } })) {
+            if let item = editItem, let snapshot = library.snapshot {
                 MobileItemEditor(item: item, library: library, workspaceID: snapshot.workspaceID)
             }
         }
@@ -1197,8 +1271,98 @@ struct MobileReviewView: View {
         .contentShape(Rectangle())
     }
 
+    private func createWriting(_ kind: String) {
+        do {
+            guard let projectID = projectFilter ?? library.snapshot?.projects.first?.id else { return }
+            selection = try library.createScript(projectID: projectID, kind: kind)
+            filter = "Drafts"
+            platformFilter = kind == "article" ? "x-article" : "youtube"
+        } catch { scriptError = error.localizedDescription }
+    }
+
+    @ViewBuilder private func reviewRow(_ item: CompanionLibrary.Item, in snapshot: CompanionLibrary) -> some View {
+        let selected = wideLayout && selection == item.id
+        let showsProjectStatus = filter != "Drafts" || item.isLongForm
+        let showsPlatform = !item.reviewPlatform.isEmpty
+        NavigationLink(value: item.id) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.title).font(.headline).foregroundStyle(palette.text)
+                        .lineLimit(wideLayout ? 3 : nil)
+                    if showsPlatform || showsProjectStatus {
+                        HStack(spacing: 5) {
+                            if showsPlatform {
+                                StudioPlatformLabel(name: item.reviewPlatform,
+                                                    title: reviewPlatformName(item.reviewPlatform))
+                            }
+                            if showsProjectStatus {
+                                if showsPlatform { Text("·").accessibilityHidden(true) }
+                                Text([projectName(item, in: snapshot), status(item)].joined(separator: " · "))
+                            }
+                        }
+                        .font(.caption).foregroundStyle(palette.muted)
+                    }
+                    if let attachment = item.attachment {
+                        MobileAttachmentLabel(attachment: attachment).font(.caption)
+                    }
+                    if item.isLongForm,
+                       let edit = library.pendingChanges(for: item.id).last(where: { $0.isLongFormEdit }) {
+                        let syncStatus = library.newsletterSyncStatus(for: edit)
+                        Label(syncStatus.rawValue, systemImage: syncStatus.icon)
+                            .font(.caption).foregroundStyle(palette.muted)
+                    } else if library.isChanging(item.id) {
+                        Label("iCloud sync pending", systemImage: "checkmark").font(.caption).foregroundStyle(palette.muted)
+                    }
+                }
+                if selected {
+                    Spacer(minLength: 0)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(palette.iconAccent)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .listRowBackground(selected ? palette.well : palette.card)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .contextMenu {
+            if item.isLongForm {
+                if !item.shortened && !item.body.isEmpty {
+                    Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
+                }
+            } else {
+                if item.isTrashed == true {
+                    Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }
+                        .disabled(library.isChanging(item.id))
+                } else {
+                    Button("Edit", systemImage: "pencil") { editItem = item }
+                }
+                Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.body }
+                    .disabled(item.shortened)
+                Button(item.isTrashed == true ? "Delete permanently…" : item.kind == .idea ? "Skip idea" : "Move to Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
+                    .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if !item.isLongForm {
+                Button(item.isTrashed == true ? "Delete" : item.kind == .idea ? "Skip" : "Trash", systemImage: "trash", role: .destructive) { requestRemoval(item) }
+                    .disabled(item.isTrashed == true ? !library.canDelete(item.id) : library.isChanging(item.id))
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if !item.isLongForm {
+                if item.isTrashed == true {
+                    Button("Restore", systemImage: "arrow.uturn.backward") { restore(item, in: snapshot) }.tint(palette.iconAccent)
+                        .disabled(library.isChanging(item.id))
+                } else {
+                    Button("Edit", systemImage: "pencil") { editItem = item }.tint(palette.iconAccent)
+                }
+            }
+        }
+    }
+
     private func platformMenuIcon(_ platform: String) -> Image {
-        guard let mark = PlatformMark.bitmap(platform) else { return Image(systemName: "link") }
+        guard let mark = PlatformMark.bitmap(platform == "x-article" ? "x" : platform) ?? (platform == "youtube" ? UIImage(systemName: "play.rectangle.fill") : nil) else { return Image(systemName: "link") }
         // Native menus lay out the image itself, independently of SwiftUI label styles.
         let tinted = mark.withTintColor(UIColor(palette.iconAccent), renderingMode: .alwaysOriginal)
         let canvas = CGSize(width: 24, height: 24)
@@ -1285,7 +1449,7 @@ struct MobileReviewView: View {
 }
 
 private extension CompanionLibrary.Item {
-    var reviewPlatform: String { platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    var reviewPlatform: String { kind == .article ? "x-article" : platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 }
 
 private func reviewPlatformName(_ platform: String) -> String {
@@ -1293,6 +1457,8 @@ private func reviewPlatformName(_ platform: String) -> String {
     case "x": "X"
     case "linkedin": "LinkedIn"
     case "tiktok": "TikTok"
+    case "youtube": "YouTube"
+    case "x-article": "X article"
     default: platform.capitalized
     }
 }
@@ -1358,104 +1524,90 @@ private struct MobileItemEditor: View {
     let library: MobileLibrary
     let workspaceID: UUID
     var bodyFirst = false
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.studioPalette) private var palette
     @State private var title = ""
     @State private var text = ""
     @State private var format = "post"
+    @State private var baseTitle = ""
+    @State private var baseText = ""
+    @State private var baseFormat = "post"
     @State private var initialized = false
     @State private var message: String?
-    @FocusState private var focus: Field?
-    private enum Field { case title, text }
+    @State private var findRequest = 0
 
-    private var unavailable: String? {
-        if item.isTrashed == true { return "Restore this item from Trash before editing." }
-        if item.shortened { return "Waiting for the full text to sync." }
-        if ["posting", "posted", "uncertain"].contains(item.status) {
-            return "This post is publishing or published. Check its status before editing."
-        }
-        if item.kind == .idea && !["draft", "skipped"].contains(item.status) { return "This idea already has drafts. Edit those posts instead." }
-        if library.pendingChanges(for: item.id).contains(where: { $0.action != .note && $0.error == nil }) ||
-            library.snapshot?.pending.contains(where: { $0.itemID == item.id && $0.action != .note }) == true {
-            return "Your previous change is saved. Keep Inkspring open on Mac to finish syncing before editing again."
-        }
-        return nil
+    private var unavailable: Bool {
+        item.isTrashed == true || item.shortened || ["posting", "posted", "uncertain"].contains(item.status)
+    }
+    private var dirty: Bool { title != baseTitle || text != baseText || format != baseFormat }
+    private var recoveryKey: String { library.newsletterRecoveryKey(for: item.id, workspaceID: workspaceID) ?? "" }
+    private var isX: Bool {
+        item.platform == "x" && XPostStyle(rawValue: item.format ?? "post") != nil &&
+            item.requiresMacScheduling != true && library.snapshot?.supportsXThreads == true
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if let unavailable { Section { Label(unavailable, systemImage: "info.circle") } }
-                Section("Title") {
-                    TextField("Title", text: $title, axis: .vertical)
-                        .font(.body).lineLimit(1...5).focused($focus, equals: .title)
-                        .accessibilityIdentifier("mobile.edit.title")
-                }.listRowBackground(palette.card)
-                if item.kind == .draft, unavailable == nil {
-                    Section {
-                        StudioProofreadAction(document: .init(title: title, body: text),
-                                              unavailable: MobileProofreading.availabilityMessage,
-                                              begin: { focus = nil },
-                                              check: MobileProofreading.check) {
-                            title = $0.title
-                            text = $0.body
-                        }
-                    }
-                    .listRowBackground(palette.card)
-                }
-                Section(item.kind == .draft ? "Post text" : "Idea") {
-                    if item.platform == "x", XPostStyle(rawValue: item.format ?? "post") != nil,
-                       item.requiresMacScheduling != true, library.snapshot?.supportsXThreads == true {
-                        StudioXPostEditor(text: $text, format: $format)
-                    } else {
-                        TextEditor(text: $text).font(.body).frame(minHeight: 240)
-                            .scrollContentBackground(.hidden)
-                            .focused($focus, equals: .text).accessibilityLabel("Post text")
-                            .accessibilityIdentifier("mobile.edit.body")
-                    }
-                }.listRowBackground(palette.card)
-                if let message { Text(message).foregroundStyle(palette.danger) }
-                Section {
-                    Text("Save keeps your changes on this device and syncs them automatically through iCloud.").font(.footnote)
-                    if ["queued", "due"].contains(item.status) {
-                        Text("Saving changes returns this post to Ready to schedule. Choose a new posting time after reviewing it.").font(.footnote)
-                    }
-                    if (item.kind == .draft ? library.snapshot?.supportsDraftEdits : library.snapshot?.supportsItemManagement) != true {
-                        Text("Update and open Inkspring on Mac to finish syncing these changes.").font(.footnote)
-                    }
-                }
+        VStack(spacing: 8) {
+            TextField("Title", text: $title, axis: .vertical).font(.headline).lineLimit(1...2)
+                .accessibilityIdentifier("mobile.edit.title").padding(.horizontal, 12)
+            if isX {
+                StudioXPostEditor(text: $text, format: $format).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                MobileWritingTextView(text: $text, identifier: "mobile.edit.body", findRequest: findRequest, onFocusLost: { _ = save() })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .scrollContentBackground(.hidden).background(palette.canvas)
-            .navigationTitle(item.kind == .draft ? "Edit draft" : "Edit idea")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        do {
-                            try library.saveChange(.init(action: item.kind == .draft ? .editDraft : .editIdea,
-                                itemID: item.id, revision: item.revision, title: title, text: text,
-                                xFormat: item.platform == "x" && XPostStyle(rawValue: item.format ?? "post") != nil &&
-                                    item.requiresMacScheduling != true && library.snapshot?.supportsXThreads == true ? format : nil),
-                                workspaceID: workspaceID)
-                            dismiss()
-                        } catch { message = error.localizedDescription }
-                    }
-                    .disabled(unavailable != nil || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                              title.utf16.count > (item.kind == .draft ? 200 : 140) || text.utf16.count > (item.kind == .draft ? 40_000 : 2000) ||
-                              (item.kind == .idea && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                }
-            }
-            .task {
-                guard !initialized else { return }
-                initialized = true
-                let pending = library.pendingChanges(for: item.id).last { [.editDraft, .editIdea].contains($0.action) }
-                title = pending?.title ?? item.title
-                text = pending?.text ?? (item.shortened ? "" : item.body)
-                format = pending?.xFormat ?? item.format ?? "post"
-                if unavailable == nil { focus = bodyFirst ? .text : .title }
+            if let message { Text(message).font(.footnote).foregroundStyle(palette.danger).padding(.horizontal, 12) }
+        }
+        .padding(.vertical, 8).background(palette.canvas)
+        .toolbar(.hidden, for: .tabBar)
+        .navigationTitle(item.kind == .draft ? "Edit draft" : "Edit idea")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if !isX { Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }.accessibilityIdentifier("editor.find") }
+                MobileWritingTools(title: $title, text: $text)
+                Button("Done") { if save() { if let close { close() } else { dismiss() } } }
             }
         }
+        .task {
+            guard !initialized else { return }
+            let pending = library.pendingChanges(for: item.id).last { [.editDraft, .editIdea].contains($0.action) }
+            baseTitle = pending?.title ?? item.title
+            baseText = pending?.text ?? item.body
+            baseFormat = pending?.xFormat ?? item.format ?? "post"
+            let recovery = library.recoverNewsletterEdit(key: recoveryKey)
+            title = recovery?.title ?? baseTitle
+            text = recovery?.markdown ?? baseText
+            format = baseFormat
+            initialized = true
+        }
+        .onChange(of: title + "\0" + text + "\0" + format) {
+            guard initialized, dirty else { return }
+            library.storeNewsletterRecovery(.init(revision: item.revision, base: baseText, markdown: text, title: title), key: recoveryKey)
+        }
+        .task(id: title + "\0" + text + "\0" + format) {
+            guard initialized, dirty else { return }
+            do { try await Task.sleep(for: .milliseconds(750)) } catch { return }
+            _ = save()
+        }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { _ = save() } }
+        .onDisappear { _ = save() }
+    }
+
+    @discardableResult private func save() -> Bool {
+        guard initialized, dirty else { return true }
+        guard !unavailable else { message = "This item is not currently editable. Your text is saved on this device."; return false }
+        do {
+            let latest = library.snapshot?.items.first { $0.id == item.id } ?? item
+            try library.saveChange(.init(action: item.kind == .draft ? .editDraft : .editIdea, itemID: item.id,
+                revision: latest.revision, title: title, text: text, xFormat: isX ? format : nil), workspaceID: workspaceID)
+            baseTitle = title; baseText = text; baseFormat = format
+            library.storeNewsletterRecovery(nil, key: recoveryKey)
+            message = nil
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
 }
 
@@ -1488,8 +1640,8 @@ private struct MobileReviewDetail: View {
     @FocusState private var editingNote: Bool
 
     private var hasPendingChange: Bool {
-        library.pendingChanges(for: item.id).contains { $0.action != .note && $0.error == nil }
-            || library.snapshot?.pending.contains { $0.itemID == item.id && $0.action != .note } == true
+        library.pendingChanges(for: item.id).contains { !([CompanionLibrary.Change.Action.note, .saveRevision].contains($0.action)) && $0.error == nil }
+            || library.snapshot?.pending.contains { $0.itemID == item.id && !([CompanionLibrary.Change.Action.note, .saveRevision].contains($0.action)) } == true
     }
 
     private var pendingEdit: CompanionLibraryOutbox.Entry? {
@@ -1523,6 +1675,14 @@ private struct MobileReviewDetail: View {
     }
 
     var body: some View {
+        Group {
+            if editingDraft {
+                MobileItemEditor(item: item, library: library, workspaceID: workspaceID, bodyFirst: editBodyFirst, close: { editingDraft = false })
+            } else { preview }
+        }
+    }
+
+    private var preview: some View {
         Form {
             if inTrash {
                 Section {
@@ -1572,6 +1732,10 @@ private struct MobileReviewDetail: View {
                         .foregroundStyle(palette.muted)
                         .accessibilityIdentifier("post.lastUpdated")
                 }
+                NavigationLink {
+                    MobileRevisionHistory(item: item, library: library, workspaceID: workspaceID)
+                } label: { Label("Revision history", systemImage: "clock.arrow.circlepath") }
+                .accessibilityIdentifier("history.open")
                 if item.shortened && pendingEdit == nil {
                     Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(.secondary)
                 } else if inTrash {
@@ -1710,9 +1874,6 @@ private struct MobileReviewDetail: View {
                 moreActions
             }
         }
-        .sheet(isPresented: $editingDraft) {
-            MobileItemEditor(item: item, library: library, workspaceID: workspaceID, bodyFirst: editBodyFirst)
-        }
         .navigationDestination(isPresented: $generatingXDraft) {
             MobileXGeneration(library: library, idea: item)
         }
@@ -1785,6 +1946,98 @@ private struct MobileReviewDetail: View {
             message = error.localizedDescription
             return false
         }
+    }
+}
+
+private struct MobileRevisionHistory: View {
+    let item: CompanionLibrary.Item
+    let library: MobileLibrary
+    let workspaceID: UUID
+    @Environment(\.studioPalette) private var palette
+    @State private var revisions: [ContentRevision] = []
+    @State private var message: String?
+
+    var body: some View {
+        List {
+            Section {
+                Text("Every save keeps a snapshot. Restoring creates a new version and keeps the later versions.")
+                    .font(.footnote).foregroundStyle(palette.muted)
+            }.listRowBackground(palette.card)
+            Section {
+                ForEach(Array(revisions.enumerated()), id: \.element.id) { index, revision in
+                    NavigationLink {
+                        MobileRevisionDetail(item: item, revision: revision, library: library, workspaceID: workspaceID)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(revision.date.map { $0.formatted(date: .abbreviated, time: .standard) } ?? "Earlier version")
+                                .font(.headline)
+                            Text(revision.source).font(.caption).foregroundStyle(palette.muted)
+                            Text(revision.title).font(.callout)
+                            Text(revision.text).font(.footnote).lineLimit(2).foregroundStyle(palette.muted)
+                        }
+                    }.accessibilityIdentifier("history.version.\(index)")
+                }
+                if revisions.isEmpty { Text("History starts with saves in this version of Inkspring.") }
+            }.listRowBackground(palette.card)
+            if let message { Text(message).foregroundStyle(palette.danger) }
+        }
+        .scrollContentBackground(.hidden).background(palette.canvas)
+        .navigationTitle("Revision history").navigationBarTitleDisplayMode(.inline)
+        .task(id: library.snapshot?.updatedAt) {
+            do { revisions = try library.history(for: item) }
+            catch { message = "Saved history couldn’t be read. \(error.localizedDescription)" }
+        }
+    }
+}
+
+private struct MobileRevisionDetail: View {
+    let item: CompanionLibrary.Item
+    let revision: ContentRevision
+    let library: MobileLibrary
+    let workspaceID: UUID
+    @Environment(\.studioPalette) private var palette
+    @Environment(\.dismiss) private var dismiss
+    @State private var message: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(revision.title).font(.title2.bold())
+                Text(revision.source).font(.footnote).foregroundStyle(palette.muted)
+                if ["thread", "followup"].contains(revision.format ?? "") {
+                    let posts = XThreadText.posts(in: revision.text)
+                    ForEach(posts.indices, id: \.self) { index in
+                        Text(index == 0 ? "Opening post" : "Follow-up reply \(index)").font(.headline)
+                        Text(posts[index]).textSelection(.enabled)
+                    }
+                } else if item.isLongForm {
+                    MobileNewsletterMarkdown(markdown: revision.text)
+                } else { Text(revision.text).textSelection(.enabled) }
+                Text("Your current version stays in history when you restore.").font(.footnote).foregroundStyle(palette.muted)
+                Button("Restore this version", systemImage: "clock.arrow.circlepath") {
+                    do {
+                        let latest = ((library.snapshot?.items ?? []) + (library.snapshot?.newsletters ?? []) + (library.snapshot?.scripts ?? []) + (library.snapshot?.articles ?? []))
+                            .first { $0.id == item.id } ?? item
+                        try library.saveChange(.init(action: .editDraft, itemID: latest.id, revision: latest.revision,
+                            title: revision.title, text: revision.text, editsNewsletter: latest.kind == .newsletter ? true : nil,
+                            baseNewsletterText: latest.isLongForm ? latest.body : nil,
+                            xFormat: latest.platform == "x" ? revision.format : nil,
+                            restoresRevision: true, subtitle: revision.subtitle, editsScript: [.script, .article].contains(latest.kind) ? true : nil, writingKind: latest.kind == .article ? "article" : nil), workspaceID: workspaceID)
+                        dismiss()
+                    } catch { message = error.localizedDescription }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(palette.iconAccent)
+                .disabled(item.isTrashed == true || library.isChanging(item.id) ||
+                          ["posting", "posted", "uncertain", "published"].contains(item.status))
+                .accessibilityIdentifier("history.restore")
+                if let message { Text(message).foregroundStyle(palette.danger) }
+            }
+            .font(.body).lineSpacing(5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18).studioSurface().padding(16)
+        }
+        .background(palette.canvas).navigationTitle("Saved version").navigationBarTitleDisplayMode(.inline)
     }
 }
 

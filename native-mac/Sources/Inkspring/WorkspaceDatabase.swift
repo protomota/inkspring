@@ -1,5 +1,7 @@
 import CSQLite
 import Foundation
+import CryptoKit
+import InkspringSchedule
 
 struct WorkspaceError: LocalizedError {
     var errorDescription: String?
@@ -16,6 +18,7 @@ struct WorkspaceRecord: Identifiable {
     var id: String { self["id"] }
     var projectID: String { self["projectId"] }
     var referenceID: String? { self["referenceId"].isEmpty ? nil : self["referenceId"] }
+    var isLongForm: Bool { ["newsletter", "script", "article"].contains(kind) }
 
     func matchesID(_ value: String) -> Bool {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -63,7 +66,7 @@ struct WorkspaceRecord: Identifiable {
     }
 
     var body: String {
-        self[["source", "idea", "reply-inbox"].contains(kind) ? "text" : kind == "newsletter" ? "body" : "content"]
+        self[["source", "idea", "reply-inbox"].contains(kind) ? "text" : isLongForm ? "body" : "content"]
     }
 
     var schedule: [String: Any] { fields["schedule"] as? [String: Any] ?? [:] }
@@ -128,6 +131,10 @@ struct WorkspaceRecord: Identifiable {
             fields["state"] = "draft"
             fields["sendEmail"] = false
             fields["audience"] = "everyone"
+        case "script", "article":
+            fields["platform"] = kind == "article" ? "x" : "youtube"
+            fields["state"] = "draft"
+            fields["body"] = ""
         default:
             break
         }
@@ -162,6 +169,10 @@ final class WorkspaceDatabase {
                     id TEXT PRIMARY KEY, kind TEXT NOT NULL, project_id TEXT, payload TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS records_kind ON records(kind);
+                CREATE TABLE IF NOT EXISTS content_revisions (
+                    id TEXT NOT NULL, record_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(record_id, id)
+                );
+                CREATE INDEX IF NOT EXISTS content_revisions_item ON content_revisions(record_id);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS agent_chats (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, updated REAL NOT NULL, payload TEXT NOT NULL
@@ -175,6 +186,9 @@ final class WorkspaceDatabase {
                 ) WHERE length(reference) > 3;
                 """)
             try backfillContentIdentifiers()
+            for record in try records() where ["draft", "newsletter", "script", "article"].contains(record.kind) {
+                try archiveRevision(record)
+            }
         } catch {
             sqlite3_close(handle)
             throw error
@@ -234,7 +248,7 @@ final class WorkspaceDatabase {
 
     @discardableResult
     func put(_ input: WorkspaceRecord) throws -> WorkspaceRecord {
-        guard ["project", "draft", "newsletter"].contains(input.kind) else {
+        guard ["project", "draft", "newsletter", "script", "article"].contains(input.kind) else {
             try writeRecord(input)
             return input
         }
@@ -250,7 +264,21 @@ final class WorkspaceDatabase {
         }
     }
 
-    private func writeRecord(_ record: WorkspaceRecord) throws {
+    private func writeRecord(_ input: WorkspaceRecord) throws {
+        var record = input
+        if ["draft", "newsletter", "script", "article"].contains(record.kind) {
+            if let imported = record.fields.removeValue(forKey: "_revisionHistory") {
+                let snapshots = try JSONDecoder().decode([ContentRevision].self, from: JSONSerialization.data(withJSONObject: imported))
+                for snapshot in snapshots { try storeRevision(snapshot, recordID: record.id) }
+            }
+            let old: WorkspaceRecord? = try statement("SELECT payload FROM records WHERE id = ? AND kind = ?", [record.id, record.kind]) { statement in
+                guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+                let fields = try JSONSerialization.jsonObject(with: Data(String(cString: sqlite3_column_text(statement, 0)).utf8)) as? [String: Any] ?? [:]
+                return WorkspaceRecord(kind: record.kind, fields: fields)
+            }
+            if let old { try archiveRevision(old) }
+            try archiveRevision(record)
+        }
         let payload = try JSONSerialization.data(withJSONObject: record.fields)
         try statement("""
             INSERT INTO records (id, kind, project_id, payload) VALUES (?, ?, ?, ?)
@@ -265,10 +293,48 @@ final class WorkspaceDatabase {
         }
     }
 
+    private func archiveRevision(_ record: WorkspaceRecord) throws {
+        if record.kind == "draft", !record["previousContent"].isEmpty, record["previousContent"] != record.body {
+            let data = try JSONEncoder().encode([record.id, record["previousContent"]])
+            let id = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            try storeRevision(.init(id: id, savedAt: nil, title: record.title, text: record["previousContent"],
+                format: record["format"], source: "Recovered earlier agent revision"), recordID: record.id)
+        }
+        let fields = [record.id, record["updatedAt"], record.title, record.body, record["format"], record["subtitle"]]
+        let data = try JSONEncoder().encode(fields)
+        let id = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        try storeRevision(.init(id: id, savedAt: record["updatedAt"], title: record.title, text: record.body,
+            format: record.kind == "draft" ? record["format"] : nil,
+            subtitle: record.isLongForm ? record["subtitle"] : nil, source: "Mac"), recordID: record.id)
+    }
+
+    func storeRevision(_ revision: ContentRevision, recordID: String) throws {
+        guard revision.valid else { throw WorkspaceError("This saved revision is invalid.") }
+        let payload = String(decoding: try JSONEncoder().encode(revision), as: UTF8.self)
+        try statement("INSERT OR IGNORE INTO content_revisions (id, record_id, payload) VALUES (?, ?, ?)", [revision.id, recordID, payload]) { statement in
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
+        }
+    }
+
+    func revisionHistory(recordID: String) throws -> [ContentRevision] {
+        try statement("SELECT payload FROM content_revisions WHERE record_id = ? ORDER BY rowid DESC", [recordID]) { statement in
+            var result: [ContentRevision] = []
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_DONE: return result.sorted { ($0.savedAt ?? "") > ($1.savedAt ?? "") }
+                case SQLITE_ROW:
+                    let data = Data(String(cString: sqlite3_column_text(statement, 0)).utf8)
+                    result.append(try JSONDecoder().decode(ContentRevision.self, from: data))
+                default: throw databaseError
+                }
+            }
+        }
+    }
+
     private func backfillContentIdentifiers() throws {
         let needsBackfill = try statement("""
             SELECT 1 FROM records LEFT JOIN content_identifiers ON records.id = record_id
-            WHERE records.kind IN ('project', 'draft', 'newsletter') AND record_id IS NULL LIMIT 1
+            WHERE records.kind IN ('project', 'draft', 'newsletter', 'script', 'article') AND record_id IS NULL LIMIT 1
             """) { statement in
             switch sqlite3_step(statement) {
             case SQLITE_DONE: return false
@@ -279,7 +345,7 @@ final class WorkspaceDatabase {
         guard needsBackfill else { return }
         try transaction {
             let rows = try records().sorted { ($0["createdAt"], $0.id) < ($1["createdAt"], $1.id) }
-            for row in rows.filter({ $0.kind == "project" }) + rows.filter({ ["draft", "newsletter"].contains($0.kind) }) {
+            for row in rows.filter({ $0.kind == "project" }) + rows.filter({ ["draft", "newsletter", "script", "article"].contains($0.kind) }) {
                 if try identifier(for: row.id) == nil { try put(row) }
             }
         }
@@ -368,6 +434,9 @@ final class WorkspaceDatabase {
 
     func remove(_ id: String, kind: String) throws {
         try statement("DELETE FROM records WHERE id = ? AND kind = ?", [id, kind]) { statement in
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
+        }
+        try statement("DELETE FROM content_revisions WHERE record_id = ?", [id]) { statement in
             guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError }
         }
     }
@@ -459,7 +528,11 @@ extension WorkspaceDatabase {
     func snapshot() throws -> (records: [WorkspaceRecord], settings: [String: Any]) {
         try execute("BEGIN")
         do {
-            let snapshot = (try records(), try settings())
+            var rows = try records()
+            for index in rows.indices where ["draft", "newsletter", "script", "article"].contains(rows[index].kind) {
+                rows[index].fields["_revisionHistory"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(revisionHistory(recordID: rows[index].id)))
+            }
+            let snapshot = (rows, try settings())
             try execute("COMMIT")
             return snapshot
         } catch {

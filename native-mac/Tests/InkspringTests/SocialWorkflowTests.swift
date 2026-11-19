@@ -108,7 +108,7 @@ import Testing
     let receipt = try await publisher.publish(publisher.review(current))
     #expect(receipt["status"] == "published")
     #expect(requests.count == 3)
-    #expect(requests[0]["text"] as? String == "First post.\nStill the first post.")
+    #expect(requests[0]["text"] as? String == "First post.\n\nStill the first post.")
     #expect(requests[0]["reply"] == nil)
     #expect(requests[2]["text"] as? String == followUp)
     #expect((requests[2]["reply"] as? [String: String])?["in_reply_to_tweet_id"] == "101")

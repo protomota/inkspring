@@ -76,6 +76,8 @@ extension Workspace {
         snapshot.supportsNewsletterEdits = true
         snapshot.supportsItemManagement = true
         snapshot.supportsXThreads = true
+        snapshot.supportsXParagraphs = true
+        snapshot.supportsRevisionHistory = true
         snapshot.postingWindows = Dictionary(uniqueKeysWithValues: SocialPlatform.allCases.filter { $0 != .tiktok }.map {
             ($0.rawValue, postingWindow(for: $0.rawValue))
         })
@@ -119,6 +121,7 @@ extension Workspace {
                     referenceID: record.referenceID
                 )
                 item.isTrashed = inTrash
+                item.history = try? revisionHistory(for: record)
                 if record.kind == "draft" {
                     item.format = record["format"]
                     if record.fields["mobileGenerationPending"] as? Bool == true {
@@ -149,23 +152,28 @@ extension Workspace {
           }
         }
         snapshot.hasMore = snapshot.hasMore || snapshot.projects.count < projects.count
-        let newsletters = records.filter { $0.kind == "newsletter" && projectIDs.contains($0.projectID) }
+        let longForm = records.filter { $0.isLongForm && projectIDs.contains($0.projectID) }
             .sorted { ($0["updatedAt"], $0.id) > ($1["updatedAt"], $1.id) }
-        var newsletterBytes = 0
+        var longFormBytes = 0
         var indexed: [CompanionLibrary.Item] = []
-        for record in newsletters {
-            let item = CompanionLibrary.Item(id: record.id, revision: record["updatedAt"], kind: .newsletter,
-                                             projectID: record.projectID, title: record.title, body: record.body,
-                                             shortened: false, platform: "substack", status: record["state"], notes: [],
-                                             referenceID: record.referenceID)
-            guard let data = try? encoder.encode(item.indexEntry),
-                  newsletterBytes + data.count + 1 <= 260_000 else { continue }
-            newsletterBytes += data.count + 1
+        for record in longForm {
+            var item = CompanionLibrary.Item(id: record.id, revision: record["updatedAt"],
+                kind: CompanionLibrary.Item.Kind(rawValue: record.kind) ?? .newsletter,
+                projectID: record.projectID, title: record.title, body: record.body,
+                shortened: false, platform: record.kind == "script" ? "youtube" : record.kind == "article" ? "x" : "substack",
+                status: record["state"], notes: [], referenceID: record.referenceID)
+            item.history = try? revisionHistory(for: record)
+            guard let data = try? encoder.encode(item.indexEntry), longFormBytes + data.count + 1 <= 260_000 else { continue }
+            longFormBytes += data.count + 1
             indexed.append(item)
         }
-        snapshot.newsletters = indexed
-        snapshot.hasMoreNewsletters = indexed.count < newsletters.count ||
+        snapshot.newsletters = indexed.filter { $0.kind == .newsletter }
+        snapshot.scripts = indexed.filter { $0.kind == .script }
+        snapshot.articles = indexed.filter { $0.kind == .article }
+        snapshot.supportsScripts = true
+        snapshot.hasMoreNewsletters = indexed.count { $0.kind == .newsletter } < longForm.count { $0.kind == "newsletter" } ||
             records.contains { $0.kind == "newsletter" && !projectIDs.contains($0.projectID) }
+        snapshot.hasMore = snapshot.hasMore || indexed.count < longForm.count
         return snapshot
     }
 
@@ -174,8 +182,11 @@ extension Workspace {
               library.supportsNewsletterEdits != snapshot.supportsNewsletterEdits ||
               library.supportsItemManagement != snapshot.supportsItemManagement ||
               library.supportsXThreads != snapshot.supportsXThreads ||
+              library.supportsXParagraphs != snapshot.supportsXParagraphs ||
+              library.supportsRevisionHistory != snapshot.supportsRevisionHistory ||
               library.postingWindows != snapshot.postingWindows || library.postingTimeZone != snapshot.postingTimeZone ||
               library.projects != snapshot.projects || library.items != snapshot.items ||
+              library.articles != snapshot.articles || library.scripts != snapshot.scripts || library.supportsScripts != snapshot.supportsScripts ||
               library.newsletters != snapshot.newsletters || library.hasMoreNewsletters != snapshot.hasMoreNewsletters ||
               library.hasMore != snapshot.hasMore || library.fullText != snapshot.fullText else { return }
         library.projects = snapshot.projects
@@ -183,10 +194,15 @@ extension Workspace {
         library.supportsNewsletterEdits = snapshot.supportsNewsletterEdits
         library.supportsItemManagement = snapshot.supportsItemManagement
         library.supportsXThreads = snapshot.supportsXThreads
+        library.supportsXParagraphs = snapshot.supportsXParagraphs
+        library.supportsRevisionHistory = snapshot.supportsRevisionHistory
         library.postingWindows = snapshot.postingWindows
         library.postingTimeZone = snapshot.postingTimeZone
         library.items = snapshot.items
         library.newsletters = snapshot.newsletters
+        library.scripts = snapshot.scripts
+        library.articles = snapshot.articles
+        library.supportsScripts = snapshot.supportsScripts
         library.hasMoreNewsletters = snapshot.hasMoreNewsletters
         library.fullText = snapshot.fullText
         library.hasMore = snapshot.hasMore
@@ -202,11 +218,12 @@ extension Workspace {
             guard change.valid else { return .init(id: change.id, error: "Invalid mobile change.") }
             if let error = try applyLibraryAction(change, id: id) { return .init(id: change.id, error: error) }
             let retainedIDs = Array((savedIDs + [id]).suffix(160))
-            if change.editsNewsletter == true {
-                newsletterRevisions[id] = records.first { $0.kind == "newsletter" && $0.id == change.itemID }?["updatedAt"]
+            if change.action == .editDraft || change.createsScript == true {
+                let recordID = change.createsScript == true ? id : change.itemID
+                newsletterRevisions[id] = records.first { $0.id == recordID }?["updatedAt"]
             }
             let retainedRevisions = newsletterRevisions.filter { retainedIDs.contains($0.key) }
-            if change.editsNewsletter == true || retainedRevisions != newsletterRevisions {
+            if change.action == .editDraft || change.createsScript == true || retainedRevisions != newsletterRevisions {
                 try set("companionNewsletterRevisions", to: retainedRevisions)
             }
             try set("companionLibraryApplied", to: retainedIDs)
@@ -215,6 +232,13 @@ extension Workspace {
     }
 
     private func applyLibraryAction(_ change: CompanionLibrary.Change, id: String) throws -> String? {
+        if change.action == .saveRevision {
+            guard let snapshot = change.historySnapshot,
+                  let record = (records + trashedRecords).first(where: { $0.id == change.itemID }),
+                  ["draft", "newsletter", "script", "article"].contains(record.kind) else { return nil }
+            try retainRevision(snapshot, recordID: record.id)
+            return nil
+        }
         if change.generatesXDraft == true {
             if (records + trashedRecords).contains(where: { $0.id == id }) ||
                 (settings["libraryDeletedIDs"] as? [String] ?? []).contains(id) { return nil }
@@ -236,12 +260,17 @@ extension Workspace {
             try save(draft)
             return nil
         }
-        if change.editsNewsletter == true {
-            guard var newsletter = records.first(where: { $0.kind == "newsletter" && $0.id == change.itemID }) else {
+        if change.isLongFormEdit {
+            guard var newsletter = records.first(where: { $0.kind == (change.editsScript == true ? change.writingKind ?? "script" : "newsletter") && $0.id == change.itemID }) else {
                 return "This newsletter is no longer available."
             }
             guard ["draft", "synced"].contains(newsletter["state"]) else {
                 return "This newsletter’s current publishing status prevents editing."
+            }
+            if change.restoresRevision == true {
+                guard newsletter["updatedAt"] == change.revision else { return "This newsletter changed. Open its latest version before restoring." }
+                newsletter["title"] = change.title
+                if let subtitle = change.subtitle { newsletter["subtitle"] = subtitle }
             }
             var body = change.text
             if let base = change.baseNewsletterText {
@@ -252,10 +281,27 @@ extension Workspace {
             } else if newsletter["updatedAt"] != change.revision && newsletter.body != change.text {
                 return "This newsletter changed on your Mac before the edit could sync. Your mobile edit is still saved on this device."
             }
-            if newsletter.body != body {
+            if change.editsScript == true, let baseTitle = change.baseScriptTitle,
+               baseTitle != change.title, newsletter.title != baseTitle, newsletter.title != change.title {
+                return "Both devices changed the script title. Your mobile version is still saved on this device."
+            }
+            let changesTitle = change.editsScript == true && !change.title.isEmpty &&
+                (change.baseScriptTitle == nil || change.baseScriptTitle != change.title)
+            if newsletter.body != body || change.restoresRevision == true || changesTitle && change.title != newsletter.title {
+                if changesTitle { newsletter["title"] = change.title }
                 newsletter["body"] = body
                 try save(newsletter)
             }
+            return nil
+        }
+        if change.createsScript == true {
+            guard projects.contains(where: { $0.id == change.itemID }) else { return "This project no longer exists on your Mac." }
+            if records.contains(where: { $0.id == id && $0.kind == (change.writingKind ?? "script") }) { return nil }
+            var script = WorkspaceRecord.new(change.writingKind ?? "script", projectID: change.itemID)
+            script["id"] = id
+            script["title"] = change.title
+            script["body"] = change.text
+            try save(script)
             return nil
         }
         if change.action == .addIdea {
@@ -285,6 +331,7 @@ extension Workspace {
             return "This item changed since you opened it."
         }
         switch change.action {
+        case .saveRevision: break
         case .scheduleDraft:
             guard record.kind == "draft", let hour = change.postingHour,
                   let platform = SocialPlatform(rawValue: record["platform"]),

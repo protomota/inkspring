@@ -17,7 +17,7 @@ struct AgentMCP {
             return [.init(name: "get_writing_request", summary: "Read the current one-time Inkspring writing request and its selected context.")]
         }
         guard chatProjectID != nil else { return Self.tools }
-        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter", "get_content"]
+        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter", "list_scripts", "get_script", "list_articles", "get_article", "get_content"]
         return Self.tools.filter { names.contains($0.name) }
     }
 
@@ -98,10 +98,17 @@ struct AgentMCP {
         .init(name: "get_draft", summary: "Read a saved post in full by its UUID or copyable ID (e.g. PRO-001).", fields: ["draft_id": "string"], required: ["draft_id"]),
         .init(name: "get_content", summary: "Read a post or newsletter in full by its Inkspring ID (e.g. PRO-001) or UUID. Returns the item kind and content, including items in Trash.",
               fields: ["id": "string"], required: ["id"]),
+        .init(name: "list_revisions", summary: "List saved versions of a post or newsletter, newest first. Read before restoring.",
+              fields: ["content_id": "string"], required: ["content_id"]),
+        .init(name: "get_revision", summary: "Read one complete saved version of a post or newsletter.",
+              fields: ["content_id": "string", "revision_id": "string"], required: ["content_id", "revision_id"]),
+        .init(name: "restore_revision", summary: "Restore a saved writing version as a new local save. Keeps intervening history and never publishes. Requires the current updatedAt from get_content.",
+              fields: ["content_id": "string", "revision_id": "string", "expected_updated_at": "string"],
+              required: ["content_id", "revision_id", "expected_updated_at"], writes: true),
         .init(name: "save_x_thread", summary: "Save supplied X posts as one local thread draft for review.",
               fields: ["project_id": "string", "title": "string", "posts": "strings"], required: ["title", "posts"], writes: true),
-        .init(name: "edit_draft", summary: "Edit a saved draft locally. Pass expected_updated_at to protect against overwriting newer edits.",
-              fields: ["draft_id": "string", "title": "string", "content": "string", "format": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
+        .init(name: "edit_draft", summary: "Edit a saved draft locally. For an X thread supply posts as separate strings, one per tweet, preserving paragraphs inside each. Pass expected_updated_at to protect newer edits.",
+              fields: ["draft_id": "string", "title": "string", "content": "string", "posts": "strings", "format": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
         .init(name: "list_ideas", summary: "Read saved ideas in a project.", fields: ["project_id": "string", "status": "string"]),
         .init(name: "edit_idea", summary: "Edit the text of an open idea.", fields: ["idea_id": "string", "text": "string"], required: ["idea_id", "text"], writes: true),
         .init(name: "skip_idea", summary: "Skip an open idea or undo a skip.", fields: ["idea_id": "string", "undo": "boolean"], required: ["idea_id"], writes: true),
@@ -109,6 +116,12 @@ struct AgentMCP {
         .init(name: "schedule_post", summary: "Schedule a draft for X, LinkedIn, or Instagram. Pass a local hour and optional exact minute.",
               fields: ["draft_id": "string", "at": "string", "minute": "integer", "linkedin_destination_urn": "string"], required: ["draft_id"], writes: true),
         .init(name: "unschedule_post", summary: "Move a scheduled draft back to Ready to schedule.", fields: ["draft_id": "string"], required: ["draft_id"], writes: true),
+        .init(name: "list_scripts", summary: "List writing-only YouTube scripts. These cannot be published or scheduled.", fields: ["project_id": "string"]),
+        .init(name: "get_script", summary: "Read a full YouTube script by UUID or copyable ID.", fields: ["script_id": "string"], required: ["script_id"]),
+        .init(name: "save_script", summary: "Save supplied YouTube narration locally, without a model or API key. Use expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "script_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer"], writes: true),
+        .init(name: "list_articles", summary: "List writing-only X articles. These cannot be published or scheduled.", fields: ["project_id": "string"]),
+        .init(name: "get_article", summary: "Read a full X article by UUID or copyable ID.", fields: ["article_id": "string"], required: ["article_id"]),
+        .init(name: "save_article", summary: "Save supplied X article text locally, without a model or API key. Use expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "article_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer"], writes: true),
         .init(name: "list_newsletters", summary: "List local newsletters and their revisions.", fields: ["project_id": "string"]),
         .init(name: "get_newsletter", summary: "Read a newsletter in full by UUID or copyable ID, including its Markdown body and revision.", fields: ["newsletter_id": "string"], required: ["newsletter_id"]),
         .init(name: "save_newsletter", summary: "Save a local newsletter draft. Include the current revision when editing.", fields: [
@@ -415,14 +428,35 @@ struct AgentMCP {
             let id = argument("id")
             let available = chatProjectID == nil ? workspace.records + workspace.trashedRecords : workspace.records
             guard let item = available.first(where: {
-                ["draft", "newsletter"].contains($0.kind) && $0.matchesID(id)
+                ["draft", "newsletter", "script", "article"].contains($0.kind) && $0.matchesID(id)
                     && (chatProjectID == nil || $0.projectID == chatProjectID)
             }) else { throw WorkspaceError("No post or newsletter has that ID.") }
-            return ["kind": item.kind == "draft" ? "post" : "newsletter", "item": view(item, full: true)]
+            return ["kind": item.kind == "draft" ? "post" : item.kind, "item": view(item, full: true)]
+        case "list_revisions", "get_revision", "restore_revision":
+            guard let item = workspace.records.first(where: {
+                ["draft", "newsletter", "script", "article"].contains($0.kind) && $0.matchesID(argument("content_id")) &&
+                    (chatProjectID == nil || $0.projectID == chatProjectID)
+            }) else { throw WorkspaceError("No post or newsletter has that ID.") }
+            let history = try workspace.revisionHistory(for: item)
+            if name == "list_revisions" {
+                return ["content_id": item.referenceID ?? item.id, "revisions": history.map {
+                    ["id": $0.id, "title": $0.title, "saved_at": $0.savedAt ?? "", "source": $0.source]
+                }]
+            }
+            guard let revision = history.first(where: { $0.id == argument("revision_id") }) else {
+                throw WorkspaceError("No saved version has that ID.")
+            }
+            if name == "get_revision" {
+                return try JSONSerialization.jsonObject(with: JSONEncoder().encode(revision)) as? [String: Any] ?? [:]
+            }
+            guard item["updatedAt"] == argument("expected_updated_at") else {
+                throw WorkspaceError("This writing changed. Read the latest version before restoring.")
+            }
+            return view(try workspace.restoreRevision(revision, to: item), full: true)
         case "save_x_thread":
             let posts = (arguments["posts"] as? [String] ?? []).map(XThreadText.singlePost)
             guard (2...XThreadText.limit).contains(posts.count),
-                  posts.allSatisfy({ !$0.isEmpty && !$0.contains("\u{0}") && SocialPublishPlan.xWeight($0) <= 280 }) else {
+                  posts.allSatisfy({ !$0.isEmpty && !$0.contains("\u{0}") && !$0.contains(XThreadText.separator) && SocialPublishPlan.xWeight($0) <= 280 }) else {
                 throw WorkspaceError("Use 2 to 25 X posts with up to 280 characters each.")
             }
             var draft = WorkspaceRecord.new("draft", projectID: try project())
@@ -440,11 +474,23 @@ struct AgentMCP {
             }
             if let title = arguments["title"] as? String { draft["title"] = title }
             if let content = arguments["content"] as? String { draft["content"] = content }
+            if let posts = arguments["posts"] as? [String] {
+                guard draft["platform"] == "x", (2...XThreadText.limit).contains(posts.count),
+                      posts.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                          !$0.contains(XThreadText.separator) && XThreadText.weight($0) <= 280 }) else {
+                    throw WorkspaceError("Use 2 to 25 X posts with up to 280 characters each.")
+                }
+                draft["content"] = posts.joined(separator: XThreadText.separator)
+                draft["format"] = posts.count == 2 ? "followup" : "thread"
+            }
             if let format = arguments["format"] as? String {
                 guard draft["platform"] == "x", XPostStyle(rawValue: format) != nil else {
                     throw WorkspaceError("Choose an X single post, post with reply, or thread.")
                 }
                 draft["format"] = format
+            }
+            if let posts = arguments["posts"] as? [String] {
+                draft["format"] = posts.count == 2 ? "followup" : "thread"
             }
             return view(try workspace.save(draft), full: true)
         case "list_ideas":
@@ -532,6 +578,46 @@ struct AgentMCP {
             schedule["slotAt"] = ""
             draft.fields["schedule"] = schedule
             return view(try workspace.save(draft), full: true)
+        case "list_scripts", "list_articles":
+            let kind = name == "list_articles" ? "article" : "script"
+            return list(argument("project_id").isEmpty ? workspace.records.filter { $0.kind == kind } : try items([kind]))
+        case "get_script": return view(try record("script", "script_id"), full: true)
+        case "get_article": return view(try record("article", "article_id"), full: true)
+        case "save_script", "save_article":
+            let writingKind = name == "save_article" ? "article" : "script"
+            let idField = name == "save_article" ? "article_id" : "script_id"
+            var script: WorkspaceRecord
+            if !argument(idField).isEmpty {
+                script = try record(writingKind, idField)
+                guard !argument("expected_updated_at").isEmpty, script["updatedAt"] == argument("expected_updated_at") else {
+                    throw WorkspaceError("Read the current script before editing and pass expected_updated_at.")
+                }
+                if !argument("project_id").isEmpty, try project() != script.projectID {
+                    throw WorkspaceError("This script belongs to a different project.")
+                }
+            } else {
+                let projectID = try project()
+                let key = argument("request_key")
+                guard key.utf16.count <= 128, !key.contains("\0") else { throw WorkspaceError("Use a request_key up to 128 characters.") }
+                let payload = try JSONSerialization.data(withJSONObject: ["title": argument("title"), "body": argument("body")], options: .sortedKeys)
+                let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+                if !key.isEmpty, let previous = (workspace.records + workspace.trashedRecords).first(where: {
+                    $0.kind == writingKind && $0.projectID == projectID && $0["mcpScriptRequestKey"] == key
+                }) {
+                    guard workspace.records.contains(where: { $0.id == previous.id }), previous["mcpScriptRequestDigest"] == digest else {
+                        throw WorkspaceError("This request_key already belongs to another script version. Read and edit that script instead.")
+                    }
+                    return view(previous, full: true)
+                }
+                script = .new(writingKind, projectID: projectID)
+                script["mcpScriptRequestKey"] = key
+                script["mcpScriptRequestDigest"] = digest
+            }
+            for key in ["title", "body"] { if let value = arguments[key] as? String { script[key] = value } }
+            if let source = arguments["source_content_id"] as? String { script["sourceContentID"] = source }
+            if let revision = arguments["source_revision"] as? Int { script.fields["sourceRevision"] = revision }
+            if script["title"].isEmpty { script["title"] = writingKind == "article" ? "Untitled X article" : "Untitled YouTube script" }
+            return view(try workspace.save(script), full: true)
         case "list_newsletters":
             return list(argument("project_id").isEmpty ? workspace.records.filter { $0.kind == "newsletter" } : try items(["newsletter"]))
         case "get_newsletter": return view(try record("newsletter", "newsletter_id"), full: true)

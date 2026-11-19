@@ -52,6 +52,14 @@ Choose **Proofread** while editing a post or newsletter. Inkspring shows each su
 
 For X drafts, choose **Single post**, **Post with reply**, or **Thread** before generating. The opening and each follow-up have separate editors and character counts. On iPhone and iPad, open a follow-up to edit it, then return to the draft to add replies or save. **Draft for X** on an idea and **New X draft** queue generation on your Mac using its writing connection. Keep Inkspring open on the Mac for generation and publishing. Scheduling sends the entire thread in order, with each reply attached to the preceding post.
 
+Paragraph breaks inside an X post are preserved. Newly edited threads use an explicit reply boundary instead of treating blank lines as extra tweets. Older blank-line-separated drafts remain readable. Keep Mac and mobile updated together for this format. Through MCP, use `save_x_thread` or pass `posts` to `edit_draft`, with one string per tweet. Each string can contain its own paragraphs. A three-part post uses the `thread` format.
+
+Mobile keeps edits using the new reply format saved on the device until the Mac advertises `supportsXParagraphs`. It never sends this format to an older Mac parser. Revision-history delivery has its own compatibility flag and also waits for a compatible Mac.
+
+**Revision history** retains saved post and newsletter versions, including agent edits and intermediate mobile saves. Inspect a version and choose **Restore this version** to create a new save without deleting later versions or publishing. Mobile history is saved locally while offline and delivered to the Mac separately from coalesced edits; full history returns through the existing chunked iCloud text transport. Workspace backups include revision history. Existing content gets an initial snapshot when opened in the updated Mac app, and the previous agent revision is recovered where available. Earlier overwritten versions cannot be recreated if no copy remains.
+
+Agents can use `list_revisions`, `get_revision`, and `restore_revision` with a post or newsletter ID. Read the current item first and pass its `updatedAt` as `expected_updated_at` when restoring. This rejects stale restores.
+
 To reuse credentials already in a secret manager, turn on **Let agents set API keys and R2 credentials** in **Settings → AI agents**. Ask an agent with local command access to retrieve the selected credentials from the secret manager, launch a local Inkspring `--mcp` session with them in its environment, and call the setup tool in that session. Keep the raw values out of chat, tool arguments, and saved MCP configuration files.
 
 Use `INKSPRING_ANTHROPIC_API_KEY`, `INKSPRING_OPENAI_API_KEY`, `INKSPRING_GEMINI_API_KEY`, `INKSPRING_APIFY_API_KEY`, or `INKSPRING_X_BEARER_TOKEN` with `set_provider_key` and the corresponding provider ID. For `set_r2_credentials`, supply `INKSPRING_R2_ACCESS_KEY_ID` and `INKSPRING_R2_SECRET_ACCESS_KEY` in the environment and pass the account ID, bucket, and optional jurisdiction as tool arguments. The tools return save status. Existing credentials require `replace_existing: true` to change.
@@ -111,3 +119,13 @@ Turn on **library sync** in the same panel to review recent drafts and ideas, ed
 Use **New ideas** to write ideas manually or brainstorm with the on-device Apple Intelligence model on supported iPhone and iPad models running iOS or iPadOS 26 or later. Save the idea once and Inkspring syncs it to your project automatically. When iCloud is unavailable, Inkspring keeps the save and retries automatically while the app is open. Ideas saved in previous companion builds also join the sync queue.
 
 After restoring a workspace on a new Mac, turn on schedule sync there and confirm **Use this Mac for mobile sync** if iCloud still lists the old workspace. Transfer pauses automatic posting on the receiving Mac and waits for any send already in progress. Review the restored drafts before scheduling them again.
+
+## Writing formats and Find
+
+**YouTube scripts** and **X articles** are separate writing-only formats. On Mac, each has a named sidebar section. On iPhone and iPad, choose **New → New YouTube script** or **New → New X article**, and use the **YouTube** or **X article** platform filter. X articles carry an explicit **X article** label so they cannot be confused with tweets or threads. Neither format enters the publishing queue.
+
+Both formats keep the complete text, copyable project ID, Markdown preview, autosave, proofreading, revision history, and iCloud sync. Open the updated Mac app to exchange these formats with mobile. An older Mac cannot accept their edits; mobile retains them locally until a compatible Mac syncs.
+
+While editing on mobile, the text uses the available content area and the metadata stays in the preview. **Done** returns to the preview. **Find** searches within the editor and jumps between matches. On Mac, use **Find** or Command-F in the writing editor. X replies edit in place with **Back to thread**, preserving the parent draft and autosaving changes.
+
+MCP tools `list_scripts`, `get_script`, `save_script`, `list_articles`, `get_article`, and `save_article` read and save supplied text locally without an API key or a model call. Pass the last-read `expected_updated_at` when editing and a stable `request_key` when retrying creation. Scripts, articles, posts, and newsletters share each project's reference-ID sequence.

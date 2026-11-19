@@ -37,11 +37,20 @@ struct PostInlineEditor: View {
     @State private var title = ""
     @State private var markdown = ""
     @State private var format = ""
+    @State private var showingHistory = false
     @State private var message: String?
 
     private var dirty: Bool { title != record.title || markdown != record.body || format != record["format"] }
 
     var body: some View {
+        if showingHistory {
+            ContentRevisionHistoryPage(record: record, workspace: workspace, back: { showingHistory = false }) { _ in saved() }
+        } else {
+            editorContent
+        }
+    }
+
+    private var editorContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Button("Back", systemImage: "chevron.left", action: back)
@@ -51,6 +60,8 @@ struct PostInlineEditor: View {
                     StudioCopyReference(reference: reference)
                 }
                 Spacer()
+                Button("Revision history", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                    .disabled(dirty)
                 Button("Save", action: save)
                     .modifier(PrimaryActionStyle())
                     .keyboardShortcut("s")
@@ -102,7 +113,9 @@ struct RecordEditor: View {
     @State private var newsletterSaveError: String?
     @State private var message: String?
     @State private var newsletterMode = "Source"
+    @State private var newsletterFindRequest = 0
     @State private var newsletterInspectorOpen = false
+    @State private var showingHistory = false
     @State private var newsletterBrief = ""
     @State private var newsletterAssistantOpen = false
     @State private var newsletterIdeaOutline = false
@@ -147,7 +160,7 @@ struct RecordEditor: View {
     }
 
     private var latestNewsletter: WorkspaceRecord? {
-        workspace.records.first { $0.kind == "newsletter" && $0.id == record.id }
+        workspace.records.first { $0.isLongForm && $0.id == record.id }
     }
 
     private var canEditNewsletter: Bool { ["draft", "synced"].contains(record["state"]) }
@@ -169,7 +182,13 @@ struct RecordEditor: View {
     }
 
     var body: some View {
-        if record.kind == "newsletter" {
+        if showingHistory, let latestNewsletter {
+            ContentRevisionHistoryPage(record: latestNewsletter, workspace: workspace, back: { showingHistory = false }) { restored in
+                acceptNewsletter(restored)
+                saved(restored)
+                showingHistory = false
+            }
+        } else if record.isLongForm {
             newsletterEditor
                 .onChange(of: newsletterNeedsSave, initial: true) { _, dirty in
                     newsletterDirtyChanged(dirty)
@@ -274,7 +293,7 @@ struct RecordEditor: View {
         }
     }
 
-    private var newsletterUnavailable: Bool { workspace.substackBusy || newsletterWriting != nil }
+    private var newsletterUnavailable: Bool { (record.kind == "newsletter" && workspace.substackBusy) || newsletterWriting != nil }
 
     private var newsletterEditor: some View {
         VStack(spacing: 0) {
@@ -289,10 +308,18 @@ struct RecordEditor: View {
                 StudioSegmentedControl(selection: $newsletterMode, options: ["Source", "Preview"], label: Text.init)
                     .accessibilityLabel("Newsletter view")
                 Spacer()
+                Button("Find", systemImage: "magnifyingglass") { newsletterMode = "Source"; newsletterFindRequest += 1 }
+                    .keyboardShortcut("f", modifiers: .command).accessibilityIdentifier("editor.find")
+                Button("Revision history", systemImage: "clock.arrow.circlepath") {
+                    if saveNewsletter() { showingHistory = true }
+                }
+                .accessibilityIdentifier("history.open")
+                if record.kind == "newsletter" {
                 let inspectorTitle = newsletterInspectorOpen ? "Hide newsletter settings" : "Show newsletter settings"
                 Button(inspectorTitle, systemImage: "sidebar.right") { newsletterInspectorOpen.toggle() }
                     .labelStyle(.iconOnly)
                     .help(inspectorTitle)
+                }
                 VStack(alignment: .trailing, spacing: 3) {
                     if newsletterSaveError != nil {
                         Text("Unsaved changes")
@@ -314,7 +341,7 @@ struct RecordEditor: View {
             HStack(spacing: 0) {
                 newsletterCanvas
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if newsletterInspectorOpen {
+                if newsletterInspectorOpen && record.kind == "newsletter" {
                     StudioRule(axis: .vertical)
                     StudioScrollView {
                         newsletterSettings
@@ -371,7 +398,7 @@ struct RecordEditor: View {
                     record["body"] = $0.body
                 }
                 DraftBodyField(text: value("body"), label: "Markdown", minHeight: 200,
-                               onFocusLost: { _ = saveNewsletter() })
+                               onFocusLost: { _ = saveNewsletter() }, findRequest: newsletterFindRequest)
                     .frame(maxHeight: .infinity)
             }
             .disabled(!canEditNewsletter || newsletterUnavailable)
@@ -648,6 +675,87 @@ struct RecordEditor: View {
             record["title"] = draft.title
             record["body"] = draft.body
         } catch { message = error.localizedDescription }
+    }
+}
+
+struct ContentRevisionHistoryPage: View {
+    let record: WorkspaceRecord
+    let workspace: Workspace
+    let back: () -> Void
+    let restored: (WorkspaceRecord) -> Void
+    @Environment(\.studioPalette) private var palette
+    @State private var revisions: [ContentRevision] = []
+    @State private var selectedID: String?
+    @State private var message: String?
+
+    private var selected: ContentRevision? { revisions.first { $0.id == selectedID } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Button("Back", systemImage: "chevron.left", action: back)
+                Text("Revision history").font(.title2.bold())
+                Spacer()
+                if let selected {
+                    Button("Restore this version") {
+                        do { restored(try workspace.restoreRevision(selected, to: record)) }
+                        catch { message = error.localizedDescription }
+                    }
+                    .modifier(PrimaryActionStyle())
+                    .accessibilityIdentifier("history.restore")
+                }
+            }
+            Text("Every save keeps a snapshot. Restoring creates a new version and keeps the versions that came after it.")
+                .font(.callout).foregroundStyle(palette.muted)
+            HStack(alignment: .top, spacing: 20) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(revisions) { revision in
+                            Button {
+                                selectedID = revision.id
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(revision.savedAt.flatMap(scheduleDate).map { $0.formatted(date: .abbreviated, time: .standard) } ?? "Earlier version")
+                                        .font(.callout.weight(.semibold))
+                                    Text(revision.source).font(.caption).foregroundStyle(palette.muted)
+                                    Text(revision.title).font(.caption).lineLimit(2)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12).studioSurface()
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }.frame(width: 230)
+                StudioRule(axis: .vertical)
+                ScrollView {
+                    if let selected {
+                        VStack(alignment: .leading, spacing: 18) {
+                            Text(selected.title).font(.title2.bold())
+                            if let subtitle = selected.subtitle, !subtitle.isEmpty { Text(subtitle) }
+                            if ["thread", "followup"].contains(selected.format ?? "") {
+                                let posts = XThreadText.posts(in: selected.text)
+                                ForEach(posts.indices, id: \.self) { index in
+                                    Text(index == 0 ? "Opening post" : "Follow-up reply \(index)").font(.headline)
+                                    Text(posts[index]).textSelection(.enabled)
+                                }
+                            } else { Text(selected.text).textSelection(.enabled) }
+                        }
+                        .font(.body).lineSpacing(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16).studioSurface()
+                    } else { Text("No saved revisions yet.").foregroundStyle(palette.muted) }
+                }
+            }
+            if let message { Text(message).font(.callout).foregroundStyle(palette.danger) }
+        }
+        .padding(24)
+        .task {
+            do {
+                revisions = try workspace.revisionHistory(for: record)
+                selectedID = revisions.first?.id
+            } catch { message = error.localizedDescription }
+        }
     }
 }
 
@@ -1499,16 +1607,24 @@ private struct DraftPostText: View {
 struct DraftBodyField: View {
     @Environment(\.studioPalette) private var palette
     @FocusState private var editorFocused: Bool
+    @State private var finding = false
     @Binding var text: String
     let label: String
     let minHeight: CGFloat
     var onFocusLost: (() -> Void)? = nil
     var focusRequest = 0
+    var findRequest = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            draftFieldLabel(label)
-            TextEditor(text: $text)
+            HStack {
+                draftFieldLabel(label)
+                Spacer()
+                Button("Find", systemImage: "magnifyingglass") { finding.toggle() }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .accessibilityIdentifier("editor.find")
+            }
+            MacWritingTextView(text: $text, findRequest: (finding ? 1 : 0) + findRequest * 2, focusRequest: focusRequest, monospaced: label == "Markdown", onFocusLost: onFocusLost)
                 .focused($editorFocused)
                 .onChange(of: focusRequest) { editorFocused = true }
                 .onChange(of: editorFocused) { previous, focused in
