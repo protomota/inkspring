@@ -363,6 +363,27 @@ final class WalkthroughTests: XCTestCase {
         capture("Relaunch restores exact paragraph breaks", app)
     }
 
+    func testLinkedReplyOpensTheEditableXArticle() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--x-thread-fixture", "--article-link-fixture"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let draft = app.staticTexts["I started a cult"].firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 10))
+        draft.tap()
+        let article = app.buttons["X article · The manifesto"].firstMatch
+        for _ in 0..<4 where !article.isHittable { app.swipeUp() }
+        XCTAssertTrue(article.isHittable)
+        capture("Thread with linked X article", app)
+        article.tap()
+        XCTAssertTrue(app.navigationBars["X article"].waitForExistence(timeout: 6))
+        app.buttons["newsletter.more"].firstMatch.tap()
+        app.buttons["Edit Markdown"].firstMatch.tap()
+        XCTAssertTrue(app.textViews["newsletter.markdown"].firstMatch.waitForExistence(timeout: 6))
+        capture("Linked article open for editing", app)
+    }
+
     private func capture(_ name: String, _ app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

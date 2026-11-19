@@ -1225,7 +1225,14 @@ struct PostPreview: View {
                                         Spacer()
                                         Button("Edit", systemImage: "pencil") { edit(record) }
                                     }
-                                    Text(posts[index]).font(InkspringTypography.interface(17)).lineSpacing(5).textSelection(.enabled)
+                                    let link = XReplyArticle(posts[index])
+                                    if !link.copy.isEmpty { Text(link.copy).font(InkspringTypography.interface(17)).lineSpacing(5).textSelection(.enabled) }
+                                    if let ref = link.reference {
+                                        if let article = workspace.records.first(where: { $0.projectID == record.projectID && $0.kind == "article" && $0.referenceID == ref }) {
+                                            Button("X article · " + article.title, systemImage: "doc.text") { edit(article) }
+                                            if article["articleURL"].isEmpty { Text("Publish the article first to include its X link.").font(.caption).foregroundStyle(palette.muted) }
+                                        } else { Text("Linked X article unavailable · " + ref).font(.caption) }
+                                    }
                                 }
                                 if index < posts.count - 1 { StudioRule() }
                             }

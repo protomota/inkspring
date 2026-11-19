@@ -46,7 +46,7 @@ struct SocialPublishPlan {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    init(draft: WorkspaceRecord, account: ManagedSocialAccount, imageURL: URL?, options: SocialPublishOptions = .init()) throws {
+    init(draft: WorkspaceRecord, account: ManagedSocialAccount, imageURL: URL?, options: SocialPublishOptions = .init(), articles: [WorkspaceRecord] = []) throws {
         guard draft.fields["manualQuote"] as? Bool != true else {
             throw WorkspaceError("Open this quote draft in X to publish it.")
         }
@@ -54,6 +54,9 @@ struct SocialPublishPlan {
         guard !text.isEmpty else { throw WorkspaceError("Write the post before publishing.") }
         guard let platform = SocialPlatform(rawValue: draft["platform"]), Self.supported.contains(platform) else {
             throw WorkspaceError("Direct publishing for this platform is still being ported.")
+        }
+        if text.contains(XReplyArticle.prefix), !(platform == .x && ["thread", "followup"].contains(draft["format"])) {
+            throw WorkspaceError("Use an X follow-up reply for the linked article.")
         }
         self.platform = platform
         draftID = draft.id
@@ -77,7 +80,19 @@ struct SocialPublishPlan {
                 throw WorkspaceError("Choose an X post, thread, image post or reply.")
             }
             if ["followup", "thread"].contains(draft["format"]) {
-                posts = XThreadText.posts(in: text)
+                posts = try XThreadText.posts(in: text).enumerated().map { index, post in
+                    guard post.contains(XReplyArticle.prefix) else { return post }
+                    let link = XReplyArticle(post)
+                    guard index > 0, let reference = link.reference, !link.copy.contains(XReplyArticle.prefix),
+                          let article = articles.first(where: { $0.kind == "article" && $0.projectID == draft.projectID && $0.referenceID == reference }) else {
+                        throw WorkspaceError("Choose an available X article for this reply.")
+                    }
+                    guard article["state"] == "published",
+                          article["articleURL"].range(of: #"\Ahttps://x\.com/i/web/status/[0-9]+\z"#, options: .regularExpression) != nil else {
+                        throw WorkspaceError("Publish the X article “\(article.title)” before posting this thread.")
+                    }
+                    return link.copy.isEmpty ? article["articleURL"] : link.copy + "\n" + article["articleURL"]
+                }
             } else {
                 posts = [text]
             }
@@ -260,7 +275,7 @@ struct SocialPublisher {
             options.creator = try await tikTokCreator(account: account)
             if draft["format"] == "video", let url { options.video = try await TikTokVideo.inspect(url) }
         }
-        return try SocialPublishPlan(draft: draft, account: account, imageURL: url, options: options)
+        return try SocialPublishPlan(draft: draft, account: account, imageURL: url, options: options, articles: workspace.records)
     }
 
     func publish(_ reviewed: SocialPublishPlan, automatic: Bool = false, fromAgent: Bool = false) async throws -> WorkspaceRecord {

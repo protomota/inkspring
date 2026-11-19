@@ -153,3 +153,43 @@ import Testing
     #expect(writes == 0)
     #expect(workspace.records.first { $0.id == article.id }?.body == "A newer author edit.")
 }
+
+@Test @MainActor func linkedArticleResolvesOnlyForPublishedSameProjectAndPreservesThreadOrder() async throws {
+    let (workspace, article, folder) = try articleWorkspace()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let reference = try #require(article.referenceID)
+    let reply = XReplyArticle.attach(reference, to: "Read the manifesto.\n\nHere’s the full X article.")
+    let parts = ["Opening post", reply, "Newsletter: https://example.org/news", "Discord: https://example.org/join"]
+    var draft = WorkspaceRecord.new("draft", projectID: article.projectID)
+    draft["platform"] = "x"
+    draft["format"] = "thread"
+    draft["content"] = parts.joined(separator: XThreadText.separator)
+    draft = try workspace.save(draft)
+    var sent: [String] = []
+    let publisher = SocialPublisher(workspace: workspace, transport: .init { request in
+        let payload = try #require(JSONSerialization.jsonObject(with: request.httpBody!) as? [String: Any])
+        let previous = (payload["reply"] as? [String: String])?["in_reply_to_tweet_id"]
+        #expect(previous == (sent.isEmpty ? nil : String(sent.count)))
+        sent.append(try #require(payload["text"] as? String))
+        return (Data("{\"data\":{\"id\":\"\(sent.count)\"}}".utf8),
+                HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!)
+    }, authorize: { _ in articleAccount() })
+    await #expect(throws: Error.self) { _ = try await publisher.review(draft) }
+    #expect(sent.isEmpty)
+    let articlePublisher = XArticlePublisher(workspace: workspace, transport: .init { request in
+        let payload = request.url!.path.hasSuffix("/publish") ? #"{"data":{"post_id":"789"}}"# : #"{"data":{"id":"456"}}"#
+        return (Data(payload.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }, authorize: { articleAccount() })
+    _ = try await articlePublisher.publish(articlePublisher.review(article))
+    let published = try #require(workspace.records.first { $0.id == article.id })
+    let review = try await publisher.review(draft)
+    #expect(review.posts[1] == XReplyArticle(reply).copy + "\n" + published["articleURL"])
+    #expect(XThreadText.weight(reply) == XThreadText.weight(review.posts[1]))
+    #expect(review.posts[2...] == parts[2...])
+    _ = try await publisher.publish(review)
+    #expect(sent == review.posts)
+    draft.fields["projectId"] = "another-project"
+    #expect(throws: Error.self) {
+        try SocialPublishPlan(draft: draft, account: articleAccount(), imageURL: nil, articles: [published])
+    }
+}

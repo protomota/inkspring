@@ -98,7 +98,7 @@ struct PostInlineEditor: View {
                 title = $0.title
                 markdown = $0.body
             }
-            DraftPostText(record: record, text: $markdown, format: $format, label: "Markdown", minHeight: 100)
+            DraftPostText(workspace: workspace, record: record, text: $markdown, format: $format, label: "Markdown", minHeight: 100)
                 .frame(maxHeight: .infinity)
             if ["queued", "due"].contains(record.scheduleStatus) {
                 Text("Saving changes moves this post to Ready to schedule.").foregroundStyle(.secondary)
@@ -955,7 +955,7 @@ struct DraftStudio: View {
                         initial["content"] = $0.body
                     }
                 }
-                DraftPostText(record: initial, text: value("content"), format: value("format"), label: "Post text", minHeight: 260)
+                DraftPostText(workspace: workspace, record: initial, text: value("content"), format: value("format"), label: "Post text", minHeight: 260)
                 if !initial.body.isEmpty && !["posting", "posted"].contains(initial.scheduleStatus) {
                     rewriteControls
                 }
@@ -1670,6 +1670,7 @@ struct DraftTitleField: View {
 }
 
 private struct DraftPostText: View {
+    let workspace: Workspace
     let record: WorkspaceRecord
     @Binding var text: String
     @Binding var format: String
@@ -1686,7 +1687,10 @@ private struct DraftPostText: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if supportsFollowUp {
-                StudioXPostEditor(text: $text, format: $format)
+                StudioXPostEditor(text: $text, format: $format, articles: workspace.records.compactMap { article in
+                    guard article.kind == "article", article.projectID == record.projectID, let ref = article.referenceID else { return nil }
+                    return XArticleChoice(id: ref, title: article.title)
+                })
             } else {
                 DraftBodyField(text: $text, label: label, minHeight: minHeight)
             }

@@ -76,6 +76,7 @@ extension Workspace {
         snapshot.supportsDraftEdits = true
         snapshot.supportsNewsletterEdits = true
         snapshot.supportsItemManagement = true
+        snapshot.supportsXReplyArticles = true
         snapshot.supportsXThreads = true
         snapshot.supportsXParagraphs = true
         snapshot.supportsRevisionHistory = true
@@ -209,6 +210,7 @@ extension Workspace {
               library.supportsDraftEdits != snapshot.supportsDraftEdits ||
               library.supportsNewsletterEdits != snapshot.supportsNewsletterEdits ||
               library.supportsItemManagement != snapshot.supportsItemManagement ||
+              library.supportsXReplyArticles != snapshot.supportsXReplyArticles ||
               library.supportsXThreads != snapshot.supportsXThreads ||
               library.supportsXParagraphs != snapshot.supportsXParagraphs ||
               library.supportsRevisionHistory != snapshot.supportsRevisionHistory ||
@@ -224,6 +226,7 @@ extension Workspace {
         library.supportsDraftEdits = snapshot.supportsDraftEdits
         library.supportsNewsletterEdits = snapshot.supportsNewsletterEdits
         library.supportsItemManagement = snapshot.supportsItemManagement
+        library.supportsXReplyArticles = snapshot.supportsXReplyArticles
         library.supportsXThreads = snapshot.supportsXThreads
         library.supportsXParagraphs = snapshot.supportsXParagraphs
         library.supportsRevisionHistory = snapshot.supportsRevisionHistory

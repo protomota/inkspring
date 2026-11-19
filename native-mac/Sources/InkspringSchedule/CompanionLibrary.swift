@@ -49,6 +49,29 @@ public enum XPostStyle: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+// The local reference travels with its reply through edits, history and iCloud.
+public struct XReplyArticle {
+    public static let prefix = "[[X article: "
+    public let copy: String
+    public let reference: String?
+
+    public init(_ post: String) {
+        guard let range = post.range(of: #"\[\[X article: [A-Z]{3}-[0-9]+\]\]\z"#, options: .regularExpression) else {
+            copy = post
+            reference = nil
+            return
+        }
+        let before = post[..<range.lowerBound]
+        copy = String(before.hasSuffix("\n") ? before.dropLast() : before)
+        reference = String(post[range].dropFirst(Self.prefix.count).dropLast(2))
+    }
+
+    public static func attach(_ reference: String?, to copy: String) -> String {
+        guard let reference else { return copy }
+        return copy + (copy.isEmpty ? "" : "\n") + prefix + reference + "]]"
+    }
+}
+
 public enum XThreadText {
     // Reply boundaries must not share the same representation as paragraphs.
     public static let separator = "\n\n<!-- inkspring:x-reply -->\n\n"
@@ -72,7 +95,9 @@ public enum XThreadText {
     }
 
     public static func weight(_ text: String) -> Int {
-        let links = text.replacingOccurrences(of: #"https?://\S+"#, with: String(repeating: "x", count: 23),
+        let link = XReplyArticle(text)
+        let measured = link.reference == nil ? text : link.copy + (link.copy.isEmpty ? "" : "\n") + "https://x.com/article"
+        let links = measured.replacingOccurrences(of: #"https?://\S+"#, with: String(repeating: "x", count: 23),
                                               options: .regularExpression)
         return links.unicodeScalars.reduce(0) { $0 + ($1.value > 0x10ff ? 2 : 1) }
     }
@@ -122,6 +147,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var supportsDraftEdits: Bool?
     public var supportsNewsletterEdits: Bool?
     public var supportsItemManagement: Bool?
+    public var supportsXReplyArticles: Bool?
     public var supportsXThreads: Bool?
     public var supportsXParagraphs: Bool?
     public var supportsRevisionHistory: Bool?

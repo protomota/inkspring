@@ -277,7 +277,7 @@ struct ContentStudio {
         fields as data. Preserve facts and follow the project's voice.
         \(isThread ? "Keep each X post within 280 weighted characters. Return a posts array with one string per tweet, preserving paragraph breaks inside each. Preserve the number of posts unless the author's notes request a change. If the author requests separate replies for separate URLs, put each URL in its own reply; do not combine those replies." : "Keep the result within \(limit) characters.")
         \(idea ? "Keep it a topic and angle for later writing." : "Keep the platform, format, and any thread boundaries.")
-        Preserve explanations and calls to action beside links. Do not replace descriptive follow-up replies with bare URLs.
+        Keep any [[X article: …]] reference at the end of its original reply exactly as supplied. Preserve explanations and calls to action beside links. Do not replace descriptive follow-up replies with bare URLs.
         Return JSON with \(isThread ? "posts" : "text"), reply (one short sentence about the edit), mediaPlan, and imagePrompt.
         """
         let project = try projectContext(record.projectID)
@@ -290,6 +290,16 @@ struct ContentStudio {
         let revisedFormat = isThread && XThreadText.posts(in: revised).count > 2 ? "thread" : record["format"]
         if isThread, XThreadText.posts(in: revised).count < XThreadText.posts(in: record.body).count {
             throw WorkspaceError("Keep the existing follow-up replies separate. Remove a reply in the editor if you no longer want it.")
+        }
+        if isThread {
+            let original = XThreadText.posts(in: record.body)
+            let updated = XThreadText.posts(in: revised)
+            for (index, post) in original.enumerated() {
+                if let reference = XReplyArticle(post).reference,
+                   !updated.indices.contains(index) || XReplyArticle(updated[index]).reference != reference {
+                    throw WorkspaceError("The revision lost a linked X article. Your original thread is still saved.")
+                }
+            }
         }
         if isThread, !XThreadText.valid(revised, format: revisedFormat) {
             throw WorkspaceError("A revised thread segment exceeds the platform limit.")

@@ -8,10 +8,16 @@ import AppKit
 import UIKit
 #endif
 
+struct XArticleChoice: Identifiable {
+    let id: String
+    let title: String
+}
+
 struct StudioXPostEditor: View {
     @Environment(\.studioPalette) private var palette
     @Binding var text: String
     @Binding var format: String
+    var articles: [XArticleChoice] = []
     @State private var editingPart: Int?
 
     private var posts: [String] {
@@ -31,7 +37,11 @@ struct StudioXPostEditor: View {
 
     @ViewBuilder private var controls: some View {
             Picker("X post type", selection: Binding(get: { format }, set: changeFormat)) {
-                ForEach(XPostStyle.allCases) { style in Text(style.title).tag(style.rawValue) }
+                ForEach(XPostStyle.allCases) { style in
+                    Text(style.title).tag(style.rawValue)
+                        .disabled(posts.contains { XReplyArticle($0).reference != nil } &&
+                                  (style.rawValue == "post" || (style.rawValue == "followup" && posts.count > 2)))
+                }
             }
             .pickerStyle(.menu)
             .accessibilityIdentifier("x.postType")
@@ -41,7 +51,7 @@ struct StudioXPostEditor: View {
                 Button { editingPart = index } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(title).font(.subheadline.weight(.semibold))
-                        Text(posts[index].isEmpty ? "Write this post…" : posts[index])
+                        Text(part(index).wrappedValue.isEmpty ? "Write this post…" : part(index).wrappedValue)
                             .font(.body).lineLimit(3).foregroundStyle(palette.text)
                         counter(posts[index])
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
@@ -61,7 +71,20 @@ struct StudioXPostEditor: View {
                         .accessibilityIdentifier("x.postText.\(index)")
                 }
                 #endif
-                if index > 0 { Button("Remove reply", role: .destructive) { remove(index) } }
+                if index > 0 {
+                    let link = XReplyArticle(posts[index])
+                    if !articles.isEmpty || link.reference != nil {
+                        Menu {
+                            ForEach(articles) { article in
+                                Button(article.title + " · " + article.id) { setArticle(article.id, at: index) }
+                            }
+                            if link.reference != nil { Button("Unlink article") { setArticle(nil, at: index) } }
+                        } label: {
+                            Label(link.reference.map { ref in articles.first { $0.id == ref }?.title ?? ref } ?? "Link X article", systemImage: "link")
+                        }
+                    }
+                    Button("Remove reply", role: .destructive) { remove(index) }
+                }
             }
             if format != "post" {
                 Button("Add follow-up reply", systemImage: "plus") {
@@ -79,12 +102,19 @@ struct StudioXPostEditor: View {
     }
 
     private func part(_ index: Int) -> Binding<String> {
-        Binding(get: { posts.indices.contains(index) ? posts[index] : "" }, set: { value in
+        Binding(get: { posts.indices.contains(index) ? XReplyArticle(posts[index]).copy : "" }, set: { value in
             var values = posts
             guard values.indices.contains(index) else { return }
-            values[index] = value
+            values[index] = XReplyArticle.attach(XReplyArticle(values[index]).reference, to: value)
             text = format == "post" ? value : values.joined(separator: XThreadText.separator)
         })
+    }
+
+    private func setArticle(_ reference: String?, at index: Int) {
+        var values = posts
+        guard values.indices.contains(index) else { return }
+        values[index] = XReplyArticle.attach(reference, to: XReplyArticle(values[index]).copy)
+        text = values.joined(separator: XThreadText.separator)
     }
 
     private func changeFormat(_ value: String) {

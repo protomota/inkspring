@@ -109,7 +109,7 @@ struct AgentMCP {
         .init(name: "save_plan", summary: "Save a Markdown Plan locally. Read first and supply exact expected_markdown; never publishes or dispatches.", fields: ["content_id": "string", "markdown": "string", "expected_markdown": "string"], required: ["content_id", "markdown", "expected_markdown"], writes: true),
         .init(name: "save_x_thread", summary: "Save supplied X posts as one local thread draft for review.",
               fields: ["project_id": "string", "title": "string", "posts": "strings"], required: ["title", "posts"], writes: true),
-        .init(name: "edit_draft", summary: "Edit a saved draft locally. For an X thread supply posts as separate strings, one per tweet, preserving paragraphs inside each. Pass expected_updated_at to protect newer edits.",
+        .init(name: "edit_draft", summary: "Edit a saved draft locally. For an X thread supply posts as separate strings, one per tweet, preserving paragraphs inside each. To link a same-project X article, append [[X article: PRA-001]] to its follow-up reply with the real article reference ID. Its published URL is inserted at posting time. Pass expected_updated_at to protect newer edits.",
               fields: ["draft_id": "string", "title": "string", "content": "string", "posts": "strings", "format": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
         .init(name: "list_ideas", summary: "Read saved ideas in a project.", fields: ["project_id": "string", "status": "string"]),
         .init(name: "edit_idea", summary: "Edit the text of an open idea.", fields: ["idea_id": "string", "text": "string"], required: ["idea_id", "text"], writes: true),

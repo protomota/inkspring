@@ -614,6 +614,15 @@ final class MobileLibrary {
             var draft = CompanionLibrary.Item(id: "x-followup-demo", revision: "2026-11-18T16:00:00.000Z", kind: .draft,
                 projectID: "studio", title: "I started a cult", body: ["We build useful tools and give them away.", "Read more: https://newsletter.protomota.com/", "Join us: https://protomota.com/discord"].joined(separator: XThreadText.separator),
                 shortened: false, platform: "x", status: "draft", notes: [], referenceID: "STU-003")
+            if ProcessInfo.processInfo.arguments.contains("--article-link-fixture") {
+                value.supportsXReplyArticles = true
+                value.articles = [.init(id: "linked-article", revision: draft.revision, kind: .article, projectID: "studio",
+                    title: "The manifesto", body: "# Our mission\n\nWe build useful tools together.", shortened: false,
+                    platform: "x", status: "draft", notes: [], referenceID: "STU-004")]
+                var posts = XThreadText.posts(in: draft.body)
+                posts.insert(XReplyArticle.attach("STU-004", to: "Read the full manifesto on X."), at: 1)
+                draft.body = posts.joined(separator: XThreadText.separator)
+            }
             draft.format = "thread"
             value.items.insert(draft, at: 0)
         }
@@ -1663,7 +1672,10 @@ private struct MobileItemEditor: View {
             TextField("Title", text: $title, axis: .vertical).font(.headline).lineLimit(1...2)
                 .accessibilityIdentifier("mobile.edit.title").padding(.horizontal, 12)
             if isX {
-                StudioXPostEditor(text: $text, format: $format).frame(maxWidth: .infinity, maxHeight: .infinity)
+                StudioXPostEditor(text: $text, format: $format, articles: library.snapshot?.supportsXReplyArticles == true ? (library.snapshot?.articles ?? []).compactMap { article in
+                    guard article.projectID == item.projectID, let ref = article.referenceID else { return nil }
+                    return XArticleChoice(id: ref, title: article.title)
+                } : []).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 MobileWritingTextView(text: $text, identifier: "mobile.edit.body", findRequest: findRequest, onFocusLost: { _ = save() })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1870,13 +1882,21 @@ private struct MobileReviewDetail: View {
                             VStack(alignment: .leading, spacing: 7) {
                                 Label(index == 0 ? "Opening post" : "Follow-up reply \(index)", systemImage: index == 0 ? "text.bubble" : "arrow.turn.down.right")
                                     .font(.subheadline.weight(.semibold)).foregroundStyle(palette.iconAccent)
-                                Text(posts[index]).font(.body).foregroundStyle(palette.text)
+                                Text(XReplyArticle(posts[index]).copy).font(.body).foregroundStyle(palette.text)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .padding(.vertical, 8)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("x.reply.\(index)")
+                        if let ref = XReplyArticle(posts[index]).reference {
+                            if let article = library.snapshot?.articles?.first(where: { $0.projectID == item.projectID && $0.referenceID == ref }) {
+                                NavigationLink {
+                                    MobileNewsletterDetail(item: article, metadata: article.referenceID ?? "", library: library, workspaceID: workspaceID)
+                                } label: { Label("X article · " + article.title, systemImage: "doc.text") }
+                                if article.publicationURL?.isEmpty != false { Text("Publish the article first to include its X link.").font(.footnote).foregroundStyle(palette.muted) }
+                            } else { Text("Linked X article unavailable · " + ref).font(.footnote) }
+                        }
                     }
                 } else {
                     Button { editBodyFirst = true; editingDraft = true } label: {
