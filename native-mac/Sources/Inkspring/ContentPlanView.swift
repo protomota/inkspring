@@ -191,12 +191,17 @@ struct ContentPlanEditor: View {
     private var proposedKey: String { recoveryKey + ".proposal" }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            VStack(alignment: .leading, spacing: 10) {
                 Picker("Plan view", selection: $source) { Text("Preview").tag(false); Text("Markdown").tag(true) }
                     .pickerStyle(.segmented).frame(maxWidth: 240)
-                Spacer()
+                HStack {
                 Button("Cancel") { task?.cancel(); clearRecovery(); close() }
                     .accessibilityIdentifier("plan.cancel")
+                Spacer()
+                Button("Save plan", action: saveDraft)
+                    .disabled(task != nil).buttonStyle(PlanActionStyle(prominent: true))
+                    .accessibilityIdentifier("plan.save")
+                }
             }
             if let candidate {
                 Text("Suggested revision").font(.headline)
@@ -237,15 +242,6 @@ struct ContentPlanEditor: View {
                 Text("The saved plan changed while you were editing. Your draft is kept.").foregroundStyle(palette.danger)
                 Button("Compare latest saved plan") { message = markdown; base = markdown }
             }
-            HStack {
-                Spacer()
-                Button("Save plan") {
-                    do {
-                        try ContentPlan.validate(draft); try save(draft, base)
-                        clearRecovery(); close()
-                    } catch { message = error.localizedDescription }
-                }.disabled(task != nil).buttonStyle(PlanActionStyle(prominent: true)).accessibilityIdentifier("plan.save")
-            }
         }
         .onAppear {
             let defaults = UserDefaults.standard
@@ -268,6 +264,14 @@ struct ContentPlanEditor: View {
                       defaultFilename: ContentPlan.filename(reference)) { result in
             if case .failure(let error) = result { message = error.localizedDescription }
         }
+    }
+    private func saveDraft() {
+        do {
+            try ContentPlan.validate(draft)
+            try save(draft, base)
+            clearRecovery()
+            close()
+        } catch { message = error.localizedDescription }
     }
     private func persist() {
         UserDefaults.standard.set(draft, forKey: recoveryKey)

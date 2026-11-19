@@ -9,7 +9,7 @@ final class WalkthroughTests: XCTestCase {
         app.launch()
         let open = app.buttons["plan.open"].firstMatch
         if !open.waitForExistence(timeout: 2) {
-            let draft = app.descendants(matching: .any)["review.item.draft"].firstMatch
+            let draft = app.staticTexts["A quieter way to draft"].firstMatch
             if !draft.exists, app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
             XCTAssertTrue(draft.waitForExistence(timeout: 10)); draft.tap()
         }
