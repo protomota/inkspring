@@ -29,6 +29,31 @@ struct ManagedSocialSession: Codable, Sendable {
     let expiresAt: Int64
     let scopes: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case accessToken, refreshToken, managedTicket, expiresAt, scopes
+    }
+
+    init(accessToken: String, refreshToken: String?, managedTicket: String?, expiresAt: Int64, scopes: String?) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.managedTicket = managedTicket
+        self.expiresAt = expiresAt
+        self.scopes = scopes
+    }
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        accessToken = try fields.decode(String.self, forKey: .accessToken)
+        refreshToken = try fields.decodeIfPresent(String.self, forKey: .refreshToken)
+        managedTicket = try fields.decodeIfPresent(String.self, forKey: .managedTicket)
+        expiresAt = try fields.decode(Int64.self, forKey: .expiresAt)
+        if let permissions = try? fields.decode([String].self, forKey: .scopes) {
+            scopes = permissions.joined(separator: ",")
+        } else {
+            scopes = try fields.decodeIfPresent(String.self, forKey: .scopes)
+        }
+    }
+
     func validate(now: Date = .now) throws {
         guard !accessToken.isEmpty, accessToken.utf8.count <= 24_000,
               (refreshToken?.utf8.count ?? 0) <= 12_000, (managedTicket?.utf8.count ?? 0) <= 12_000,
@@ -139,7 +164,8 @@ struct ManagedOAuthHandshake {
               Double(result.expiresAt) / 1000 > now.timeIntervalSince1970 else {
             throw WorkspaceError("The sign-in expired or belongs to another session.")
         }
-        guard result.error == nil, let session = result.session else {
+        if let error = result.error { throw WorkspaceError(error) }
+        guard let session = result.session else {
             throw WorkspaceError("The connection service could not authorize this account.")
         }
         try session.validate(now: now)
@@ -277,7 +303,7 @@ final class ManagedSocialAccounts: NSObject, ASWebAuthenticationPresentationCont
             }
             session = try await request.exchange(callback, transport: transport)
         } else {
-            if signingKey.isEmpty { try await load() }
+            try await load()
             guard availability.contains(platform) else { throw WorkspaceError("Shared sign-in is unavailable for \(platform.name).") }
             let handshake = try ManagedOAuthHandshake(platform: platform, signingKey: signingKey)
             let callback = try await authorize(handshake.url)

@@ -3,7 +3,7 @@ import Foundation
 
 extension WorkspaceRecord {
     var needsNativePostVideo: Bool {
-        ["x", "linkedin"].contains(self["platform"]) && (fields["video"] != nil || self["format"] == "video")
+        ["x", "linkedin", "instagram"].contains(self["platform"]) && (fields["video"] != nil || self["format"] == "video")
     }
 }
 
@@ -29,11 +29,16 @@ struct PostVideo: Equatable {
             throw WorkspaceError("The attached video is missing or has changed. Attach it again before publishing.")
         }
         guard file["type"] == "video/mp4", url.pathExtension.lowercased() == "mp4" else {
-            throw WorkspaceError("Attach an H.264 MP4 for X or LinkedIn.")
+            throw WorkspaceError("Attach an H.264 MP4.")
         }
         if draft["platform"] == "x" {
             guard let duration = file.fields["duration"] as? Double, duration <= 140, size <= 512_000_000 else {
                 throw WorkspaceError("Choose an X video up to 2 minutes 20 seconds and 512 MB.")
+            }
+        }
+        if draft["platform"] == "instagram" {
+            guard let duration = file.fields["duration"] as? Double, (3...600).contains(duration), size <= 1_000_000_000 else {
+                throw WorkspaceError("Choose an Instagram Reel from 3 seconds to 10 minutes and up to 1 GB.")
             }
         }
         return Self(url: url, name: file["name"], size: Int64(size), hash: file["hash"])

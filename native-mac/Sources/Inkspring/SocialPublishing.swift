@@ -133,7 +133,7 @@ struct SocialPublishPlan {
             throw WorkspaceError("Attach the video file before publishing this post.")
         }
         r2 = platform == .instagram && options.useR2 ? options.r2 : nil
-        publicImage = (platform == .instagram && !options.useR2) || (platform == .tiktok && !options.imageURL.isEmpty)
+        publicImage = (platform == .instagram && nativeVideo == nil && !options.useR2) || (platform == .tiktok && !options.imageURL.isEmpty)
             ? try Self.publicImageURL(options.imageURL) : nil
         let redditName = options.subreddit.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\Ar/"#, with: "", options: .regularExpression)
@@ -215,11 +215,15 @@ struct SocialPublishPlan {
             linkedInDestination = nil
             posts = [text]
             if platform == .instagram {
-                guard ["image", "post"].contains(draft["format"]), text.unicodeScalars.count <= 2200,
+                guard ["image", "post", "video"].contains(draft["format"]), text.unicodeScalars.count <= 2200,
                       account.id.range(of: #"\A[0-9]{1,25}\z"#, options: .regularExpression) != nil else {
-                    throw WorkspaceError("Use one Instagram image and a caption of up to 2,200 characters.")
+                    throw WorkspaceError("Use one Instagram image or video and a caption of up to 2,200 characters.")
                 }
-                if options.useR2 {
+                if nativeVideo != nil {
+                    guard r2 != nil else { throw WorkspaceError("Set up R2 in Settings → Storage & backups → Instagram media hosting to publish a Reel.") }
+                    image = nil
+                    imageHash = nil
+                } else if options.useR2 {
                     guard r2 != nil, let imageURL else { throw WorkspaceError("Set up R2 and attach an image before publishing.") }
                     image = imageURL
                     imageHash = try fileDigest(imageURL, limit: 20_000_000).hash
@@ -378,7 +382,8 @@ struct SocialPublisher {
         var options = options
         options.nativeVideo = try PostVideo.forDraft(draft, in: workspace.records)
         let url = draft["format"] == "video" ? workspace.videoURL(draft) : workspace.imageURL(draft)
-        if draft["platform"] == "instagram", options.useR2 {
+        if draft["platform"] == "instagram", options.useR2 || options.nativeVideo != nil {
+            options.useR2 = true
             options.r2 = try r2Client()?.profile.configuration
         }
         if draft["platform"] == "linkedin",
@@ -437,7 +442,7 @@ struct SocialPublisher {
         var steps = receipt.fields["steps"] as? [[String: Any]] ?? []
         do {
             let videoID: String?
-            if let video = plan.nativeVideo, steps.isEmpty {
+            if let video = plan.nativeVideo, [.x, .linkedin].contains(plan.platform), steps.isEmpty {
                 let uploader = PostVideoUpload(transport: transport)
                 if plan.platform == .x {
                     if let readyVideoID {
@@ -536,22 +541,29 @@ struct SocialPublisher {
         let accountURL = base.appending(path: account.id)
         var container = receipt["containerId"]
         if container.isEmpty {
-            let image: URL
-            if let config = plan.r2 {
+            var values = ["caption": plan.posts[0]]
+            if let video = plan.nativeVideo {
+                guard let config = plan.r2, let client = try r2Client(), client.profile.configuration == config else {
+                    throw WorkspaceError("The Instagram media bucket changed. Review the Reel again.")
+                }
+                let media = try await client.upload(video.url, expectedHash: video.hash)
+                try workspace.saveR2Media(media, config: config)
+                values["video_url"] = try client.link(media.key).absoluteString
+                values["media_type"] = "REELS"
+            } else if let config = plan.r2 {
                 guard let client = try r2Client(), client.profile.configuration == config,
                       let local = plan.image, let hash = plan.imageHash else {
                     throw WorkspaceError("The R2 connection or image changed. Review the post again.")
                 }
                 let media = try await client.uploadInstagram(local, hash: hash)
                 try workspace.saveR2Media(media, config: config)
-                image = try client.link(media.key)
+                values["image_url"] = try client.link(media.key).absoluteString
             } else if let url = plan.publicImage {
-                image = url
+                values["image_url"] = url.absoluteString
             } else {
                 throw WorkspaceError("Enter an Instagram image URL.")
             }
-            let (value, _) = try await transport.form(accountURL.appending(path: "media"), token: token,
-                                                      values: ["image_url": image.absoluteString, "caption": plan.posts[0]])
+            let (value, _) = try await transport.form(accountURL.appending(path: "media"), token: token, values: values)
             guard let id = value["id"] as? String, validNumericID(id) else {
                 throw WorkspaceError("Instagram didn’t return a media container.")
             }
@@ -572,13 +584,14 @@ struct SocialPublisher {
             case "ERROR", "EXPIRED":
                 receipt["containerId"] = ""
                 receipt.fields["containers"] = [String]()
-                throw WorkspaceError("Instagram couldn’t process this image. Check the public JPEG URL.")
+                throw WorkspaceError(plan.nativeVideo == nil ? "Instagram couldn’t process this image. Check the public JPEG URL."
+                                                             : "Instagram couldn’t process the Reel. Check the MP4 and R2 media hosting.")
             default:
                 if attempt < 29 { try await Task.sleep(for: .seconds(2)) }
             }
             if ready { break }
         }
-        guard ready else { throw WorkspaceError("Instagram is still processing the image. Review and try again later.") }
+        guard ready else { throw WorkspaceError("Instagram is still processing the media. Review and try again later.") }
         let (value, _) = try await transport.form(accountURL.appending(path: "media_publish"), token: token,
                                                   values: ["creation_id": container], publishes: true)
         guard let id = value["id"] as? String, validNumericID(id) else {

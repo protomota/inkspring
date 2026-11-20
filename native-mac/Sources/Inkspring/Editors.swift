@@ -100,7 +100,7 @@ struct PostInlineEditor: View {
             }
             DraftTitleField(title: $title)
             articlePicker
-            if ["x", "linkedin"].contains(current["platform"]), !["posting", "posted", "uncertain"].contains(current.scheduleStatus) {
+            if ["x", "linkedin", "instagram"].contains(current["platform"]), !["posting", "posted", "uncertain"].contains(current.scheduleStatus) {
                 videoAttachment
             }
             StudioProofreadAction(document: .init(title: title, body: markdown),
@@ -143,7 +143,8 @@ struct PostInlineEditor: View {
                                 throw WorkspaceError("The post changed while attaching the video. Reopen the post and try again.")
                             }
                             post.setDraftMedia(video, as: .video)
-                            if post["format"] == "image" { post["format"] = "post" }
+                            if post["platform"] == "instagram" { post["format"] = "video" }
+                            else if post["format"] == "image" { post["format"] = "post" }
                             _ = try PostVideo.forDraft(post, in: workspace.records)
                             try workspace.save(post)
                         }
@@ -1637,7 +1638,7 @@ struct DraftStudio: View {
     private var formats: [String] {
         switch initial["platform"] {
         case "tiktok": ["image", "video"]
-        case "instagram": ["image"]
+        case "instagram": ["image", "video"]
         case "x": ["post", "followup", "thread", "image", "reply"]
         case "reddit": ["post", "image"]
         default: ["post"]
@@ -1695,7 +1696,7 @@ struct DraftStudio: View {
     private func attachVideo() {
         var types: [UTType] = [.mpeg4Movie, .quickTimeMovie]
         if let webM = UTType(filenameExtension: "webm") { types.append(webM) }
-        if ["x", "linkedin"].contains(initial["platform"]) { types = [.mpeg4Movie] }
+        if ["x", "linkedin", "instagram"].contains(initial["platform"]) { types = [.mpeg4Movie] }
         guard let url = workspace.chooseMedia(types) else { return }
         runGeneration("Checking video…") {
             let video = try await workspace.attachVideo(url)

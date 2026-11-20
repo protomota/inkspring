@@ -101,10 +101,14 @@ struct PublicationReview: View {
                         ProgressView("Checking the connected account…")
                     } else if needsOptions {
                         if draft["platform"] == "instagram" {
-                            if r2 != nil, workspace.mediaURL(draft) != nil {
+                            if draft.needsNativePostVideo {
+                                Text(r2 == nil ? "Set up R2 under Settings → Storage & backups → Instagram media hosting."
+                                    : "Inkspring uploads the attached MP4 through your R2 bucket. Instagram processes it before publishing the Reel.")
+                                    .foregroundStyle(palette.muted)
+                            } else if r2 != nil, workspace.mediaURL(draft) != nil {
                                 Toggle("Host the attached image in my R2 bucket", isOn: $options.useR2)
                             }
-                            if !options.useR2 {
+                            if !options.useR2 && !draft.needsNativePostVideo {
                                 TextField("Public HTTPS JPEG URL", text: $options.imageURL)
                                     .studioInput()
                             }

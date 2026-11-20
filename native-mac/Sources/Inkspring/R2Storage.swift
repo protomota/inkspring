@@ -187,7 +187,7 @@ struct R2Client {
 
     func link(_ key: String) throws -> URL { try signer.link(key) }
 
-    func upload(_ file: URL) async throws -> Media {
+    func upload(_ file: URL, expectedHash: String? = nil) async throws -> Media {
         let ext = "." + file.pathExtension.lowercased()
         guard let type = Self.types[ext] else { throw WorkspaceError("Choose a PNG, JPEG, WebP, MP4, MOV, or WebM.") }
         let attrs = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey])
@@ -196,6 +196,9 @@ struct R2Client {
         }
         let digest = try await Task.detached(priority: .utility) { try fileDigest(file) }.value
         guard digest.size > 0 else { throw WorkspaceError("The file is empty.") }
+        guard expectedHash == nil || digest.hash == expectedHash else {
+            throw WorkspaceError("The media changed. Attach the finished file and review the post again.")
+        }
         try verify(file, size: digest.size, date: attrs.contentModificationDate)
         let key = R2Signer.prefix + "media/" + digest.hash + ext
         _ = try await request("PUT", key: key, type: type, hash: digest.hash, file: file)

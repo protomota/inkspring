@@ -344,7 +344,7 @@ struct AgentMCP {
         let title = arguments["title"] as? String ?? ""
         guard ["post", "image", "video", "followup", "thread"].contains(format),
               !["followup", "thread"].contains(format) || platform == "x",
-              format != "video" || platform == "tiktok",
+              format != "video" || ["instagram", "tiktok"].contains(platform),
               title.utf16.count <= 200, !title.contains("\0") else {
             throw WorkspaceError("Choose a supported draft format and a title up to 200 characters.")
         }

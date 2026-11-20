@@ -69,6 +69,21 @@ struct Substack {
         return (account?["publications"] as? [[String: Any]] ?? []).compactMap(SubstackPublication.decode)
     }
 
+    func checkConnection() async throws {
+        let account = workspace.settings["substackAccount"] as? [String: Any]
+        let expectedUser = try Self.remoteID(account?["userId"])
+        let expectedPublication = selected
+        let profile = try await profile()
+        guard try Self.remoteID(profile["id"]) == expectedUser else {
+            throw WorkspaceError("Substack is signed into a different account. Sign in again to confirm which account to use.")
+        }
+        let accessible = try Self.publications(profile)
+        guard !accessible.isEmpty,
+              expectedPublication == nil || accessible.contains(where: { $0.identifies(expectedPublication) }) else {
+            throw WorkspaceError("Substack could not verify access to this publication. Sign in again and check your publication permissions.")
+        }
+    }
+
     func connect() async throws {
         try await run {
             let profile = try await profile()

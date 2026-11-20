@@ -2,40 +2,53 @@ import SwiftUI
 import WebKit
 
 struct SubstackConnectionSettings: View {
+    @Environment(\.studioPalette) private var palette
     let workspace: Workspace
     @State private var signingIn = false
     @State private var disconnecting = false
+    @State private var connection: Connection = .unchecked
+    @State private var checkRequest = 0
+
+    private enum Connection {
+        case unchecked, checking, connected(Date), failed(String)
+    }
 
     private var service: Substack { Substack(workspace: workspace) }
 
     var body: some View {
         GroupBox("Substack") {
-            VStack(alignment: .leading, spacing: 10) {
-                SetupHelpLink("Substack setup and troubleshooting", topic: "substack")
-                HStack {
-                    Text(service.accountName.isEmpty ? "Connect a Substack publication" : service.accountName)
-                    Spacer()
-                    if workspace.substackBusy { ProgressView().controlSize(.small) }
-                    Button(service.accountName.isEmpty ? "Sign in…" : "Sign in again…") { signingIn = true }
-                    if !service.accountName.isEmpty { Button("Disconnect…") { disconnecting = true } }
+            VStack(alignment: .leading, spacing: 12) {
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+                    GridRow {
+                        connectionStatus
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        connectionActions
+                            .gridColumnAlignment(.trailing)
+                    }
+                    GridRow {
+                        publicationPicker
+                        SetupHelpLink("Substack setup and troubleshooting", topic: "substack")
+                    }
                 }
-                if !service.publications.isEmpty {
-                    StudioLabeledChoice(title: "Publication", selection: Binding(get: { service.selected?.id ?? "" }, set: { id in
-                        guard !id.isEmpty else { return }
-                        workspace.perform { try service.select(id) }
-                    }), options: service.publications.map(\.id),
-                       label: { id in service.publications.first(where: { $0.id == id })?.name ?? "Choose a publication" })
-                    .frame(maxWidth: 420)
+                if case let .failed(message) = connection {
+                    Text(message).font(.callout).foregroundStyle(palette.danger)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(workspace.substackBusy)
         }
-        .sheet(isPresented: $signingIn) { SubstackSignIn(workspace: workspace) }
+        .task(id: checkRequest) { await verifyConnection() }
+        .onChange(of: service.selected?.id) { checkRequest += 1 }
+        .sheet(isPresented: $signingIn) {
+            SubstackSignIn(workspace: workspace) { connection = .connected(.now) }
+        }
         .confirmationDialog("Disconnect Substack?", isPresented: $disconnecting) {
             Button("Disconnect", role: .destructive) {
                 Task {
-                    do { try await service.disconnect() }
+                    do {
+                        try await service.disconnect()
+                        connection = .unchecked
+                    }
                     catch { workspace.error = error.localizedDescription }
                 }
             }
@@ -43,11 +56,76 @@ struct SubstackConnectionSettings: View {
             Text("This clears the Inkspring sign-in on this Mac. Your saved newsletters and their Substack links are kept.")
         }
     }
+
+    private var publicationPicker: some View {
+        HStack(spacing: 10) {
+            if !service.publications.isEmpty {
+                Text("Publication").foregroundStyle(palette.muted)
+                StudioChoicePicker(title: "Publication", selection: Binding(get: { service.selected?.id ?? "" }, set: { id in
+                    workspace.perform { try service.select(id) }
+                }), options: service.publications.map(\.id),
+                   label: { id in service.publications.first(where: { $0.id == id })?.name ?? "Choose a publication" })
+            }
+        }
+    }
+
+    private var connectionActions: some View {
+        HStack(spacing: 8) {
+            if !service.accountName.isEmpty {
+                Button("Test connection") { checkRequest += 1 }
+                    .disabled(isChecking)
+            }
+            Button(service.accountName.isEmpty ? "Sign in…" : "Sign in again…") { signingIn = true }
+            if !service.accountName.isEmpty { Button("Disconnect…") { disconnecting = true } }
+        }
+    }
+
+    private var isChecking: Bool {
+        if case .checking = connection { return true }
+        return false
+    }
+
+    @ViewBuilder private var connectionStatus: some View {
+        if service.accountName.isEmpty {
+            Label("Not connected", systemImage: "minus.circle").foregroundStyle(palette.muted)
+        } else {
+            switch connection {
+            case .unchecked:
+                Text("Connection not verified").foregroundStyle(palette.muted)
+            case .checking:
+                ProgressView("Checking connection…").controlSize(.small)
+            case .connected(let checkedAt):
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Connected as \(service.accountName)", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(palette.success)
+                    Text("Verified at \(checkedAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption).foregroundStyle(palette.muted)
+                }
+            case .failed:
+                Label("Connection needs attention", systemImage: "exclamationmark.circle").foregroundStyle(palette.danger)
+            }
+        }
+    }
+
+    private func verifyConnection() async {
+        guard !service.accountName.isEmpty else {
+            connection = .unchecked
+            return
+        }
+        connection = .checking
+        do {
+            try await service.checkConnection()
+            if !Task.isCancelled { connection = .connected(.now) }
+        } catch {
+            if !Task.isCancelled { connection = .failed(error.localizedDescription) }
+        }
+    }
 }
 
 private struct SubstackSignIn: View {
     @Environment(\.studioPalette) private var palette
     let workspace: Workspace
+    let connected: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var message: String?
 
@@ -64,6 +142,7 @@ private struct SubstackSignIn: View {
                     Task {
                         do {
                             try await Substack(workspace: workspace).connect()
+                            connected()
                             dismiss()
                         } catch { message = error.localizedDescription }
                     }

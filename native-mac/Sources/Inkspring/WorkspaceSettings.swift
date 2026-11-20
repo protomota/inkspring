@@ -782,7 +782,15 @@ struct WorkspaceConnections: View {
         defer { testing = nil }
         do {
             let profile = try await accounts.testConnection(platform)
-            connectionChecks[platform] = .verified(profile.displayName)
+            if platform == .tiktok {
+                let creator = try await SocialPublisher(workspace: workspace).tikTokCreator()
+                let directPost = creator.privacy.contains("PUBLIC_TO_EVERYONE")
+                    ? "Direct Post allows Everyone"
+                    : "Direct Post has no Everyone option"
+                connectionChecks[platform] = .verified(profile.displayName + " · " + directPost)
+            } else {
+                connectionChecks[platform] = .verified(profile.displayName)
+            }
         } catch is CancellationError {
         } catch {
             if accounts.profiles[platform] != nil { connectionChecks[platform] = .failed(error.localizedDescription) }

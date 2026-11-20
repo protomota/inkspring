@@ -834,11 +834,7 @@ struct StudioDateTimePicker: View {
                 Button("In 5 minutes", systemImage: "clock") { selection = PostScheduling.fiveMinutesFromNow() }
                     .help("Select a time at least five minutes from now, rounded up to the next minute.")
             }
-            DatePicker("Date", selection: $selection,
-                       in: Calendar.current.startOfDay(for: .now)...,
-                       displayedComponents: .date)
-                .datePickerStyle(.graphical)
-                .labelsHidden()
+            StudioScheduleCalendar(selection: $selection)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
                 .studioSurface()
@@ -869,6 +865,117 @@ struct StudioDateTimePicker: View {
     private func hourLabel(_ hour: Int) -> String {
         let date = Calendar.current.date(from: DateComponents(year: 2001, month: 1, day: 15, hour: hour))!
         return date.formatted(.dateTime.hour())
+    }
+}
+
+private struct StudioScheduleCalendar: View {
+    @Environment(\.studioPalette) private var palette
+    @Environment(\.calendar) private var calendar
+    @Environment(\.locale) private var locale
+    @Binding var selection: Date
+    @State private var shownDate: Date?
+    @FocusState private var focusedDay: Date?
+
+    private var month: DateInterval? { calendar.dateInterval(of: .month, for: shownDate ?? selection) }
+    private var today: Date { calendar.startOfDay(for: .now) }
+
+    var body: some View {
+        if let month {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(month.start.formatted(.dateTime.month(.wide).year().locale(locale)))
+                        .font(.callout.weight(.semibold))
+                    Spacer(minLength: 4)
+                    monthButton("Previous month", icon: "chevron.left") { moveMonth(-1) }
+                        .disabled(month.contains(today))
+                    monthButton("Today", icon: "circle") { choose(today) }
+                    monthButton("Next month", icon: "chevron.right") { moveMonth(1) }
+                }
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(27), spacing: 3), count: 7), spacing: 2) {
+                    let weekdays = calendar.veryShortStandaloneWeekdaySymbols
+                    ForEach(0..<7, id: \.self) { offset in
+                        Text(weekdays[(calendar.firstWeekday - 1 + offset) % 7])
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(palette.muted)
+                            .accessibilityHidden(true)
+                    }
+                    let firstColumn = (calendar.component(.weekday, from: month.start) - calendar.firstWeekday + 7) % 7
+                    ForEach(0..<firstColumn, id: \.self) { _ in
+                        Color.clear.frame(height: 21).accessibilityHidden(true)
+                    }
+                    ForEach(Array(calendar.range(of: .day, in: .month, for: month.start) ?? 1..<1), id: \.self) { number in
+                        if let date = calendar.date(byAdding: .day, value: number - 1, to: month.start) {
+                            dayButton(number, date: date)
+                        }
+                    }
+                }
+            }
+            .frame(width: 207)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Date")
+            .onChange(of: selection) { shownDate = selection }
+        }
+    }
+
+    private func monthButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(palette.iconAccent)
+                .frame(width: 20, height: 19)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .help(title)
+    }
+
+    private func dayButton(_ number: Int, date: Date) -> some View {
+        let selected = calendar.isDate(date, inSameDayAs: selection)
+        return Button { choose(date) } label: {
+            Text(number.formatted(.number.locale(locale)))
+                .font(.caption.monospacedDigit().weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? palette.accentText : date < today ? palette.muted : palette.text)
+                .frame(width: 27, height: 21)
+                .background(selected ? palette.primaryAction : .clear, in: .rect(cornerRadius: 5))
+                .overlay {
+                    if !selected && date == today {
+                        RoundedRectangle(cornerRadius: 5).strokeBorder(palette.primaryAction)
+                    }
+                }
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(date < today)
+        .focused($focusedDay, equals: date)
+        .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .onKeyPress(.leftArrow) { moveFocus(from: date, by: -1) }
+        .onKeyPress(.rightArrow) { moveFocus(from: date, by: 1) }
+        .onKeyPress(.upArrow) { moveFocus(from: date, by: -7) }
+        .onKeyPress(.downArrow) { moveFocus(from: date, by: 7) }
+    }
+
+    private func moveMonth(_ offset: Int) {
+        guard let month else { return }
+        shownDate = calendar.date(byAdding: .month, value: offset, to: month.start)
+    }
+
+    private func moveFocus(from date: Date, by offset: Int) -> KeyPress.Result {
+        if let target = calendar.date(byAdding: .day, value: offset, to: date), target >= today {
+            shownDate = target
+            focusedDay = target
+        }
+        return .handled
+    }
+
+    private func choose(_ date: Date) {
+        let time = calendar.dateComponents([.hour, .minute], from: selection)
+        if let selected = calendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0, of: date),
+           calendar.isDate(selected, inSameDayAs: date) {
+            selection = selected
+            shownDate = selected
+        }
     }
 }
 
