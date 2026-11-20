@@ -80,6 +80,15 @@ enum PostScheduling {
     private static let visibleStates = ["queued", "due", "posting", "posted"]
     static let leadTime: TimeInterval = 120
 
+    static func fiveMinutesFromNow(_ now: Date = .now) -> Date {
+        let target = now.addingTimeInterval(5 * 60)
+        return Date(timeIntervalSince1970: ceil(target.timeIntervalSince1970 / 60) * 60)
+    }
+
+    static func startOfMinute(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / 60) * 60)
+    }
+
     static func xPostingHours(on day: Date, in records: [WorkspaceRecord],
                               calendar: Calendar = .current) -> [PostingHour] {
         let draft = WorkspaceRecord(kind: "draft", fields: ["platform": "x"])
@@ -115,14 +124,20 @@ enum PostScheduling {
     }
 
     static func isFree(_ time: Date, for draft: WorkspaceRecord, in records: [WorkspaceRecord],
-                       calendar: Calendar = .current, linkedInPersonalURN: String? = nil) -> Bool {
-        occupyingPost(time, for: draft, in: records, calendar: calendar, linkedInPersonalURN: linkedInPersonalURN) == nil
+                       calendar: Calendar = .current, linkedInPersonalURN: String? = nil, customTime: Bool = false) -> Bool {
+        occupyingPost(time, for: draft, in: records, calendar: calendar, linkedInPersonalURN: linkedInPersonalURN,
+                      customTime: customTime) == nil
     }
 
     private static func occupyingPost(_ time: Date, for draft: WorkspaceRecord, in records: [WorkspaceRecord],
-                                      calendar: Calendar, linkedInPersonalURN: String?) -> WorkspaceRecord? {
+                                      calendar: Calendar, linkedInPersonalURN: String?, customTime: Bool = false) -> WorkspaceRecord? {
         let platform = draft["platform"]
-        let interval: Calendar.Component = ["x", "tiktok"].contains(platform) ? .hour : .day
+        let interval: Calendar.Component
+        if customTime && ["x", "linkedin"].contains(platform) {
+            interval = .minute
+        } else {
+            interval = ["x", "tiktok"].contains(platform) ? .hour : .day
+        }
         let urn = (draft.fields["linkedinDestination"] as? [String: Any])?["urn"] as? String ?? linkedInPersonalURN
         return records.first { other in
             guard other.kind == "draft", other.id != draft.id, other["platform"] == platform,
@@ -226,6 +241,15 @@ extension Workspace {
                 continue
             }
             do {
+                if platform == "x" {
+                    let posts = ["followup", "thread"].contains(draft["format"]) ? XThreadText.posts(in: draft.body) : [draft.body]
+                    let links = try XPostArticleLinks(draft: draft, posts: posts, records: records)
+                    if links.articles.contains(where: { $0["state"] != "published" }),
+                       let pair = try await publisher.reviewXArticlePost(draft) {
+                        _ = try await publisher.publishXArticlePost(pair, automatic: true)
+                        continue
+                    }
+                }
                 if platform == "linkedin",
                    LinkedInDestination(fields: draft.fields["linkedinDestination"] as? [String: Any]) == nil {
                     throw WorkspaceError("Choose a LinkedIn destination and schedule this post again.")

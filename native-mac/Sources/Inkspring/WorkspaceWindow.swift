@@ -1358,7 +1358,9 @@ struct PostPreview: View {
                     platform == .x && (replies.contains { $0["state"] != "published" } || workspace.records.contains {
                         $0.isXArticle && $0.projectID == record.projectID && $0.id == record[key] && $0["state"] != "published"
                     })
-                let publish: (() -> Void)? = canCreate && allowsChanges && hasUnpublishedArticle ? { reviewPair(record) } : nil
+                let canPublishTogether = platform == .x || !record.needsNativePostVideo
+                let publish: (() -> Void)? = canCreate && allowsChanges && hasUnpublishedArticle && canPublishTogether
+                    ? { reviewPair(record) } : nil
                 PostArticlePicker(workspace: workspace, projectID: record.projectID, platform: platform,
                                   articleID: articleBinding(key), openArticle: { openArticle($0, record) }, createArticle: create,
                                   xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish)

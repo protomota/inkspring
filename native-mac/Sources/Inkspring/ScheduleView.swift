@@ -413,6 +413,8 @@ struct ScheduleTimePage: View {
     let scheduled: () -> Void
     let reviewPublication: (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void
     @State private var postingTime = Date.now.addingTimeInterval(3600)
+    @State private var preferredHour = Date.now.addingTimeInterval(3600)
+    @State private var customTime = true
     @State private var chosenMinute = -1
     @State private var linkedInDestinations: [LinkedInDestination] = []
     @State private var chosenDestination = ""
@@ -421,6 +423,9 @@ struct ScheduleTimePage: View {
     private var selectedLinkedInDestination: LinkedInDestination? {
         linkedInDestinations.first { $0.urn == chosenDestination }
     }
+
+    private var offersCustomTime: Bool { ["x", "linkedin"].contains(draft["platform"]) }
+    private var usesCustomTime: Bool { offersCustomTime && customTime }
 
     private var openHours: [Date] {
         var proposed = draft
@@ -449,42 +454,73 @@ struct ScheduleTimePage: View {
                                                 label: { urn in linkedInDestinations.first { $0.urn == urn }?.name ?? "Choose a destination" })
                         }
                     }
-                    let slots = openHours
-                    if !slots.isEmpty {
-                        StudioFilterMenu(title: "Open posting hours", value: "Open posting hours") {
-                            ForEach(slots, id: \.self) { slot in
-                                Button(slot.formatted(date: .abbreviated, time: .shortened)) { postingTime = slot }
+                    if offersCustomTime {
+                        Picker("Scheduling", selection: $customTime) {
+                            Text("Custom time").tag(true)
+                            Text("Preferred hours").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                        .fixedSize()
+                        .onChange(of: customTime) { timeError = nil }
+                    }
+                    if !usesCustomTime {
+                        let slots = openHours
+                        if !slots.isEmpty {
+                            StudioFilterMenu(title: "Open posting hours", value: "Open posting hours") {
+                                ForEach(slots, id: \.self) { slot in
+                                    Button(slot.formatted(date: .abbreviated, time: .shortened)) { preferredHour = slot }
+                                }
                             }
                         }
                     }
-                    StudioDateTimePicker(selection: $postingTime, includesMinute: false)
-                    StudioLabeledChoice(title: "Posting minute", selection: $chosenMinute, options: Array(-1..<60),
-                                        label: { $0 < 0 ? "Choose automatically" : String(format: "%02d", $0) })
+                    StudioDateTimePicker(selection: usesCustomTime ? $postingTime : $preferredHour, includesMinute: usesCustomTime,
+                                         includesFiveMinuteShortcut: usesCustomTime)
+                    if !usesCustomTime {
+                        StudioLabeledChoice(title: "Posting minute", selection: $chosenMinute, options: Array(-1..<60),
+                                            label: { $0 < 0 ? "Choose automatically" : String(format: "%02d", $0) })
+                    }
+                    if offersCustomTime && workspace.settings["autoPost"] as? Bool != true {
+                        Text("Automatic posting is off. Turn it on in Schedule to send this post at its scheduled time.")
+                            .foregroundStyle(.secondary)
+                    }
+                    if draft.needsNativePostVideo {
+                        Label("Inkspring sends this post once the platform has processed its video.", systemImage: "video")
+                            .foregroundStyle(.secondary)
+                    }
+                    if offersCustomTime {
+                        StudioExternalLink("Scheduling help", destination: URL(string: "https://inkspring.ai/help#schedule")!)
+                    }
                     if let timeError { Text(timeError).foregroundStyle(.red) }
                 }
                 .frame(maxWidth: 920, alignment: .leading)
                 .studioPage()
             }
         }
+        .onChange(of: postingTime) { timeError = nil }
+        .onChange(of: preferredHour) { timeError = nil }
+        .onChange(of: chosenMinute) { timeError = nil }
+        .onChange(of: chosenDestination) { timeError = nil }
         .onAppear {
             if draft["platform"] == "linkedin" {
                 linkedInDestinations = (try? workspace.socialAccounts.savedLinkedInDestinations()) ?? []
             }
             let saved = LinkedInDestination(fields: draft.fields["linkedinDestination"] as? [String: Any])
             chosenDestination = saved?.urn ?? linkedInDestinations.first?.urn ?? ""
-            postingTime = (draft.schedule["slotAt"] as? String).flatMap(scheduleDate)
-                .flatMap { $0 > .now ? $0 : nil } ?? openHours.first ?? Date.now.addingTimeInterval(3600)
+            let savedTime = (draft.schedule["slotAt"] as? String).flatMap(scheduleDate).flatMap { $0 > .now ? $0 : nil }
+            postingTime = savedTime ?? Date.now.addingTimeInterval(3600)
+            preferredHour = savedTime ?? openHours.first ?? postingTime
             chosenMinute = workspace.postingMinute(for: draft["platform"])
         }
     }
 
     private func schedule() {
         do {
-            let slot = try workspace.preferredPostingDate(for: draft["platform"], hour: postingTime, minute: chosenMinute)
+            let slot = usesCustomTime ? PostScheduling.startOfMinute(postingTime)
+                : try workspace.preferredPostingDate(for: draft["platform"], hour: preferredHour, minute: chosenMinute)
             if draft["platform"] == "tiktok" {
                 reviewPublication(draft, slot) { _ in scheduled() }
             } else {
-                try workspace.scheduleDraft(draft, at: slot, linkedin: selectedLinkedInDestination)
+                try workspace.scheduleDraft(draft, at: slot, linkedin: selectedLinkedInDestination, customTime: usesCustomTime)
                 scheduled()
                 close()
             }

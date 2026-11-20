@@ -826,9 +826,14 @@ struct StudioSegmentedControl<Value: Hashable, SegmentLabel: View>: View {
 struct StudioDateTimePicker: View {
     @Binding var selection: Date
     var includesMinute = true
+    var includesFiveMinuteShortcut = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if includesFiveMinuteShortcut {
+                Button("In 5 minutes", systemImage: "clock") { selection = PostScheduling.fiveMinutesFromNow() }
+                    .help("Select a time at least five minutes from now, rounded up to the next minute.")
+            }
             DatePicker("Date", selection: $selection,
                        in: Calendar.current.startOfDay(for: .now)...,
                        displayedComponents: .date)
@@ -850,7 +855,12 @@ struct StudioDateTimePicker: View {
 
     private func component(_ component: Calendar.Component) -> Binding<Int> {
         Binding(get: { Calendar.current.component(component, from: selection) }, set: { value in
-            if let date = Calendar.current.date(bySetting: component, value: value, of: selection) {
+            let calendar = Calendar.current
+            var parts = calendar.dateComponents([.hour, .minute], from: selection)
+            if component == .hour { parts.hour = value } else { parts.minute = value }
+            if let date = calendar.date(bySettingHour: parts.hour ?? 0, minute: parts.minute ?? 0, second: 0,
+                                        of: selection, matchingPolicy: .strict),
+               calendar.isDate(date, inSameDayAs: selection) {
                 selection = date
             }
         })

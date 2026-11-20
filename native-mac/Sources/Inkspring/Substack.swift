@@ -387,9 +387,10 @@ struct Substack {
 
     private func validate(_ date: Date?) throws {
         guard let date else { return }
-        let limit = Calendar(identifier: .gregorian).date(byAdding: .month, value: 3, to: now()) ?? now()
-        guard date >= now().addingTimeInterval(60), date <= limit, date.timeIntervalSince1970.truncatingRemainder(dividingBy: 60) == 0 else {
-            throw WorkspaceError("Choose a future minute within the next three months.")
+        let current = now()
+        let limit = Calendar(identifier: .gregorian).date(byAdding: .month, value: 3, to: current) ?? current
+        guard date >= current.addingTimeInterval(60), date <= limit, date == PostScheduling.startOfMinute(date) else {
+            throw WorkspaceError("Choose a time at least one minute from now and within the next three months.")
         }
     }
 

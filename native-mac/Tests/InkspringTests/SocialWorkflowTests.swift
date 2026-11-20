@@ -368,6 +368,74 @@ private func response(_ request: URLRequest, status: Int, json: [String: Any]) t
     #expect(calls == 1)
 }
 
+@Test @MainActor func customTimesQueueAndPublishBothSocialDestinationsOnce() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspace = Workspace(directory: root)
+    let now = Date.now
+    let slot = PostScheduling.fiveMinutesFromNow(now)
+    #expect(slot.timeIntervalSince(now) >= 300)
+    #expect(slot.timeIntervalSince(now) < 360)
+    #expect(PostScheduling.startOfMinute(slot) == slot)
+
+    func draft(_ platform: String) throws -> WorkspaceRecord {
+        var draft = WorkspaceRecord.new("draft", projectID: workspace.projectID)
+        draft["platform"] = platform
+        draft["title"] = "Schedule fixture"
+        draft["content"] = "Synthetic scheduler test."
+        return try workspace.save(draft)
+    }
+
+    let profile = ManagedSocialAccount(
+        session: ManagedSocialSession(accessToken: "fixture", refreshToken: nil, managedTicket: nil,
+                                      expiresAt: 2_000_000_000_000, scopes: "w_member_social"),
+        id: "member", name: "Fixture profile", username: "fixture"
+    )
+    let x = try workspace.scheduleDraft(draft("x"), at: slot, customTime: true)
+    let linkedin = try workspace.scheduleDraft(draft("linkedin"), at: slot, linkedInAccount: profile, customTime: true)
+    let otherX = try draft("x")
+    #expect(throws: WorkspaceError.self) { try workspace.scheduleDraft(otherX, at: slot, customTime: true) }
+    #expect(throws: WorkspaceError.self) {
+        try workspace.scheduleDraft(otherX, at: now.addingTimeInterval(60), customTime: true)
+    }
+    let nextMinute = slot.addingTimeInterval(60)
+    let laterX = try workspace.scheduleDraft(otherX, at: nextMinute, customTime: true)
+    let laterLinkedIn = try workspace.scheduleDraft(draft("linkedin"), at: nextMinute, linkedInAccount: profile, customTime: true)
+
+    var requests: [String] = []
+    let transport = SocialTransport { request in
+        let url = try #require(request.url)
+        requests.append(url.path)
+        switch url.path {
+        case "/2/tweets":
+            return try response(request, status: 201, json: ["data": ["id": "456"]])
+        case "/rest/posts":
+            let data = try #require(request.httpBody)
+            let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect(fields["author"] as? String == "urn:li:person:member")
+            let headers = ["x-restli-id": "urn:li:share:789"]
+            return (Data(), try #require(HTTPURLResponse(url: url, statusCode: 201, httpVersion: nil, headerFields: headers)))
+        default:
+            Issue.record("Unexpected request from scheduled post.")
+            return try response(request, status: 400, json: [:])
+        }
+    }
+    let publisher = SocialPublisher(workspace: workspace, transport: transport, authorize: { $0 == .linkedin ? profile : account })
+    try workspace.set("autoPost", to: true)
+    await workspace.runDuePosts(publisher: publisher, now: slot.addingTimeInterval(-1))
+    #expect(requests.isEmpty)
+    await workspace.runDuePosts(publisher: publisher, now: slot)
+    await workspace.runDuePosts(publisher: publisher, now: slot)
+    #expect(requests.sorted() == ["/2/tweets", "/rest/posts"])
+    for post in [x, linkedin] {
+        #expect(workspace.records.first { $0.id == post.id }?.scheduleStatus == "posted")
+        #expect(workspace.records.filter { $0.kind == "publication" && $0["draftId"] == post.id }.map { $0["status"] } == ["published"])
+    }
+    for post in [laterX, laterLinkedIn] {
+        #expect(workspace.records.first { $0.id == post.id }?.scheduleStatus == "queued")
+    }
+}
+
 @Test func scheduleShowsPostsAndNewslettersAcrossProjectsInPostingOrder() {
     let x = WorkspaceRecord(kind: "draft", fields: [
         "id": "x", "projectId": "second", "platform": "x",

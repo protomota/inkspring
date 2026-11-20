@@ -274,7 +274,7 @@ struct NewsletterSendPage: View {
                                 .foregroundStyle(palette.muted)
                         }
                         if scheduling {
-                            StudioDateTimePicker(selection: $date)
+                            StudioDateTimePicker(selection: $date, includesFiveMinuteShortcut: true)
                                 .disabled(busy || isScheduled)
                         }
                         if isScheduled {
@@ -309,7 +309,7 @@ struct NewsletterSendPage: View {
     }
 
     private func prepare() {
-        let minute = Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / 60) * 60)
+        let minute = PostScheduling.startOfMinute(date)
         run { review = try await service.prepare(record.id, at: scheduling ? minute : nil) }
     }
 

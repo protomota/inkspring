@@ -10,6 +10,7 @@ struct SocialPublishOptions {
     var tiktok: TikTokReviewOptions?
     var creator: TikTokCreator?
     var video: TikTokVideo?
+    var nativeVideo: PostVideo?
     var linkedInDestination: LinkedInDestination?
     var useR2 = false
     var r2: R2Configuration?
@@ -90,12 +91,14 @@ struct SocialPublishPlan {
     let tiktok: TikTokReviewOptions?
     let creator: TikTokCreator?
     let video: TikTokVideo?
+    let nativeVideo: PostVideo?
     let r2: R2Configuration?
 
     var fingerprint: String {
         var parts = [platform.rawValue, draftID, accountID, title, replyID ?? ""]
         parts += [imageHash ?? "", linkedInAuthor ?? "", publicImage?.absoluteString ?? "", subreddit ?? "", flair ?? ""]
         parts += posts + (tiktok?.fingerprintFields ?? []) + (r2?.identity ?? [])
+        if let nativeVideo { parts.append(nativeVideo.hash) }
         if let article = linkedInArticle { parts += [article.articleID, article.title, article.url.absoluteString] }
         let data = (try? JSONEncoder().encode(parts)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -125,6 +128,10 @@ struct SocialPublishPlan {
         tiktok = options.tiktok
         creator = options.creator
         video = options.video
+        nativeVideo = options.nativeVideo
+        if draft.needsNativePostVideo && nativeVideo == nil {
+            throw WorkspaceError("Attach the video file before publishing this post.")
+        }
         r2 = platform == .instagram && options.useR2 ? options.r2 : nil
         publicImage = (platform == .instagram && !options.useR2) || (platform == .tiktok && !options.imageURL.isEmpty)
             ? try Self.publicImageURL(options.imageURL) : nil
@@ -133,8 +140,8 @@ struct SocialPublishPlan {
         subreddit = platform == .reddit ? redditName : nil
         flair = platform == .reddit && !options.flair.isEmpty ? options.flair : nil
         if platform == .x {
-            guard ["post", "followup", "thread", "image", "reply"].contains(draft["format"]) else {
-                throw WorkspaceError("Choose an X post, thread, image post or reply.")
+            guard ["post", "followup", "thread", "image", "video", "reply"].contains(draft["format"]) else {
+                throw WorkspaceError("Choose an X post, thread or reply.")
             }
             let parts = ["followup", "thread"].contains(draft["format"]) ? XThreadText.posts(in: text) : [text]
             posts = try XPostArticleLinks(draft: draft, posts: parts, records: articles).resolve(parts, pending: pendingXArticleIDs)
@@ -155,8 +162,13 @@ struct SocialPublishPlan {
             } else {
                 replyID = nil
             }
-            if draft["format"] == "image" && imageURL == nil { throw WorkspaceError("Attach an image before publishing.") }
-            if ["image", "reply"].contains(draft["format"]), let imageURL {
+            if nativeVideo != nil && !scopes.isEmpty && !scopes.contains("media.write") {
+                throw WorkspaceError("Reconnect X with permission to upload video.")
+            }
+            if draft["format"] == "image" && nativeVideo == nil && imageURL == nil {
+                throw WorkspaceError("Attach an image before publishing.")
+            }
+            if nativeVideo == nil, ["image", "reply"].contains(draft["format"]), let imageURL {
                 guard scopes.isEmpty || scopes.contains("media.write") else {
                     throw WorkspaceError("Reconnect X with permission to upload images.")
                 }
@@ -172,10 +184,6 @@ struct SocialPublishPlan {
             }
             linkedInDestination = nil
         } else if platform == .linkedin {
-            guard draft["format"] == "post", text.unicodeScalars.count <= 3000,
-                  account.id.range(of: #"\A[A-Za-z0-9_-]{1,200}\z"#, options: .regularExpression) != nil else {
-                throw WorkspaceError("LinkedIn text posts can contain up to 3,000 characters.")
-            }
             let destination = options.linkedInDestination ?? LinkedInDestination.personal(account)
             let raw = draft.fields["linkedinDestination"] as? [String: Any]
             let saved = LinkedInDestination(fields: raw)
@@ -190,7 +198,15 @@ struct SocialPublishPlan {
                 throw WorkspaceError("Reconnect LinkedIn with company-page publishing access.")
             }
             linkedInDestination = destination
-            posts = [text]
+            var commentary = text
+            if nativeVideo != nil, let article = linkedInArticle, !text.contains(article.url.absoluteString) {
+                commentary += "\n\n" + article.url.absoluteString
+            }
+            guard ["post", "video"].contains(draft["format"]), commentary.unicodeScalars.count <= 3000,
+                  account.id.range(of: #"\A[A-Za-z0-9_-]{1,200}\z"#, options: .regularExpression) != nil else {
+                throw WorkspaceError("Keep the LinkedIn post and its article link within 3,000 characters.")
+            }
+            posts = [commentary]
             replyID = nil
             image = nil
             imageHash = nil
@@ -314,7 +330,7 @@ struct SocialPublisher {
         return XArticlePostReview(post: plan, articles: articles, accountKey: account.connectionKey)
     }
 
-    func publishXArticlePost(_ reviewed: XArticlePostReview) async throws -> WorkspaceRecord {
+    func publishXArticlePost(_ reviewed: XArticlePostReview, automatic: Bool = false) async throws -> WorkspaceRecord {
         let account = try await authorize(.x)
         let lease = try workspace.claimPublication()
         defer { withExtendedLifetime(lease) {} }
@@ -328,18 +344,27 @@ struct SocialPublisher {
             throw WorkspaceError("The post, article or X account changed. Open the review again.")
         }
         let publisher = XArticlePublisher(workspace: workspace, transport: transport, authorize: { try await authorize(.x) })
+        let readyVideoID: String?
+        if let video = current.post.nativeVideo {
+            readyVideoID = try await PostVideoUpload(transport: transport).toX(video, token: account.session.accessToken)
+        } else {
+            readyVideoID = nil
+        }
         var published: [String] = []
         do {
             for article in reviewed.articles {
                 try workspace.reload()
-                guard workspace.drafts.first(where: { $0.id == draft.id })?["updatedAt"] == reviewed.post.revision else {
+                guard let latest = workspace.drafts.first(where: { $0.id == draft.id }), latest["updatedAt"] == reviewed.post.revision else {
                     throw WorkspaceError("The post changed. Review it again.")
+                }
+                if automatic, workspace.settings["autoPost"] as? Bool != true || latest.scheduleStatus != "queued" {
+                    throw WorkspaceError("Automatic posting is paused or this post was unscheduled.")
                 }
                 _ = try await publisher.publish(article, using: lease)
                 published.append(article.title)
             }
             let plan = try await prepare(draft, account: account, options: .init())
-            return try await publish(plan, using: lease)
+            return try await publish(plan, automatic: automatic, using: lease, readyVideoID: readyVideoID)
         } catch {
             if !published.isEmpty {
                 throw WorkspaceError("Published on X: \(published.joined(separator: ", ")). The remaining items need attention. \(error.localizedDescription)")
@@ -351,6 +376,7 @@ struct SocialPublisher {
     private func prepare(_ draft: WorkspaceRecord, account: ManagedSocialAccount,
                          options: SocialPublishOptions, pendingXArticleIDs: Set<String> = []) async throws -> SocialPublishPlan {
         var options = options
+        options.nativeVideo = try PostVideo.forDraft(draft, in: workspace.records)
         let url = draft["format"] == "video" ? workspace.videoURL(draft) : workspace.imageURL(draft)
         if draft["platform"] == "instagram", options.useR2 {
             options.r2 = try r2Client()?.profile.configuration
@@ -379,7 +405,7 @@ struct SocialPublisher {
     }
 
     func publish(_ reviewed: SocialPublishPlan, automatic: Bool = false, fromAgent: Bool = false,
-                 using existingLease: PublicationLease? = nil) async throws -> WorkspaceRecord {
+                 using existingLease: PublicationLease? = nil, readyVideoID: String? = nil) async throws -> WorkspaceRecord {
         let account = try await authorize(reviewed.platform)
         try workspace.reload()
         guard let draft = workspace.records.first(where: { $0.id == reviewed.draftID && $0.kind == "draft" }),
@@ -410,15 +436,41 @@ struct SocialPublisher {
         }
         var steps = receipt.fields["steps"] as? [[String: Any]] ?? []
         do {
+            let videoID: String?
+            if let video = plan.nativeVideo, steps.isEmpty {
+                let uploader = PostVideoUpload(transport: transport)
+                if plan.platform == .x {
+                    if let readyVideoID {
+                        videoID = readyVideoID
+                    } else {
+                        videoID = try await uploader.toX(video, token: account.session.accessToken)
+                    }
+                } else {
+                    guard let owner = plan.linkedInAuthor else { throw WorkspaceError("Choose a LinkedIn destination.") }
+                    videoID = try await uploader.toLinkedIn(video, owner: owner, token: account.session.accessToken)
+                }
+                if automatic {
+                    try workspace.reload()
+                    guard workspace.settings["autoPost"] as? Bool == true else {
+                        throw WorkspaceError("Automatic posting was paused during the video upload.")
+                    }
+                }
+            } else {
+                videoID = nil
+            }
             switch plan.platform {
             case .x:
                 for index in steps.count..<plan.posts.count {
                     let previous = index == 0 ? plan.replyID : steps[index - 1]["id"] as? String
                     var payload: [String: Any] = ["text": plan.posts[index]]
                     if let previous { payload["reply"] = ["in_reply_to_tweet_id": previous] }
-                    if index == 0, let image = plan.image {
-                        let uploaded = try await uploadXImage(image, expectedHash: plan.imageHash, token: account.session.accessToken)
-                        payload["media"] = ["media_ids": [uploaded]]
+                    if index == 0 {
+                        if let videoID {
+                            payload["media"] = ["media_ids": [videoID]]
+                        } else if let image = plan.image {
+                            let uploaded = try await uploadXImage(image, expectedHash: plan.imageHash, token: account.session.accessToken)
+                            payload["media"] = ["media_ids": [uploaded]]
+                        }
                     }
                     let (value, _) = try await transport.request(URL(string: "https://api.x.com/2/tweets")!,
                                                                  token: account.session.accessToken, method: "POST", json: payload, publishes: true)
@@ -426,7 +478,9 @@ struct SocialPublisher {
                           id.range(of: #"\A[0-9]{1,25}\z"#, options: .regularExpression) != nil else {
                         throw SocialRequestError("X didn’t confirm a post ID. Check the account before retrying.", uncertain: true)
                     }
-                    steps.append(["id": id, "url": "https://x.com/i/web/status/" + id, "at": WorkspaceRecord.timestamp])
+                    var step = ["id": id, "url": "https://x.com/i/web/status/" + id, "at": WorkspaceRecord.timestamp]
+                    if index == 0, let videoID { step["videoId"] = videoID }
+                    steps.append(step)
                     receipt.fields["steps"] = steps
                     try workspace.updatePublication(receipt)
                 }
@@ -437,7 +491,9 @@ struct SocialPublisher {
                     "distribution": ["feedDistribution": "MAIN_FEED", "targetEntities": [String](), "thirdPartyDistributionChannels": [String]()],
                     "lifecycleState": "PUBLISHED", "isReshareDisabledByAuthor": false
                 ]
-                if let article = plan.linkedInArticle {
+                if let videoID {
+                    payload["content"] = ["media": ["id": videoID]]
+                } else if let article = plan.linkedInArticle {
                     payload["content"] = ["article": ["title": article.title, "source": article.url.absoluteString]]
                 }
                 let (_, response) = try await transport.request(URL(string: "https://api.linkedin.com/rest/posts")!,
@@ -447,7 +503,9 @@ struct SocialPublisher {
                       id.range(of: #"\Aurn:li:(share|ugcPost):[0-9]+\z"#, options: .regularExpression) != nil else {
                     throw SocialRequestError("LinkedIn didn’t confirm a post ID. Check the account before retrying.", uncertain: true)
                 }
-                steps.append(["id": id, "url": "https://www.linkedin.com/feed/update/" + id + "/", "at": WorkspaceRecord.timestamp])
+                var step = ["id": id, "url": "https://www.linkedin.com/feed/update/" + id + "/", "at": WorkspaceRecord.timestamp]
+                if let videoID { step["videoId"] = videoID }
+                steps.append(step)
                 receipt.fields["steps"] = steps
             case .instagram:
                 steps = [try await instagram(plan, account: account, receipt: &receipt)]

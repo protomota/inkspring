@@ -44,6 +44,7 @@ struct PostInlineEditor: View {
     @State private var message: String?
     @State private var writingAssistantOpen = false
     @State private var baseline: WorkspaceRecord?
+    @State private var attachingVideo = false
 
     private var current: WorkspaceRecord { workspace.records.first { $0.id == record.id } ?? record }
     private var dirty: Bool {
@@ -99,6 +100,9 @@ struct PostInlineEditor: View {
             }
             DraftTitleField(title: $title)
             articlePicker
+            if ["x", "linkedin"].contains(current["platform"]), !["posting", "posted", "uncertain"].contains(current.scheduleStatus) {
+                videoAttachment
+            }
             StudioProofreadAction(document: .init(title: title, body: markdown),
                                   check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
                 title = $0.title
@@ -113,12 +117,46 @@ struct PostInlineEditor: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
+        .disabled(attachingVideo)
         .onAppear { loadCurrent() }
         .onChange(of: current["updatedAt"]) {
             guard !dirty else { return }
             loadCurrent()
         }
         .onChange(of: dirty) { _, changed in onDirty(changed) }
+    }
+
+    private var videoAttachment: some View {
+        HStack(spacing: 10) {
+            Button(current.needsNativePostVideo ? "Replace video…" : "Attach video…", systemImage: "video") {
+                guard let file = workspace.chooseMedia([.mpeg4Movie]), saveChanges() else { return }
+                let expected = current
+                attachingVideo = true
+                message = nil
+                Task {
+                    defer { attachingVideo = false }
+                    do {
+                        let video = try await workspace.attachVideo(file)
+                        try workspace.withChanges {
+                            var post = current
+                            guard post["updatedAt"] == expected["updatedAt"] else {
+                                throw WorkspaceError("The post changed while attaching the video. Reopen the post and try again.")
+                            }
+                            post.setDraftMedia(video, as: .video)
+                            if post["format"] == "image" { post["format"] = "post" }
+                            _ = try PostVideo.forDraft(post, in: workspace.records)
+                            try workspace.save(post)
+                        }
+                        loadCurrent()
+                    } catch { message = error.localizedDescription }
+                }
+            }
+            if attachingVideo {
+                ProgressView().controlSize(.small)
+            } else if let video = current.fields["video"] as? [String: Any], let name = video["name"] as? String {
+                Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
     }
 
     @ViewBuilder private var articlePicker: some View {
@@ -1154,7 +1192,8 @@ struct DraftStudio: View {
         }
         if initial.fields["manualQuote"] as? Bool != true,
            let platform = SocialPlatform(rawValue: initial["platform"]), SocialPublishPlan.supported.contains(platform) {
-            Button(pendingLinkedInArticle == nil ? "Review & publish…" : "Publish together on LinkedIn…",
+            Button(pendingLinkedInArticle == nil ? "Review & publish…" :
+                   initial.needsNativePostVideo ? "Open linked article…" : "Publish together on LinkedIn…",
                    systemImage: "paperplane") { openPublishReview() }
                 .disabled(["posting", "posted"].contains(initial.scheduleStatus))
         }
@@ -1316,7 +1355,7 @@ struct DraftStudio: View {
             }
             if let video = initial.fields["video"] as? [String: Any], attached.count == 1 || selection == .video {
                 mediaRow(video["name"] as? String ?? "Video", kind: .video, url: workspace.videoURL(initial),
-                         previewOnly: initial["format"] != "video")
+                         previewOnly: initial["format"] != "video" && !initial.needsNativePostVideo)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1655,6 +1694,7 @@ struct DraftStudio: View {
     private func attachVideo() {
         var types: [UTType] = [.mpeg4Movie, .quickTimeMovie]
         if let webM = UTType(filenameExtension: "webm") { types.append(webM) }
+        if ["x", "linkedin"].contains(initial["platform"]) { types = [.mpeg4Movie] }
         guard let url = workspace.chooseMedia(types) else { return }
         runGeneration("Checking video…") {
             let video = try await workspace.attachVideo(url)

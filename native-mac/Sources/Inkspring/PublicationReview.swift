@@ -77,7 +77,7 @@ struct PublicationReview: View {
                                         .textSelection(.enabled)
                                     if plan.posts.count > 1 { Divider() }
                                 }
-                                if let article = plan.linkedInArticle {
+                                if let article = plan.linkedInArticle, plan.nativeVideo == nil {
                                     VStack(alignment: .leading, spacing: 5) {
                                         Label("LinkedIn article", systemImage: "link")
                                             .font(.caption).foregroundStyle(palette.muted)
@@ -90,7 +90,10 @@ struct PublicationReview: View {
                                     .studioSurface(StudioRadius.control, fill: palette.well)
                                     .accessibilityIdentifier("linkedinArticle.reviewCard")
                                 }
-                                AttachedMedia(url: plan.image)
+                                if let video = plan.nativeVideo {
+                                    Label(video.name, systemImage: "video")
+                                }
+                                AttachedMedia(url: plan.nativeVideo?.url ?? plan.image)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }

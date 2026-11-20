@@ -1084,7 +1084,8 @@ extension Workspace {
     @discardableResult
     func scheduleDraft(_ input: WorkspaceRecord, at time: Date, tiktok plan: SocialPublishPlan? = nil,
                        linkedin selected: LinkedInDestination? = nil,
-                       linkedInAccount override: ManagedSocialAccount? = nil) throws -> WorkspaceRecord {
+                       linkedInAccount override: ManagedSocialAccount? = nil,
+                       customTime: Bool = false) throws -> WorkspaceRecord {
         guard let database else { throw WorkspaceError("The workspace is unavailable.") }
         return try database.transaction {
             try reload()
@@ -1101,14 +1102,16 @@ extension Workspace {
             }) else {
                 throw WorkspaceError("Check this post in Publishing history before scheduling it again.")
             }
+            _ = try PostVideo.forDraft(draft, in: records)
             var personalURN: String?
             if draft["platform"] == "x" {
                 let posts = ["followup", "thread"].contains(draft["format"]) ? XThreadText.posts(in: draft.body) : [draft.body]
                 let links = try XPostArticleLinks(draft: draft, posts: posts, records: records)
-                guard links.articles.allSatisfy({ $0["state"] == "published" }) else {
+                let pending = Set(links.articles.filter { $0["state"] != "published" }.map(\.id))
+                guard customTime || pending.isEmpty else {
                     throw WorkspaceError("Use Publish together on X to send the draft article and its post.")
                 }
-                _ = try links.resolve(posts, pending: [])
+                _ = try links.resolve(posts, pending: pending)
             }
             if draft["platform"] == "linkedin" {
                 _ = try LinkedInArticleShare.resolve(post: draft, in: records)
@@ -1119,9 +1122,12 @@ extension Workspace {
                 draft.fields["linkedinDestination"] = destination.fields
                 personalURN = LinkedInDestination.personal(account).urn
             }
-            guard time > Date.now.addingTimeInterval(PostScheduling.leadTime),
-                  PostScheduling.isFree(time, for: draft, in: records, linkedInPersonalURN: personalURN) else {
-                throw WorkspaceError("Choose an available future time for this platform.")
+            guard time >= Date.now.addingTimeInterval(PostScheduling.leadTime) else {
+                throw WorkspaceError("Choose a posting time at least two minutes from now.")
+            }
+            guard PostScheduling.isFree(time, for: draft, in: records, linkedInPersonalURN: personalURN, customTime: customTime) else {
+                throw WorkspaceError(customTime ? "This destination already has a post at that minute. Choose another time."
+                                                 : "Choose another open posting time for this platform.")
             }
             var schedule = draft.schedule
             let slot = workspaceTimestamp(time)

@@ -39,7 +39,9 @@ struct LinkedInArticleControls: View {
             }
             if let post, current["articleURL"].isEmpty {
                 Label(post.title, systemImage: "text.bubble").font(.callout.weight(.semibold))
-                Text("Paste the title and article in LinkedIn’s editor. Click Next, paste the feed post into “Tell your network what your article is about,” then click Publish once.")
+                Text(post.needsNativePostVideo
+                     ? "Publish the article in LinkedIn, then save its URL here. Open the linked post to publish or schedule it with the video and article link."
+                     : "Paste the title and article in LinkedIn’s editor. Click Next, paste the feed post into “Tell your network what your article is about,” then click Publish once.")
                     .font(.callout).foregroundStyle(palette.muted)
             } else {
                 Text("A published article link can be attached to a LinkedIn feed post.")
@@ -107,7 +109,7 @@ struct LinkedInArticleControls: View {
         }
         .disabled(article.body.isEmpty && current.body.isEmpty)
         .accessibilityIdentifier("linkedinArticle.copyBody")
-        if let post {
+        if let post, !post.needsNativePostVideo {
             Button("Copy feed post", systemImage: "text.bubble") {
                 copy(post.body)
                 message = "Feed post copied"

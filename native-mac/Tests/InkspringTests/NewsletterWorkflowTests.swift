@@ -68,8 +68,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let workspace = Workspace(directory: root)
-    let now = Date(timeIntervalSince1970: 1_800_000_000)
-    let when = now.addingTimeInterval(7200)
+    var now = Date(timeIntervalSince1970: 1_800_000_010)
+    let when = PostScheduling.fiveMinutesFromNow(now)
     var requests: [String] = []
     var remote: [String: Any] = [:]
     let service = Substack(workspace: workspace, now: { now }) { method, url, payload in
@@ -90,8 +90,10 @@ import Testing
         case ("GET", "/api/v1/drafts/73"):
             return remote
         case ("GET", "/api/v1/drafts/73/prepublish"):
+            if let query = url.query() { #expect(query == "publish_date=" + workspaceTimestamp(when)) }
             return ["errors": [String]()]
         case ("POST", "/api/v1/drafts/73/scheduled_release"):
+            #expect(payload?["trigger_at"] as? String == workspaceTimestamp(when))
             #expect(payload?["email_audience"] as? String == "everyone")
             remote["trigger_at"] = payload?["trigger_at"]
             return [:]
@@ -125,6 +127,13 @@ import Testing
     await #expect(throws: WorkspaceError.self) { _ = try await service.commit(firstReview) }
     #expect(!requests.contains("POST /api/v1/drafts/73/scheduled_release"))
     remote["draft_title"] = item.title
+
+    let expiredReview = try await service.prepare(item.id, at: when)
+    let initialTime = now
+    now = when.addingTimeInterval(-59)
+    await #expect(throws: WorkspaceError.self) { _ = try await service.commit(expiredReview) }
+    #expect(!requests.contains("POST /api/v1/drafts/73/scheduled_release"))
+    now = initialTime
 
     let scheduleReview = try await service.prepare(item.id, at: when)
     item = try await service.commit(scheduleReview)
