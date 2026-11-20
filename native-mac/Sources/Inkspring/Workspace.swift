@@ -117,9 +117,13 @@ final class Workspace {
         guard !(settings["libraryDeletedIDs"] as? [String] ?? []).contains(record.id) else {
             throw WorkspaceError("This item was permanently deleted. Create a new draft or idea instead.")
         }
-        if record.kind == "draft" { record["title"] = record.draftTitle }
+        if record.kind == "draft" {
+            record["title"] = record.draftTitle
+            if record["platform"] != "linkedin" { record.fields["linkedinArticleID"] = nil }
+        }
         if ["script", "article"].contains(record.kind) {
-            record["platform"] = record.kind == "article" ? "x" : "youtube"
+            if record.kind == "script" { record["platform"] = "youtube" }
+            if record.isXArticle { record["platform"] = "x" }
             record["state"] = "draft"
             for key in ["schedule", "remoteId", "publication", "editUrl", "sendEmail", "audience"] { record.fields[key] = nil }
         }
@@ -176,8 +180,9 @@ final class Workspace {
             guard !["posting", "posted"].contains(current.scheduleStatus) else {
                 throw WorkspaceError("This post is already publishing or published. Create a new draft to revise it.")
             }
-            let oldContent = [current["title"], current["content"], current["format"], current["platform"]]
-            let newContent = [record["title"], record["content"], record["format"], record["platform"]]
+            let keys = ["title", "content", "format", "platform", "linkedinArticleID"]
+            let oldContent = keys.map { current[$0] }
+            let newContent = keys.map { record[$0] }
             let oldMedia = ["image", "video", "linkedinDestination"].map { current.fields[$0] as? NSDictionary }
             let newMedia = ["image", "video", "linkedinDestination"].map { record.fields[$0] as? NSDictionary }
             if !scheduling, ["queued", "due"].contains(current.scheduleStatus),
@@ -391,7 +396,8 @@ final class Workspace {
         }
     }
 
-    func updatePostText(_ input: WorkspaceRecord, title: String, text: String, format: String? = nil) throws {
+    func updatePostText(_ input: WorkspaceRecord, title: String, text: String, format: String? = nil,
+                        linkedInArticleID: String? = nil) throws {
         try withChanges {
             guard var record = records.first(where: { $0.kind == input.kind && $0.id == input.id }),
                   record["updatedAt"] == input["updatedAt"] else {
@@ -413,6 +419,9 @@ final class Workspace {
                 record["content"] = text
                 if let format, record["platform"] == "x", XPostStyle(rawValue: format) != nil {
                     record["format"] = format
+                }
+                if let linkedInArticleID, record["platform"] == "linkedin" {
+                    record["linkedinArticleID"] = linkedInArticleID
                 }
             default:
                 throw WorkspaceError("Choose an idea or post to edit.")
@@ -444,6 +453,15 @@ final class Workspace {
             guard record["title"].utf16.count <= 200, record["content"].utf16.count <= 40_000 else {
                 throw WorkspaceError("Use up to 200 characters for the title and 40,000 for the draft.")
             }
+            if !record["linkedinArticleID"].isEmpty,
+               records.first(where: { $0.id == record.id })?["linkedinArticleID"] != record["linkedinArticleID"] {
+                guard record["platform"] == "linkedin", record["format"] == "post",
+                      records.contains(where: {
+                          $0.isLinkedInArticle && $0.projectID == record.projectID && $0.id == record["linkedinArticleID"]
+                      }) else {
+                    throw WorkspaceError("Choose a LinkedIn article from this project.")
+                }
+            }
             if record["format"] == "reply" {
                 let reply = record.fields["replyTo"] as? [String: String]
                 guard record["platform"] == "x", !(reply?["text"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -457,6 +475,10 @@ final class Workspace {
             }
         }
         if record.isLongForm {
+            if record.isLinkedInArticle, !record["articleURL"].isEmpty,
+               LinkedInArticleShare.publishedURL(record["articleURL"]) == nil {
+                throw WorkspaceError("Paste the published article’s linkedin.com/pulse/ link.")
+            }
             guard record["title"].utf16.count <= 300 else {
                 throw WorkspaceError("Shorten the title to 300 characters or less.")
             }
@@ -770,6 +792,9 @@ extension Workspace {
                   draft["updatedAt"] == plan.revision, !["posting", "posted"].contains(draft.scheduleStatus) else {
                 throw WorkspaceError("This draft changed or already went out. Review it again.")
             }
+            if plan.platform == .linkedin, try LinkedInArticleShare.resolve(post: draft, in: records) != plan.linkedInArticle {
+                throw WorkspaceError("The LinkedIn article changed. Review the post again.")
+            }
             if fromAgent, settings["mcpEnabled"] as? Bool != true || settings["mcpAllowPosting"] as? Bool != true {
                 throw WorkspaceError("Immediate agent posting is off in Inkspring Settings.")
             }
@@ -1065,6 +1090,7 @@ extension Workspace {
             }
             var personalURN: String?
             if draft["platform"] == "linkedin" {
+                _ = try LinkedInArticleShare.resolve(post: draft, in: records)
                 guard let account = try override ?? socialAccounts.savedAccount(.linkedin) else {
                     throw WorkspaceError("Connect LinkedIn and choose a destination before scheduling.")
                 }

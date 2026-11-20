@@ -7,16 +7,16 @@ final class WalkthroughTests: XCTestCase {
         app.launchArguments = ["--library-fixture", "--newsletter-fixture", "-inkspring.mobile.theme", "warm-paper"]
         app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
         app.launch()
-        let open = app.buttons["plan.open"].firstMatch
-        if !open.waitForExistence(timeout: 2) {
-            let draft = app.staticTexts["A quieter way to draft"].firstMatch
-            if !draft.exists, app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-            XCTAssertTrue(draft.waitForExistence(timeout: 10)); draft.tap()
-        }
-        for _ in 0..<4 where !open.isHittable { app.swipeUp() }
-        XCTAssertTrue(open.waitForExistence(timeout: 5))
-        if open.isHittable { open.tap() }
-        else { open.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
+        let row = app.staticTexts["A better first paragraph"].firstMatch
+        if !row.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        XCTAssertFalse(app.buttons["outline.view"].exists)
+        XCTAssertFalse(app.buttons["Create plan"].exists)
+        app.buttons["newsletter.more"].firstMatch.tap()
+        let add = app.buttons["outline.menu"].firstMatch
+        XCTAssertEqual(add.label, "Add outline")
+        add.tap()
         let markdown = app.buttons["Markdown"].firstMatch
         XCTAssertTrue(markdown.waitForExistence(timeout: 5)); markdown.tap()
         let editor = app.textViews["plan.markdown"].firstMatch
@@ -26,7 +26,10 @@ final class WalkthroughTests: XCTestCase {
         let save = app.buttons["plan.save"].firstMatch
         for _ in 0..<5 where !save.isHittable { app.swipeUp() }
         XCTAssertTrue(save.isHittable); save.tap()
-        XCTAssertTrue(app.staticTexts["Plan saved on this device. Waiting for your Mac to apply it."].waitForExistence(timeout: 5))
+        let view = app.buttons["outline.view"].firstMatch
+        XCTAssertTrue(view.waitForExistence(timeout: 8))
+        view.tap()
+        XCTAssertTrue(app.staticTexts["Launch plan"].firstMatch.waitForExistence(timeout: 5))
         capture("Plan saved locally and queued for Mac", app)
     }
     func testAskInkspringScreen() {
@@ -85,12 +88,40 @@ final class WalkthroughTests: XCTestCase {
             let menu = app.buttons["writing.new"].firstMatch
             if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
             XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
-            for name in ["New Substack newsletter", "New X article", "New YouTube script", "New X post or thread"] {
+            for name in ["New Substack newsletter", "New X article", "New LinkedIn article", "New YouTube script", "New X post or thread"] {
                 XCTAssertTrue(app.buttons[name].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
             }
             capture("Grouped long-form menu \(theme)", app)
             app.terminate()
         }
+    }
+
+    func testLinkedInArticleKeepsLongFormCopyAndShowsPublishingHandoff() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--script-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let menu = app.buttons["writing.new"].firstMatch
+        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
+        let create = app.buttons["New LinkedIn article"].firstMatch
+        XCTAssertTrue(create.waitForExistence(timeout: 5)); create.tap()
+        let more = app.buttons["newsletter.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
+        app.buttons["Edit Markdown"].firstMatch.tap()
+        let editor = app.textViews["newsletter.markdown"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); editor.tap()
+        editor.typeText("# A new way to work\n\nWe help people find work and find new meaning in it.\n\nHere is where we begin.")
+        capture("LinkedIn article Markdown editor", app)
+        app.buttons["Done"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["A new way to work"].firstMatch.waitForExistence(timeout: 8))
+        let copy = app.buttons["Copy article Markdown"].firstMatch
+        for _ in 0..<3 where !copy.isHittable { app.swipeUp() }
+        XCTAssertTrue(copy.isEnabled)
+        XCTAssertTrue(app.staticTexts["Publish in LinkedIn’s desktop editor, then add the public link in Inkspring on your Mac."].firstMatch.exists)
+        XCTAssertFalse(app.buttons["article.reviewPublish"].exists)
+        capture("LinkedIn article preview and publishing handoff", app)
     }
 
     func testNewsletterCreationAndAskAIApplyBriefWithoutLeavingEditor() {

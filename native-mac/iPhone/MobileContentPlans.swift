@@ -82,38 +82,49 @@ struct MobilePlanSection: View {
     let item: CompanionLibrary.Item
     let library: MobileLibrary
     let workspaceID: UUID
+    let close: () -> Void
     @State private var conflictMessage: String?
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ContentPlanSection(markdown: library.planText(item), reference: item.referenceID ?? item.id, context: item.title,
-                               recoveryID: library.planRecoveryID(item.id, workspaceID: workspaceID),
-                               editable: item.isTrashed != true && library.snapshot?.supportsContentPlans == true) { text, base in
-                try library.savePlan(text, base: base, item: item, workspaceID: workspaceID)
-            }
-            if let previous = item.previousPlanMarkdown, library.snapshot?.supportsContentPlans == true, item.isTrashed != true {
-                Button("Restore previous plan", systemImage: "arrow.uturn.backward") {
-                    do { try library.savePlan(previous, base: library.planText(item), item: item, workspaceID: workspaceID) }
-                    catch { library.error = error.localizedDescription }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if item.isTrashed != true && library.snapshot?.supportsContentPlans == true {
+                    ContentPlanEditor(markdown: library.planText(item), reference: item.referenceID ?? item.id, context: item.title,
+                                   recoveryID: library.planRecoveryID(item.id, workspaceID: workspaceID),
+                                   save: { text, base in
+                                       try library.savePlan(text, base: base, item: item, workspaceID: workspaceID)
+                                   }, close: close)
+                } else {
+                    Button("Back", systemImage: "chevron.left", action: close)
+                    PlanMarkdownPreview(markdown: library.planText(item))
                 }
-            }
-            if library.snapshot?.supportsContentPlans != true { Text("Plan editing will be available after your Mac shares support for Plans.").font(.caption) }
-            if let entry = library.pendingChanges(for: item.id).last(where: { $0.contentOperation == .savePlan }) {
-                Text(entry.error ?? "Plan saved on this device. Waiting for your Mac to apply it.").font(.caption)
-                if entry.error != nil {
-                    DisclosureGroup("Compare the Plan on your Mac") {
-                        PlanMarkdownPreview(markdown: item.planMarkdown ?? "")
-                        Button("Replace Mac Plan with my saved version") {
-                            do {
-                                var change = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: item.revision, text: entry.text)
-                                change.contentOperation = .savePlan; change.basePlan = item.planMarkdown ?? ""
-                                try library.saveChange(change, workspaceID: workspaceID)
-                                conflictMessage = nil
-                            } catch { conflictMessage = error.localizedDescription }
-                        }
+                if let previous = item.previousPlanMarkdown, library.snapshot?.supportsContentPlans == true, item.isTrashed != true {
+                    Button("Restore previous plan", systemImage: "arrow.uturn.backward") {
+                        do { try library.savePlan(previous, base: library.planText(item), item: item, workspaceID: workspaceID) }
+                        catch { library.error = error.localizedDescription }
                     }
                 }
-                if let conflictMessage { Text(conflictMessage).font(.caption) }
+                if library.snapshot?.supportsContentPlans != true { Text("Plan editing will be available after your Mac shares support for Plans.").font(.caption) }
+                if let entry = library.pendingChanges(for: item.id).last(where: { $0.contentOperation == .savePlan }) {
+                    Text(entry.error ?? "Plan saved on this device. Waiting for your Mac to apply it.").font(.caption)
+                    if entry.error != nil {
+                        DisclosureGroup("Compare the Plan on your Mac") {
+                            PlanMarkdownPreview(markdown: item.planMarkdown ?? "")
+                            Button("Replace Mac Plan with my saved version") {
+                                do {
+                                    var change = CompanionLibrary.Change(action: .editDraft, itemID: item.id, revision: item.revision, text: entry.text)
+                                    change.contentOperation = .savePlan; change.basePlan = item.planMarkdown ?? ""
+                                    try library.saveChange(change, workspaceID: workspaceID)
+                                    conflictMessage = nil
+                                } catch { conflictMessage = error.localizedDescription }
+                            }
+                        }
+                    }
+                    if let conflictMessage { Text(conflictMessage).font(.caption) }
+                }
             }
+            .padding()
         }
+        .navigationTitle("Outline")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

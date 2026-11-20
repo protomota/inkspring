@@ -161,8 +161,8 @@ enum NewsletterDocument {
         return String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .withoutEscapingSlashes]), as: UTF8.self)
     }
 
-    static func html(_ document: [String: Any], title: String, subtitle: String) -> String {
-        let introduction = "<h1>" + escape(title) + "</h1>" + (subtitle.isEmpty ? "" : "<p><em>" + escape(subtitle) + "</em></p>")
+    static func html(_ document: [String: Any], title: String, subtitle: String, includeHeading: Bool = true) -> String {
+        let introduction = includeHeading ? "<h1>" + escape(title) + "</h1>" + (subtitle.isEmpty ? "" : "<p><em>" + escape(subtitle) + "</em></p>") : ""
         return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" + escape(title)
             + "</title></head><body>" + introduction + render(document) + "</body></html>"
     }

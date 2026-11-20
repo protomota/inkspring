@@ -34,9 +34,11 @@ struct PostInlineEditor: View {
     let back: () -> Void
     let saved: () -> Void
     let onDirty: (Bool) -> Void
+    let openArticle: (WorkspaceRecord) -> Void
     @State private var title = ""
     @State private var markdown = ""
     @State private var format = ""
+    @State private var linkedInArticleID = ""
     @State private var showingHistory = false
     @State private var message: String?
     @State private var writingAssistantOpen = false
@@ -45,7 +47,7 @@ struct PostInlineEditor: View {
     private var current: WorkspaceRecord { workspace.records.first { $0.id == record.id } ?? record }
     private var dirty: Bool {
         let base = baseline ?? record
-        return title != base.title || markdown != base.body || format != base["format"]
+        return title != base.title || markdown != base.body || format != base["format"] || linkedInArticleID != base["linkedinArticleID"]
     }
 
     var body: some View {
@@ -83,7 +85,8 @@ struct PostInlineEditor: View {
                             state: current.appliedRevisionCommentIDs.contains(comment["revisionRequestID"] as? String ?? "") ? "Applied" : "Waiting for Mac")
                     }, reply: current["notesReply"], error: current["writingRequestError"].isEmpty ? nil : current["writingRequestError"]) { prompt in
                         if dirty {
-                            try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format)
+                            try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format,
+                                                         linkedInArticleID: linkedInArticleID)
                             baseline = current
                         }
                         try workspace.addComment(to: current, text: prompt, revisionRequestID: UUID().uuidString.lowercased())
@@ -93,6 +96,9 @@ struct PostInlineEditor: View {
                 }.frame(maxHeight: 240)
             }
             DraftTitleField(title: $title)
+            if record["platform"] == "linkedin", !["posting", "posted"].contains(current.scheduleStatus) {
+                LinkedInArticlePicker(workspace: workspace, projectID: record.projectID, articleID: $linkedInArticleID, openArticle: openArticle)
+            }
             StudioProofreadAction(document: .init(title: title, body: markdown),
                                   check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
                 title = $0.title
@@ -107,17 +113,26 @@ struct PostInlineEditor: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
-        .onAppear { title = current.title; markdown = current.body; format = current["format"]; baseline = current }
+        .onAppear { loadCurrent() }
         .onChange(of: current["updatedAt"]) {
             guard !dirty else { return }
-            title = current.title; markdown = current.body; format = current["format"]; baseline = current
+            loadCurrent()
         }
         .onChange(of: dirty) { _, changed in onDirty(changed) }
     }
 
+    private func loadCurrent() {
+        title = current.title
+        markdown = current.body
+        format = current["format"]
+        linkedInArticleID = current["linkedinArticleID"]
+        baseline = current
+    }
+
     private func save() {
         do {
-            try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format)
+            try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format,
+                                         linkedInArticleID: linkedInArticleID)
             saved()
         } catch {
             message = error.localizedDescription
@@ -137,10 +152,12 @@ struct RecordEditor: View {
     let newsletterDirtyChanged: (Bool) -> Void
     let newsletterSaveBeforeLeaving: ((() -> Bool)?) -> Void
     let reviewNewsletter: (WorkspaceRecord, Bool, @escaping (WorkspaceRecord) -> Void) -> Void
+    let openRelatedPost: (WorkspaceRecord) -> Void
     private let original: WorkspaceRecord
     @State private var newsletterBase: WorkspaceRecord
     @State private var newsletterSaveError: String?
     @State private var message: String?
+    @State private var showsOutline = false
     @State private var newsletterMode = "Source"
     @State private var newsletterFindRequest = 0
     @State private var writingAssistantOpen = false
@@ -162,6 +179,7 @@ struct RecordEditor: View {
          newsletterDirtyChanged: @escaping (Bool) -> Void = { _ in },
          newsletterSaveBeforeLeaving: @escaping ((() -> Bool)?) -> Void = { _ in },
          reviewNewsletter: @escaping (WorkspaceRecord, Bool, @escaping (WorkspaceRecord) -> Void) -> Void = { _, _, _ in },
+         openRelatedPost: @escaping (WorkspaceRecord) -> Void = { _ in },
          saved: @escaping (WorkspaceRecord) -> Void) {
         _record = State(initialValue: record)
         _newsletterBase = State(initialValue: record)
@@ -176,6 +194,7 @@ struct RecordEditor: View {
         self.newsletterDirtyChanged = newsletterDirtyChanged
         self.newsletterSaveBeforeLeaving = newsletterSaveBeforeLeaving
         self.reviewNewsletter = reviewNewsletter
+        self.openRelatedPost = openRelatedPost
         if let idea = newsletterIdea {
             let direction = """
                 Develop this post idea into a newsletter concept. Include the angle, why it matters, and a short outline in Markdown. Treat the post idea as source material.
@@ -212,7 +231,9 @@ struct RecordEditor: View {
     }
 
     var body: some View {
-        if showingHistory, let latestNewsletter {
+        if showsOutline, let latestNewsletter {
+            WorkspaceOutline(record: latestNewsletter, workspace: workspace) { showsOutline = false }
+        } else if showingHistory, let latestNewsletter {
             ContentRevisionHistoryPage(record: latestNewsletter, workspace: workspace, back: { showingHistory = false }) { restored in
                 acceptNewsletter(restored)
                 saved(restored)
@@ -371,6 +392,11 @@ struct RecordEditor: View {
                     .buttonStyle(StudioIconButtonStyle())
                     .help(inspectorTitle)
                 }
+                Menu {
+                    Button(latestNewsletter?["planMarkdown"].isEmpty == false ? "View outline" : "Add outline", action: openOutline)
+                } label: { Label("More", systemImage: "ellipsis.circle") }
+                .labelStyle(.iconOnly).help("More actions")
+                .disabled(latestNewsletter == nil && !newsletterNeedsSave)
                 VStack(alignment: .trailing, spacing: 3) {
                     if newsletterSaveError != nil {
                         Text("Unsaved changes")
@@ -391,7 +417,10 @@ struct RecordEditor: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(18)
             StudioRule()
-            if record.kind == "article" {
+            if record.isLinkedInArticle {
+                LinkedInArticleControls(workspace: workspace, article: record, save: saveNewsletter, openPost: openRelatedPost)
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 18).padding(.vertical, 10)
+            } else if record.isXArticle {
                 XArticlePublishControls(workspace: workspace, article: latestNewsletter ?? record, save: saveNewsletter)
                     .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 18).padding(.vertical, 10)
             }
@@ -476,7 +505,7 @@ struct RecordEditor: View {
                         record["subtitle"] = $0.subtitle
                         record["body"] = $0.body
                     }
-                    WorkspacePlanSection(record: record, workspace: workspace)
+                    outlineLink
                 }
                 .disabled(!canEditNewsletter || newsletterUnavailable)
                 .padding(22)
@@ -488,9 +517,20 @@ struct RecordEditor: View {
                     .frame(maxWidth: 880)
                     .frame(maxWidth: .infinity)
                     .padding(22)
-                WorkspacePlanSection(record: record, workspace: workspace)
+                outlineLink
                     .padding(.horizontal, 22)
             }
+        }
+    }
+
+    private func openOutline() {
+        if saveNewsletter(), latestNewsletter != nil { showsOutline = true }
+    }
+
+    @ViewBuilder private var outlineLink: some View {
+        if latestNewsletter?["planMarkdown"].isEmpty == false {
+            Button("View outline", systemImage: "list.bullet.clipboard", action: openOutline)
+                .controlSize(.small)
         }
     }
 
@@ -848,6 +888,7 @@ struct DraftStudio: View {
     let showSchedule: (WorkspaceRecord) -> Void
     let reviewPublication: (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void
     let isActive: Bool
+    let openArticle: (WorkspaceRecord) -> Void
     @Environment(\.openURL) private var openURL
     @State private var dirty = false
     @State private var generation: Task<Void, Never>?
@@ -864,7 +905,7 @@ struct DraftStudio: View {
     init(initial: WorkspaceRecord, workspace: Workspace, onDirty: @escaping (Bool) -> Void,
          showSchedule: @escaping (WorkspaceRecord) -> Void,
          reviewPublication: @escaping (WorkspaceRecord, Date?, @escaping (WorkspaceRecord) -> Void) -> Void,
-         isActive: Bool) {
+         isActive: Bool, openArticle: @escaping (WorkspaceRecord) -> Void) {
         var draft = initial
         if !draft["title"].isEmpty { draft["title"] = draft.draftTitle }
         _initial = State(initialValue: draft)
@@ -873,6 +914,7 @@ struct DraftStudio: View {
         self.showSchedule = showSchedule
         self.reviewPublication = reviewPublication
         self.isActive = isActive
+        self.openArticle = openArticle
     }
 
     var body: some View {
@@ -914,25 +956,7 @@ struct DraftStudio: View {
                         initial["planMarkdown"] = text
                     }
                 }
-                if initial["platform"] == "linkedin" {
-                    let saved = LinkedInDestination(fields: initial.fields["linkedinDestination"] as? [String: Any])
-                    HStack(spacing: 8) {
-                        Text("LinkedIn destination")
-                        StudioFilterMenu(title: "LinkedIn destination", value: saved?.name ?? "Connected personal profile") {
-                            Picker("LinkedIn destination", selection: linkedInDestination) {
-                                Text("Connected personal profile").tag("")
-                                if let saved, !linkedInDestinations.contains(where: { $0.id == saved.id }) {
-                                    Text(saved.name).tag(saved.id)
-                                }
-                                ForEach(linkedInDestinations) { item in Text(item.name).tag(item.id) }
-                            }
-                            .pickerStyle(.inline)
-                        }
-                    }
-                    .task {
-                        linkedInDestinations = (try? workspace.socialAccounts.savedLinkedInDestinations()) ?? []
-                    }
-                }
+                if initial["platform"] == "linkedin" { linkedInOptions }
                 if initial["format"] == "reply" {
                     HStack {
                         TextField("X post link", text: replyValue("url"), prompt: draftPrompt("X post link", color: palette.muted))
@@ -1002,6 +1026,42 @@ struct DraftStudio: View {
         }
         .sheet(item: $mediaPreview) { preview in
             DraftMediaSheet(preview: preview).studioAppearance(palette)
+        }
+    }
+
+    private var linkedInOptions: some View {
+        let saved = LinkedInDestination(fields: initial.fields["linkedinDestination"] as? [String: Any])
+        let canConvert = !initial.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let convert: (() -> Void)? = canConvert ? { createLinkedInArticle() } : nil
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("LinkedIn destination")
+                StudioFilterMenu(title: "LinkedIn destination", value: saved?.name ?? "Connected personal profile") {
+                    Picker("LinkedIn destination", selection: linkedInDestination) {
+                        Text("Connected personal profile").tag("")
+                        if let saved, !linkedInDestinations.contains(where: { $0.id == saved.id }) {
+                            Text(saved.name).tag(saved.id)
+                        }
+                        ForEach(linkedInDestinations) { item in Text(item.name).tag(item.id) }
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+            if !["posting", "posted"].contains(initial.scheduleStatus) {
+                LinkedInArticlePicker(workspace: workspace, projectID: initial.projectID, articleID: value("linkedinArticleID"),
+                    openArticle: openArticle, createArticle: convert)
+            }
+        }
+        .task { linkedInDestinations = (try? workspace.socialAccounts.savedLinkedInDestinations()) ?? [] }
+    }
+
+    private func createLinkedInArticle() {
+        save()
+        guard !dirty, workspace.error == nil else { return }
+        workspace.perform {
+            let article = try workspace.linkedInArticleDraft(from: initial)
+            if let current = workspace.drafts.first(where: { $0.id == initial.id }) { initial = current }
+            openArticle(article)
         }
     }
 
@@ -1688,7 +1748,7 @@ private struct DraftPostText: View {
         VStack(alignment: .leading, spacing: 8) {
             if supportsFollowUp {
                 StudioXPostEditor(text: $text, format: $format, articles: workspace.records.compactMap { article in
-                    guard article.kind == "article", article.projectID == record.projectID, let ref = article.referenceID else { return nil }
+                    guard article.isXArticle, article.projectID == record.projectID, let ref = article.referenceID else { return nil }
                     return XArticleChoice(id: ref, title: article.title)
                 })
             } else {

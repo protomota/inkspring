@@ -81,6 +81,7 @@ extension Workspace {
         snapshot.supportsXParagraphs = true
         snapshot.supportsRevisionHistory = true
         snapshot.supportsXArticlePublishing = true
+        snapshot.supportsLinkedInArticles = true
         if let account = try? socialAccounts.savedAccount(.x) {
             snapshot.xArticleAccountKey = account.connectionKey
             snapshot.xArticleAccountName = account.username.isEmpty ? account.name : "@" + account.username
@@ -131,6 +132,7 @@ extension Workspace {
                     referenceID: record.referenceID
                 )
                 item.planMarkdown = record.fields["planMarkdown"] as? String
+                item.linkedInArticleID = record["linkedinArticleID"].isEmpty ? nil : record["linkedinArticleID"]
                 item.previousPlanMarkdown = record.fields["previousPlanMarkdown"] as? String
                 item.isTrashed = inTrash
                 item.history = try? revisionHistory(for: record)
@@ -174,7 +176,7 @@ extension Workspace {
             var item = CompanionLibrary.Item(id: record.id, revision: record["updatedAt"],
                 kind: CompanionLibrary.Item.Kind(rawValue: record.kind) ?? .newsletter,
                 projectID: record.projectID, title: record.title, body: record.body,
-                shortened: false, platform: record.kind == "script" ? "youtube" : record.kind == "article" ? "x" : "substack",
+                shortened: false, platform: ScheduleListing.channel(of: record),
                 status: record["state"], notes: record.comments.suffix(4).compactMap { $0["text"] as? String },
                 noteDates: record.comments.suffix(4).map { $0["at"] as? String ?? "" }, referenceID: record.referenceID)
             item.noteStates = record.comments.suffix(4).map { comment in
@@ -215,6 +217,7 @@ extension Workspace {
               library.supportsXParagraphs != snapshot.supportsXParagraphs ||
               library.supportsRevisionHistory != snapshot.supportsRevisionHistory ||
               library.supportsXArticlePublishing != snapshot.supportsXArticlePublishing ||
+              library.supportsLinkedInArticles != snapshot.supportsLinkedInArticles ||
               library.xArticleAccountKey != snapshot.xArticleAccountKey || library.xArticleAccountName != snapshot.xArticleAccountName ||
               library.supportsWritingTools != snapshot.supportsWritingTools || library.writingAgent != snapshot.writingAgent ||
               library.postingWindows != snapshot.postingWindows || library.postingTimeZone != snapshot.postingTimeZone ||
@@ -231,6 +234,7 @@ extension Workspace {
         library.supportsXParagraphs = snapshot.supportsXParagraphs
         library.supportsRevisionHistory = snapshot.supportsRevisionHistory
         library.supportsXArticlePublishing = snapshot.supportsXArticlePublishing
+        library.supportsLinkedInArticles = snapshot.supportsLinkedInArticles
         library.xArticleAccountKey = snapshot.xArticleAccountKey
         library.xArticleAccountName = snapshot.xArticleAccountName
         library.supportsWritingTools = snapshot.supportsWritingTools
@@ -349,8 +353,11 @@ extension Workspace {
         }
         if change.createsScript == true {
             guard projects.contains(where: { $0.id == change.itemID }) else { return "This project no longer exists on your Mac." }
-            if records.contains(where: { $0.id == id && $0.kind == (change.writingKind ?? "script") }) { return nil }
-            var script = WorkspaceRecord.new(change.writingKind ?? "script", projectID: change.itemID)
+            let isLinkedIn = change.writingKind == "linkedin-article"
+            let recordKind = isLinkedIn ? "article" : change.writingKind ?? "script"
+            if records.contains(where: { $0.id == id && $0.kind == recordKind }) { return nil }
+            var script = WorkspaceRecord.new(recordKind, projectID: change.itemID)
+            if isLinkedIn { script["platform"] = "linkedin" }
             script["id"] = id
             script["title"] = change.title
             script["body"] = change.text

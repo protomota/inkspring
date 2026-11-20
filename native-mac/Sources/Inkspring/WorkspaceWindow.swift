@@ -381,7 +381,7 @@ struct WorkspaceWindow: View {
             Text(workspaceTitle).fontWeight(.medium).foregroundStyle(palette.text)
             Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
             Text(page.rawValue)
-            if let newsletterDraft, let type = WorkspaceDraftType(rawValue: newsletterDraft.kind) {
+            if let newsletterDraft, let type = WorkspaceDraftType(record: newsletterDraft) {
                 Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
                 Text(type.name)
             }
@@ -446,7 +446,8 @@ struct WorkspaceWindow: View {
                                  closeNewsletter: backFromNewsletter,
                                  newsletterDirtyChanged: { studioDirty = $0 },
                                  newsletterSaveBeforeLeaving: { saveNewsletterBeforeLeaving = $0 },
-                                 reviewNewsletter: reviewNewsletter, saved: { _ in })
+                                 reviewNewsletter: reviewNewsletter, openRelatedPost: { post in navigate { open(post) } },
+                                 saved: { _ in })
                         .id(newsletterDraft.id)
                 }
             }
@@ -472,7 +473,8 @@ struct WorkspaceWindow: View {
                             showSchedule: { draft in
                                 studioDirty = false
                                 showSchedule(draft)
-                            }, reviewPublication: reviewPublication, isActive: editor == nil)
+                            }, reviewPublication: reviewPublication, isActive: editor == nil,
+                            openArticle: { article in navigate { open(article) } })
                     .id(studioDraft.id)
             }
         case .settings:
@@ -572,7 +574,10 @@ struct WorkspaceWindow: View {
     }
 
     private func createDraft(_ type: WorkspaceDraftType) {
-        navigate { add(type.rawValue) }
+        navigate {
+            guard let project = workspace.project else { add("project"); return }
+            open(type.makeRecord(projectID: project.id))
+        }
     }
 
     private func newDraft(reply: Bool = false) {
@@ -694,7 +699,7 @@ struct RecordCard: View {
         let platform = record.kind == "newsletter" ? "substack" : record["platform"]
         VStack(alignment: .leading, spacing: 9) {
             if !platform.isEmpty {
-                StudioPlatformLabel(name: platform, title: record.kind == "article" ? "X article" : platformName(platform))
+                StudioPlatformLabel(name: platform, title: record.kind == "article" ? WorkspaceDraftType(record: record)?.name ?? "X article" : platformName(platform))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -745,13 +750,24 @@ func platformName(_ value: String) -> String {
 }
 
 enum WorkspaceDraftType: String, CaseIterable {
-    case post = "draft", newsletter, article, script
+    case post = "draft", newsletter, article, linkedInArticle = "linkedin-article", script
+
+    init?(record: WorkspaceRecord) {
+        self.init(rawValue: record.isLinkedInArticle ? "linkedin-article" : record.kind)
+    }
+
+    func makeRecord(projectID: String) -> WorkspaceRecord {
+        var record = WorkspaceRecord.new(self == .linkedInArticle ? "article" : rawValue, projectID: projectID)
+        if self == .linkedInArticle { record["platform"] = "linkedin" }
+        return record
+    }
 
     var name: String {
         switch self {
         case .post: "Social post"
         case .newsletter: "Newsletter"
         case .article: "X article"
+        case .linkedInArticle: "LinkedIn article"
         case .script: "YouTube script"
         }
     }
@@ -760,7 +776,7 @@ enum WorkspaceDraftType: String, CaseIterable {
         switch self {
         case .post: "text.bubble"
         case .newsletter: "envelope"
-        case .article: "doc.richtext"
+        case .article, .linkedInArticle: "doc.richtext"
         case .script: "play.rectangle"
         }
     }
@@ -802,7 +818,7 @@ enum PostBrowserFilter: String, CaseIterable {
     case sharing = "Ready to share"
 
     func matches(_ record: WorkspaceRecord, platform: String?, search: String, library: Bool) -> Bool {
-        guard self == .ideas ? record.kind == "idea" : WorkspaceDraftType(rawValue: record.kind) != nil else { return false }
+        guard self == .ideas ? record.kind == "idea" : WorkspaceDraftType(record: record) != nil else { return false }
         if let platform {
             let suggestions = record.fields["suggestedPlatforms"] as? [String] ?? []
             let platforms = self == .ideas ? (suggestions.isEmpty ? ["x"] : suggestions) : [ScheduleListing.channel(of: record)]
@@ -816,7 +832,7 @@ enum PostBrowserFilter: String, CaseIterable {
         case .sharing: record["status"] == "ready"
         }
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return matchingStatus && (query.isEmpty || [record.referenceID ?? "", record.title, record.body, record["subtitle"], WorkspaceDraftType(rawValue: record.kind)?.name ?? "", platformName(ScheduleListing.channel(of: record))]
+        return matchingStatus && (query.isEmpty || [record.referenceID ?? "", record.title, record.body, record["subtitle"], WorkspaceDraftType(record: record)?.name ?? "", platformName(ScheduleListing.channel(of: record))]
             .contains { $0.localizedCaseInsensitiveContains(query) })
     }
 }
@@ -874,13 +890,13 @@ struct PostBrowser: View {
 
     private var statuses: [PostBrowserFilter] {
         if library { return type == nil || type == .post ? [.all, .working, .sharing] : [.all, .working] }
-        if type == .script || type == .article { return [.all, .working] }
+        if type == .script || type == .article || type == .linkedInArticle { return [.all, .working] }
         return [.all, .working, .scheduling]
     }
 
     private func records(for filter: PostBrowserFilter, query: String = "") -> [WorkspaceRecord] {
         (filter == .ideas ? workspace.ideas : workspace.workspaceDrafts).filter {
-            (type == nil || $0.kind == type?.rawValue) && filter.matches($0, platform: platform, search: query, library: library)
+            (type == nil || WorkspaceDraftType(record: $0) == type) && filter.matches($0, platform: platform, search: query, library: library)
         }
     }
 
@@ -932,7 +948,7 @@ struct PostBrowser: View {
                     }
                 }), tabs: [nil] + WorkspaceDraftType.allCases.map(Optional.some),
                            label: { $0.map { $0.name + "s" } ?? "All drafts" },
-                           count: { format in workspace.workspaceDrafts.filter { format == nil || $0.kind == format?.rawValue }.count })
+                           count: { format in workspace.workspaceDrafts.filter { format == nil || WorkspaceDraftType(record: $0) == format }.count })
             }
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -946,10 +962,11 @@ struct PostBrowser: View {
                     Group {
                         if let postBeingEdited {
                             PostInlineEditor(record: postBeingEdited, workspace: workspace, back: back,
-                                             saved: finishedEditing, onDirty: editDirtyChanged)
+                                             saved: finishedEditing, onDirty: editDirtyChanged,
+                                             openArticle: { article in selectPost { openInStudio(article) } })
                                 .id(postBeingEdited.id)
                         } else if let selected {
-                            if selected.isLongForm, let format = WorkspaceDraftType(rawValue: selected.kind) {
+                            if selected.isLongForm, let format = WorkspaceDraftType(record: selected) {
                                 longFormPreview(selected, type: format)
                                     .id(selected.id)
                             } else {
@@ -978,7 +995,7 @@ struct PostBrowser: View {
         .onChange(of: returnedDocumentID) { _, id in
             guard let id, let record = workspace.workspaceDrafts.first(where: { $0.id == id }) else { return }
             if !rows.contains(where: { $0.id == id }) {
-                type = WorkspaceDraftType(rawValue: record.kind)
+                type = WorkspaceDraftType(record: record)
                 filter = .all
                 platform = nil
                 search = ""
@@ -1060,7 +1077,7 @@ struct PostBrowser: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(row.title).font(InkspringTypography.interface(13).weight(.medium)).lineLimit(2)
                                     Group {
-                                        if row.isLongForm, let type = WorkspaceDraftType(rawValue: row.kind) { Text(type.name + " · " + row["state"].capitalized) }
+                                        if row.isLongForm, let type = WorkspaceDraftType(record: row) { Text(type.name + " · " + row["state"].capitalized) }
                                         else if row["platform"].isEmpty { Text(postBrowserStatus(row)) }
                                         else { StudioPlatformLabel(name: row["platform"], title: postBrowserStatus(row)) }
                                     }
@@ -1143,7 +1160,7 @@ struct PostBrowser: View {
     }
 
     private func postBrowserIcon(_ record: WorkspaceRecord) -> String {
-        if record.isLongForm, let type = WorkspaceDraftType(rawValue: record.kind) { return type.symbol }
+        if record.isLongForm, let type = WorkspaceDraftType(record: record) { return type.symbol }
         if record.fields["video"] is [String: Any] { return "play.rectangle" }
         if record.fields["image"] is [String: Any] { return "photo" }
         return record.kind == "idea" ? "sparkles" : "doc.text"
@@ -1160,8 +1177,17 @@ struct PostPreview: View {
     let expanded: Bool
     let togglePreview: () -> Void
     @State private var comment = ""
+    @State private var outlineID: String?
 
     var body: some View {
+        if outlineID == record.id, let current = workspace.records.first(where: { $0.id == record.id }) {
+            WorkspaceOutline(record: current, workspace: workspace) { outlineID = nil }
+        } else {
+            preview
+        }
+    }
+
+    private var preview: some View {
         StudioScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .top, spacing: 12) {
@@ -1228,7 +1254,7 @@ struct PostPreview: View {
                                     let link = XReplyArticle(posts[index])
                                     if !link.copy.isEmpty { Text(link.copy).font(InkspringTypography.interface(17)).lineSpacing(5).textSelection(.enabled) }
                                     if let ref = link.reference {
-                                        if let article = workspace.records.first(where: { $0.projectID == record.projectID && $0.kind == "article" && $0.referenceID == ref }) {
+                                        if let article = workspace.records.first(where: { $0.projectID == record.projectID && $0.isXArticle && $0.referenceID == ref }) {
                                             Button("X article · " + article.title, systemImage: "doc.text") { edit(article) }
                                             if article["articleURL"].isEmpty { Text("Publish the article first to include its X link.").font(.caption).foregroundStyle(palette.muted) }
                                         } else { Text("Linked X article unavailable · " + ref).font(.caption) }
@@ -1238,13 +1264,28 @@ struct PostPreview: View {
                             }
                         } else {
                             Text(record.body).font(InkspringTypography.interface(17)).lineSpacing(5).textSelection(.enabled)
+                            if record["platform"] == "linkedin", !record["linkedinArticleID"].isEmpty {
+                                if let article = workspace.records.first(where: { $0.isLinkedInArticle && $0.projectID == record.projectID && $0.id == record["linkedinArticleID"] }) {
+                                    Button(article.title, systemImage: "doc.richtext") { edit(article) }
+                                    if let url = LinkedInArticleShare.publishedURL(article["articleURL"]) {
+                                        StudioExternalLink("Published LinkedIn article", destination: url)
+                                    } else {
+                                        Text("Add the published article link before sharing.").font(.caption).foregroundStyle(palette.muted)
+                                    }
+                                } else {
+                                    Text("LinkedIn article unavailable").font(.caption).foregroundStyle(palette.muted)
+                                }
+                            }
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .studioSurface()
-                WorkspacePlanSection(record: record, workspace: workspace)
+                if !record["planMarkdown"].isEmpty {
+                    Button("View outline", systemImage: "list.bullet.clipboard") { outlineID = record.id }
+                        .controlSize(.small)
+                }
                 Text("Comments").font(InkspringTypography.editorial(19, relativeTo: .headline))
                 ForEach(Array(record.comments.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 3) {
@@ -1307,6 +1348,10 @@ struct PostPreview: View {
                 Button("Open in studio", systemImage: "arrow.up.right") { openInStudio(record) }
             }
         }
+        Menu {
+            Button(record["planMarkdown"].isEmpty ? "Add outline" : "View outline") { outlineID = record.id }
+        } label: { Label("More", systemImage: "ellipsis.circle") }
+        .labelStyle(.iconOnly).help("More actions")
         Button("Copy", systemImage: "doc.on.doc") { copy(record.body) }
         Button(record.kind == "idea" ? "Skip idea" : "Move to Trash", systemImage: "trash") {
             workspace.perform { try workspace.trashLibraryItem(record) }

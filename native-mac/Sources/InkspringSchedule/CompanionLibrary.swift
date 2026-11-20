@@ -134,6 +134,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var scripts: [Item]?
     public var supportsScripts: Bool?
     public var supportsXArticlePublishing: Bool?
+    public var supportsLinkedInArticles: Bool?
     public var xArticleAccountKey: String?
     public var xArticleAccountName: String?
     public var supportsWritingTools: Bool?
@@ -168,11 +169,13 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var publicationStatus: String?
         public var publicationURL: String?
         public var publicationError: String?
+        public var linkedInArticleID: String?
         public var writingError: String?
         public var writingReply: String?
         public var history: [ContentRevision]?
         public enum Kind: String, Codable, Sendable { case draft, idea, newsletter, script, article }
         public var isLongForm: Bool { kind == .newsletter || kind == .script || kind == .article }
+        public var isLinkedInArticle: Bool { kind == .article && platform == "linkedin" }
         public enum Attachment: String, Codable, Sendable { case image, video }
         public let id: String
         public let revision: String
@@ -381,7 +384,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
             guard xArticleAccountKey == nil else { return false }
 
             guard (requestsWritingHelp != true || action == .note && !isLongFormEdit && createsScript != true && generatesXDraft != true && historySnapshot == nil),
-                  (writingKind == nil || ["script", "article", "newsletter"].contains(writingKind ?? "") && (createsScript == true || editsScript == true)),
+                  (writingKind == nil || ["script", "article", "newsletter"].contains(writingKind ?? "") && (createsScript == true || editsScript == true)
+                      || writingKind == "linkedin-article" && createsScript == true),
                   !(editsScript == true && editsNewsletter == true),
                   !(generatesXDraft == true && (editsScript == true || createsScript == true)),
                   !itemID.isEmpty, itemID.utf8.count <= 200, revision.utf8.count <= 100 else { return false }
@@ -456,6 +460,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         guard enabled else { throw CompanionLibraryError.disabled }
         guard (change.createsScript != true && change.editsScript != true) || supportsScripts == true else { throw CompanionLibraryError.disabled }
         guard change.publishesXArticle != true || supportsXArticlePublishing == true else { throw CompanionLibraryError.disabled }
+        guard change.writingKind != "linkedin-article" || supportsLinkedInArticles == true else { throw CompanionLibraryError.disabled }
         guard !change.needsWritingTools || supportsWritingTools == true else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.xFormat != nil, change.text.contains(XThreadText.separator), supportsXParagraphs != true {
@@ -489,6 +494,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         articles = nil
         supportsScripts = nil
         supportsXArticlePublishing = nil
+        supportsLinkedInArticles = nil
         xArticleAccountKey = nil
         xArticleAccountName = nil
         supportsWritingTools = nil
@@ -702,6 +708,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
                entry.revision != "pending-add",
                (entry.action != .editDraft || library.supportsDraftEdits == true),
                (change.publishesXArticle != true || library.supportsXArticlePublishing == true),
+               (change.writingKind != "linkedin-article" || library.supportsLinkedInArticles == true),
                (!change.needsWritingTools || library.supportsWritingTools == true),
                (entry.action != .saveRevision || library.supportsRevisionHistory == true),
                (entry.xFormat == nil || library.supportsXThreads == true),

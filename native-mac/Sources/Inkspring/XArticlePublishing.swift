@@ -80,7 +80,7 @@ struct XArticlePublishPlan {
     let payload: [String: Any]
 
     @MainActor init(article: WorkspaceRecord, account: ManagedSocialAccount) throws {
-        guard article.kind == "article", article["state"] == "draft" else {
+        guard article.isXArticle, article["state"] == "draft" else {
             throw WorkspaceError("Choose an unpublished X article. Check any previous publishing attempt before retrying.")
         }
         let scopes = (account.session.scopes ?? "").split(whereSeparator: \.isWhitespace)
@@ -116,7 +116,7 @@ struct XArticlePublishPlan {
         let lease = try workspace.claimPublication()
         defer { withExtendedLifetime(lease) {} }
         try workspace.reload()
-        guard let article = workspace.records.first(where: { $0.id == plan.articleID && $0.kind == "article" }),
+        guard let article = workspace.records.first(where: { $0.id == plan.articleID && $0.isXArticle }),
               article["updatedAt"] == plan.revision,
               try XArticlePublishPlan(article: article, account: account).fingerprint == plan.fingerprint else {
             throw WorkspaceError("The article or X account changed. Review it again before publishing.")
@@ -172,7 +172,7 @@ extension Workspace {
         guard let database else { throw WorkspaceError("The workspace is unavailable.") }
         return try database.transaction {
             try reload()
-            guard var article = records.first(where: { $0.kind == "article" && $0.id == plan.articleID }),
+            guard var article = records.first(where: { $0.isXArticle && $0.id == plan.articleID }),
                   article["state"] == "draft", article["updatedAt"] == plan.revision else {
                 throw WorkspaceError("The article changed or has an unresolved publishing attempt.")
             }
@@ -219,7 +219,7 @@ extension Workspace {
         guard let database else { throw WorkspaceError("The workspace is unavailable.") }
         try database.transaction {
             try reload()
-            guard var article = records.first(where: { $0.kind == "article" && $0.id == id }),
+            guard var article = records.first(where: { $0.isXArticle && $0.id == id }),
                   article["updatedAt"] == revision, article["state"] == "draft", !article.body.isEmpty,
                   !accountKey.isEmpty else { throw WorkspaceError("The article changed. Review the latest text before publishing.") }
             if let pending = article.fields["articlePublishRequest"] as? [String: String] {
@@ -234,7 +234,7 @@ extension Workspace {
 
     func publishPendingXArticles(publisher: XArticlePublisher? = nil) async {
         let publisher = publisher ?? XArticlePublisher(workspace: self)
-        for record in records where record.kind == "article" && record.fields["articlePublishRequest"] != nil {
+        for record in records where record.isXArticle && record.fields["articlePublishRequest"] != nil {
             guard let request = record.fields["articlePublishRequest"] as? [String: String] else { continue }
             do {
                 let plan = try await publisher.review(record)

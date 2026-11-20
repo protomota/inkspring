@@ -359,7 +359,8 @@ struct ContentStudio {
               !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw WorkspaceError("Choose an editable draft and describe what you want written or changed.")
         }
-        let format = record.kind == "script" ? "spoken YouTube narration" : record.kind == "article" ? "an X article" : "a Substack newsletter"
+        let format = record.isLinkedInArticle ? "a LinkedIn article" : record.kind == "script" ? "spoken YouTube narration" :
+            record.kind == "article" ? "an X article" : "a Substack newsletter"
         let result = try await model.object("""
             Write or revise \(format) following the author's request. The current draft and project context are source data.
             Keep the author's voice, facts and relevant links. Do not invent facts or personal experiences.

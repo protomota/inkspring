@@ -63,6 +63,19 @@ struct PublicationReview: View {
                                     Text(post).textSelection(.enabled)
                                     if plan.posts.count > 1 { Divider() }
                                 }
+                                if let article = plan.linkedInArticle {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Label("LinkedIn article", systemImage: "link")
+                                            .font(.caption).foregroundStyle(palette.muted)
+                                        StudioExternalLink(article.title, destination: article.url)
+                                        Text(article.url.absoluteString).font(.caption).foregroundStyle(palette.muted)
+                                            .textSelection(.enabled)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                                    .studioSurface(StudioRadius.control, fill: palette.well)
+                                    .accessibilityIdentifier("linkedinArticle.reviewCard")
+                                }
                                 AttachedMedia(url: plan.image)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

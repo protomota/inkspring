@@ -49,23 +49,31 @@ extension Workspace {
     }
 }
 
-struct WorkspacePlanSection: View {
+struct WorkspaceOutline: View {
     let record: WorkspaceRecord
     let workspace: Workspace
-    var editable = true
-    private var current: WorkspaceRecord { workspace.records.first { $0.id == record.id } ?? record }
+    let close: () -> Void
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-        ContentPlanSection(markdown: current["planMarkdown"], reference: current.referenceID ?? current.id,
-                           context: current.title, recoveryID: (workspace.directory?.path ?? "workspace") + "." + current.id,
-                           editable: editable && workspace.records.contains { $0.id == record.id }) { markdown, base in
-            try workspace.savePlan(itemID: record.id, markdown: markdown, base: base)
-        }
-        if editable, let previous = current.fields["previousPlanMarkdown"] as? String {
-            Button("Restore previous plan", systemImage: "arrow.uturn.backward") {
-                workspace.perform { try workspace.savePlan(itemID: current.id, markdown: previous, base: current["planMarkdown"]) }
+        StudioScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Button("Back", systemImage: "chevron.left", action: close)
+                Text("Outline").font(.title2)
+                ContentPlanEditor(markdown: record["planMarkdown"], reference: record.referenceID ?? record.id,
+                                  context: record.title, recoveryID: (workspace.directory?.path ?? "workspace") + "." + record.id,
+                                  save: { markdown, base in
+                                      try workspace.savePlan(itemID: record.id, markdown: markdown, base: base)
+                                  }, close: close)
+                if let previous = record.fields["previousPlanMarkdown"] as? String {
+                    Button("Restore previous plan", systemImage: "arrow.uturn.backward") {
+                        workspace.perform {
+                            try workspace.savePlan(itemID: record.id, markdown: previous, base: record["planMarkdown"])
+                            close()
+                        }
+                    }
+                }
             }
-        }
+            .padding(20)
         }
     }
 }

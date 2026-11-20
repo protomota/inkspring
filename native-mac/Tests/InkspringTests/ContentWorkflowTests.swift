@@ -73,12 +73,13 @@ import Testing
     other["name"] = "Other project"
     try workspace.save(other)
     for format in WorkspaceDraftType.allCases {
-        var record = WorkspaceRecord.new(format.rawValue, projectID: workspace.projectID)
+        var record = format.makeRecord(projectID: workspace.projectID)
         record["title"] = "Shared title"
         record[record.isLongForm ? "body" : "content"] = "Find this paragraph"
         let saved = try workspace.save(record)
         #expect(workspace.workspaceDrafts.contains { $0.id == saved.id })
-        let channel = format == .newsletter ? "substack" : format == .script ? "youtube" : "x"
+        let channel = format == .newsletter ? "substack" : record["platform"]
+        #expect(WorkspaceDraftType(record: saved) == format)
         #expect(PostBrowserFilter.all.matches(saved, platform: channel, search: "paragraph", library: false))
         #expect(!PostBrowserFilter.all.matches(saved, platform: "instagram", search: "", library: false))
         #expect(PostBrowserFilter.working.matches(saved, platform: nil, search: format.name, library: false))

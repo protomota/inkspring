@@ -29,6 +29,7 @@ struct SocialPublishPlan {
     let image: URL?
     let imageHash: String?
     let linkedInDestination: LinkedInDestination?
+    let linkedInArticle: LinkedInArticleShare?
     var linkedInAuthor: String? { linkedInDestination?.urn }
     let publicImage: URL?
     let subreddit: String?
@@ -42,6 +43,7 @@ struct SocialPublishPlan {
         var parts = [platform.rawValue, draftID, accountID, title, replyID ?? ""]
         parts += [imageHash ?? "", linkedInAuthor ?? "", publicImage?.absoluteString ?? "", subreddit ?? "", flair ?? ""]
         parts += posts + (tiktok?.fingerprintFields ?? []) + (r2?.identity ?? [])
+        if let article = linkedInArticle { parts += [article.articleID, article.title, article.url.absoluteString] }
         let data = (try? JSONEncoder().encode(parts)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -59,6 +61,7 @@ struct SocialPublishPlan {
             throw WorkspaceError("Use an X follow-up reply for the linked article.")
         }
         self.platform = platform
+        linkedInArticle = platform == .linkedin ? try LinkedInArticleShare.resolve(post: draft, in: articles) : nil
         draftID = draft.id
         revision = draft["updatedAt"]
         title = draft.title
@@ -84,7 +87,7 @@ struct SocialPublishPlan {
                     guard post.contains(XReplyArticle.prefix) else { return post }
                     let link = XReplyArticle(post)
                     guard index > 0, let reference = link.reference, !link.copy.contains(XReplyArticle.prefix),
-                          let article = articles.first(where: { $0.kind == "article" && $0.projectID == draft.projectID && $0.referenceID == reference }) else {
+                          let article = articles.first(where: { $0.isXArticle && $0.projectID == draft.projectID && $0.referenceID == reference }) else {
                         throw WorkspaceError("Choose an available X article for this reply.")
                     }
                     guard article["state"] == "published",
@@ -331,12 +334,17 @@ struct SocialPublisher {
                 }
             case .linkedin:
                 guard let author = plan.linkedInAuthor else { throw WorkspaceError("Choose a LinkedIn destination.") }
-                let (_, response) = try await transport.request(URL(string: "https://api.linkedin.com/rest/posts")!,
-                                                                 token: account.session.accessToken, method: "POST", json: [
+                var payload: [String: Any] = [
                     "author": author, "commentary": plan.posts[0], "visibility": "PUBLIC",
                     "distribution": ["feedDistribution": "MAIN_FEED", "targetEntities": [String](), "thirdPartyDistributionChannels": [String]()],
                     "lifecycleState": "PUBLISHED", "isReshareDisabledByAuthor": false
-                ], headers: LinkedInPages.headers, publishes: true)
+                ]
+                if let article = plan.linkedInArticle {
+                    payload["content"] = ["article": ["title": article.title, "source": article.url.absoluteString]]
+                }
+                let (_, response) = try await transport.request(URL(string: "https://api.linkedin.com/rest/posts")!,
+                    token: account.session.accessToken, method: "POST", json: payload,
+                    headers: LinkedInPages.headers, publishes: true)
                 guard let id = response.value(forHTTPHeaderField: "x-restli-id"),
                       id.range(of: #"\Aurn:li:(share|ugcPost):[0-9]+\z"#, options: .regularExpression) != nil else {
                     throw SocialRequestError("LinkedIn didn’t confirm a post ID. Check the account before retrying.", uncertain: true)

@@ -252,16 +252,18 @@ final class MobileLibrary {
             $0.createsScript == true && $0.account == account && $0.workspaceID == snapshot?.workspaceID
                 && !ids.contains($0.id.uuidString.lowercased())
         }.map { entry in
-            CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: entry.writingKind == "newsletter" ? .newsletter : entry.writingKind == "article" ? .article : .script,
+            CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: mobileWritingKind(entry.writingKind),
                 projectID: entry.itemID ?? "", title: entry.title, body: entry.text, shortened: false,
-                platform: entry.writingKind == "newsletter" ? "substack" : entry.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [])
+                platform: mobileWritingPlatform(entry.writingKind), status: "draft", notes: [])
         }
         return remote + local
     }
 
     func createScript(projectID: String, kind: String = "script") throws -> String {
         guard let snapshot else { throw CompanionScheduleError.changed }
-        let change = CompanionLibrary.Change(action: .addIdea, itemID: projectID, title: kind == "newsletter" ? "Untitled newsletter" : kind == "article" ? "Untitled X article" : "Untitled YouTube script", createsScript: true, writingKind: kind)
+        let title = kind == "newsletter" ? "Untitled newsletter" : kind == "script" ? "Untitled YouTube script" :
+            "Untitled \(reviewPlatformName(mobileWritingPlatform(kind))) article"
+        let change = CompanionLibrary.Change(action: .addIdea, itemID: projectID, title: title, createsScript: true, writingKind: kind)
         try saveChange(change, workspaceID: snapshot.workspaceID)
         return change.id.uuidString.lowercased()
     }
@@ -456,8 +458,8 @@ final class MobileLibrary {
                             }
                             writing[index] = updated
                         } else if change.createsScript == true {
-                            writing.append(.init(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: change.writingKind == "newsletter" ? .newsletter : change.writingKind == "article" ? .article : .script,
-                                projectID: change.itemID, title: change.title, body: change.text, shortened: false, platform: change.writingKind == "newsletter" ? "substack" : change.writingKind == "article" ? "x" : "youtube", status: "draft", notes: [], referenceID: "STU–003"))
+                            writing.append(.init(id: id, revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: mobileWritingKind(change.writingKind),
+                                projectID: change.itemID, title: change.title, body: change.text, shortened: false, platform: mobileWritingPlatform(change.writingKind), status: "draft", notes: [], referenceID: "STU–003"))
                         } else { continue }
                         fixture.results.append(.init(id: change.id, newsletterRevision: writing.first { $0.id == id }?.revision))
                     }
@@ -639,6 +641,7 @@ final class MobileLibrary {
             value.supportsScripts = true
             value.supportsWritingTools = true
             value.supportsXArticlePublishing = true
+            value.supportsLinkedInArticles = true
             value.xArticleAccountKey = "fixture:connected"
             value.xArticleAccountName = "@fixture"
             value.writingAgent = "codex"
@@ -710,6 +713,7 @@ private struct MobileNewsletterDetail: View {
     let metadata: String
     let library: MobileLibrary
     let workspaceID: UUID
+    @State private var showsOutline = false
     @State private var editingRevision: String?
     @State private var editingBaseMarkdown = ""
     @State private var confirmsArticlePublication = false
@@ -740,6 +744,14 @@ private struct MobileNewsletterDetail: View {
     }
 
     var body: some View {
+        if showsOutline {
+            MobilePlanSection(item: item, library: library, workspaceID: workspaceID) { showsOutline = false }
+        } else {
+            document
+        }
+    }
+
+    private var document: some View {
         Group {
             if editingRevision != nil {
                 VStack(alignment: .leading, spacing: 12) {
@@ -766,7 +778,8 @@ private struct MobileNewsletterDetail: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         metadataHeader
-                        if item.kind == .article { articlePublishing }
+                        if item.isLinkedInArticle { linkedInArticleHandoff }
+                        else if item.kind == .article { articlePublishing }
                         Divider()
                         if !hasFullText || (showsMacVersion && item.shortened) {
                             Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(palette.muted)
@@ -782,7 +795,11 @@ private struct MobileNewsletterDetail: View {
                             .contentShape(Rectangle())
                             .simultaneousGesture(TapGesture(count: 2).onEnded { beginEditing() })
                         }
-                        MobilePlanSection(item: item, library: library, workspaceID: workspaceID)
+                        if !library.planText(item).isEmpty {
+                            Button("View outline", systemImage: "list.bullet.clipboard") { showsOutline = true }
+                                .font(.callout)
+                                .accessibilityIdentifier("outline.view")
+                        }
                         if let pendingEdit {
                             if let error = pendingEdit.error {
                                 Text(error).font(.footnote).foregroundStyle(palette.danger)
@@ -813,7 +830,7 @@ private struct MobileNewsletterDetail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(palette.iconAccent)
         .toolbar(editingRevision == nil ? .visible : .hidden, for: .tabBar)
-        .navigationTitle(item.kind == .article ? "X article" : item.kind == .script ? "YouTube script" : "Newsletter")
+        .navigationTitle(item.isLinkedInArticle ? "LinkedIn article" : item.kind == .article ? "X article" : item.kind == .script ? "YouTube script" : "Newsletter")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: markdown + "\0" + scriptTitle) {
             guard let editingRevision, let recoveryKey, markdown != editingBaseMarkdown || scriptTitle != baseScriptTitle else { return }
@@ -861,6 +878,10 @@ private struct MobileNewsletterDetail: View {
                             Button("Edit Markdown", systemImage: "pencil", action: beginEditing).disabled(!canEdit)
                             Button("Ask AI…", systemImage: "bubble.left.and.text.bubble.right") { beginEditing(); showsWritingTools = true }.disabled(!canEdit)
                         }
+                        if library.snapshot?.supportsContentPlans == true && item.isTrashed != true {
+                            Button(library.planText(item).isEmpty ? "Add outline" : "View outline", systemImage: "list.bullet.clipboard") { showsOutline = true }
+                            .accessibilityIdentifier("outline.menu")
+                        }
                         Button("Copy Markdown", systemImage: "doc.on.doc") { UIPasteboard.general.string = previewMarkdown }
                             .disabled(!hasFullText || previewMarkdown.isEmpty)
                     } label: {
@@ -870,6 +891,20 @@ private struct MobileNewsletterDetail: View {
                 }
             }
         }
+    }
+
+    private var linkedInArticleHandoff: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let raw = item.publicationURL, let url = URL(string: raw), url.scheme == "https", url.host == "www.linkedin.com" {
+                Link("View published LinkedIn article", destination: url)
+            } else {
+                Text("Publish in LinkedIn’s desktop editor, then add the public link in Inkspring on your Mac.")
+                    .font(.footnote).foregroundStyle(palette.muted)
+            }
+            Button("Copy article Markdown", systemImage: "doc.on.doc") { UIPasteboard.general.string = previewMarkdown }
+                .disabled(!hasFullText || previewMarkdown.isEmpty)
+        }
+        .accessibilityIdentifier("linkedinArticle.handoff")
     }
 
     private var articlePublishing: some View {
@@ -926,7 +961,7 @@ private struct MobileNewsletterDetail: View {
             Text(item.isLongForm && pendingEdit?.title.isEmpty == false || pendingEdit?.restoresRevision == true ? pendingEdit?.title ?? item.title : item.title)
                 .font(.title2.bold()).accessibilityAddTraits(.isHeader)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                StudioPlatformLabel(name: item.kind == .article ? "x" : item.kind == .script ? "youtube" : "substack", title: item.kind == .article ? "X article" : item.kind == .script ? "YouTube" : "Substack")
+                StudioPlatformLabel(name: item.platform, title: reviewPlatformName(item.reviewPlatform))
                 Text("·").accessibilityHidden(true)
                 Text(metadata)
             }
@@ -1134,6 +1169,7 @@ struct MobileReviewView: View {
         platforms.insert("substack")
         platforms.insert("youtube")
         platforms.insert("x-article")
+        if library.snapshot?.supportsLinkedInArticles == true { platforms.insert("linkedin-article") }
         if let platformFilter { platforms.insert(platformFilter) }
         return platforms.sorted { reviewPlatformName($0).localizedStandardCompare(reviewPlatformName($1)) == .orderedAscending }
     }
@@ -1253,6 +1289,10 @@ struct MobileReviewView: View {
                                 .accessibilityIdentifier("newsletter.new")
                             Button { createWriting("article") } label: { Label { Text("New X article") } icon: { platformMenuIcon("x") } }
                                 .accessibilityIdentifier("article.new")
+                            if library.snapshot?.supportsLinkedInArticles == true {
+                                Button { createWriting("linkedin-article") } label: { Label { Text("New LinkedIn article") } icon: { platformMenuIcon("linkedin") } }
+                                    .accessibilityIdentifier("linkedinArticle.new")
+                            }
                             Button { createWriting("script") } label: { Label { Text("New YouTube script") } icon: { platformMenuIcon("youtube") } }
                                 .accessibilityIdentifier("script.new")
                         }
@@ -1413,7 +1453,8 @@ struct MobileReviewView: View {
             guard let projectID = projectFilter ?? library.snapshot?.projects.first?.id else { return }
             selection = try library.createScript(projectID: projectID, kind: kind)
             filter = "Drafts"
-            platformFilter = kind == "newsletter" ? "substack" : kind == "article" ? "x-article" : "youtube"
+            let platform = mobileWritingPlatform(kind)
+            platformFilter = mobileWritingKind(kind) == .article ? platform + "-article" : platform
         } catch { scriptError = error.localizedDescription }
     }
 
@@ -1499,7 +1540,8 @@ struct MobileReviewView: View {
     }
 
     private func platformMenuIcon(_ platform: String) -> Image {
-        guard let mark = PlatformMark.bitmap(platform == "x-article" ? "x" : platform) ?? (platform == "youtube" ? UIImage(systemName: "play.rectangle.fill") : nil) else { return Image(systemName: "link") }
+        let markPlatform = platform.hasSuffix("-article") ? String(platform.dropLast("-article".count)) : platform
+        guard let mark = PlatformMark.bitmap(markPlatform) ?? (platform == "youtube" ? UIImage(systemName: "play.rectangle.fill") : nil) else { return Image(systemName: "link") }
         // Native menus lay out the image itself, independently of SwiftUI label styles.
         let tinted = mark.withTintColor(UIColor(palette.iconAccent), renderingMode: .alwaysOriginal)
         let canvas = CGSize(width: 24, height: 24)
@@ -1586,7 +1628,21 @@ struct MobileReviewView: View {
 }
 
 private extension CompanionLibrary.Item {
-    var reviewPlatform: String { kind == .article ? "x-article" : platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    var reviewPlatform: String { kind == .article ? (isLinkedInArticle ? "linkedin-article" : "x-article") : platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+}
+
+private func mobileWritingKind(_ kind: String?) -> CompanionLibrary.Item.Kind {
+    if kind == "linkedin-article" { return .article }
+    return kind.flatMap(CompanionLibrary.Item.Kind.init(rawValue:)) ?? .script
+}
+
+private func mobileWritingPlatform(_ kind: String?) -> String {
+    switch kind {
+    case "newsletter": "substack"
+    case "article": "x"
+    case "linkedin-article": "linkedin"
+    default: "youtube"
+    }
 }
 
 private func reviewPlatformName(_ platform: String) -> String {
@@ -1596,6 +1652,7 @@ private func reviewPlatformName(_ platform: String) -> String {
     case "tiktok": "TikTok"
     case "youtube": "YouTube"
     case "x-article": "X article"
+    case "linkedin-article": "LinkedIn article"
     default: platform.capitalized
     }
 }
@@ -1692,7 +1749,7 @@ private struct MobileItemEditor: View {
                 .accessibilityIdentifier("mobile.edit.title").padding(.horizontal, 12)
             if isX {
                 StudioXPostEditor(text: $text, format: $format, articles: library.snapshot?.supportsXReplyArticles == true ? (library.snapshot?.articles ?? []).compactMap { article in
-                    guard article.projectID == item.projectID, let ref = article.referenceID else { return nil }
+                    guard !article.isLinkedInArticle, article.projectID == item.projectID, let ref = article.referenceID else { return nil }
                     return XArticleChoice(id: ref, title: article.title)
                 } : []).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1724,7 +1781,7 @@ private struct MobileItemEditor: View {
         }
         .task {
             guard !initialized else { return }
-            let pending = library.pendingChanges(for: item.id).last { [.editDraft, .editIdea].contains($0.action) }
+            let pending = library.pendingChanges(for: item.id).last { [.editDraft, .editIdea].contains($0.action) && $0.contentOperation == nil }
             baseTitle = pending?.title ?? item.title
             baseText = pending?.text ?? item.body
             baseFormat = pending?.xFormat ?? item.format ?? "post"
@@ -1781,6 +1838,7 @@ private struct MobileReviewDetail: View {
     @State private var note = ""
     @State private var message: String?
     @State private var savedNoteID: UUID?
+    @State private var showsOutline = false
     @State private var editingDraft = false
     @State private var choosingSchedule = false
     @State private var generatingXDraft = false
@@ -1826,6 +1884,14 @@ private struct MobileReviewDetail: View {
     }
 
     var body: some View {
+        if showsOutline {
+            MobilePlanSection(item: item, library: library, workspaceID: workspaceID) { showsOutline = false }
+        } else {
+            document
+        }
+    }
+
+    private var document: some View {
         Group {
             if editingDraft {
                 MobileItemEditor(item: item, library: library, workspaceID: workspaceID, bodyFirst: editBodyFirst, close: { editingDraft = false })
@@ -1909,7 +1975,7 @@ private struct MobileReviewDetail: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("x.reply.\(index)")
                         if let ref = XReplyArticle(posts[index]).reference {
-                            if let article = library.snapshot?.articles?.first(where: { $0.projectID == item.projectID && $0.referenceID == ref }) {
+                            if let article = library.snapshot?.articles?.first(where: { !$0.isLinkedInArticle && $0.projectID == item.projectID && $0.referenceID == ref }) {
                                 NavigationLink {
                                     MobileNewsletterDetail(item: article, metadata: article.referenceID ?? "", library: library, workspaceID: workspaceID)
                                 } label: { Label("X article · " + article.title, systemImage: "doc.text") }
@@ -1927,6 +1993,19 @@ private struct MobileReviewDetail: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("Edit text")
                 }
+                if let articleID = item.linkedInArticleID {
+                    if let article = library.snapshot?.articles?.first(where: { $0.isLinkedInArticle && $0.id == articleID && $0.projectID == item.projectID }) {
+                        NavigationLink {
+                            MobileNewsletterDetail(item: article, metadata: article.referenceID ?? "", library: library, workspaceID: workspaceID)
+                        } label: { Label(article.title, systemImage: "doc.richtext") }
+                        if article.publicationURL?.isEmpty != false {
+                            Text("Add the public article link on your Mac before sharing.")
+                                .font(.footnote).foregroundStyle(palette.muted)
+                        }
+                    } else {
+                        Text("LinkedIn article unavailable").font(.footnote).foregroundStyle(palette.muted)
+                    }
+                }
                 if let error = pendingEdit?.error {
                     Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
                 }
@@ -1940,8 +2019,12 @@ private struct MobileReviewDetail: View {
                 }
                 .listRowBackground(palette.card)
             }
-            Section { MobilePlanSection(item: item, library: library, workspaceID: workspaceID) }
-                .listRowBackground(palette.card)
+            if !library.planText(item).isEmpty {
+                Button("View outline", systemImage: "list.bullet.clipboard") { showsOutline = true }
+                    .font(.callout)
+                    .accessibilityIdentifier("outline.view")
+                    .listRowBackground(palette.card)
+            }
             if item.isTrashed != true {
             Section {
                 ForEach(Array(item.notes.enumerated()), id: \.offset) { index, text in
@@ -2062,6 +2145,10 @@ private struct MobileReviewDetail: View {
     private var moreActions: some View {
         Menu {
             if !inTrash {
+                if library.snapshot?.supportsContentPlans == true {
+                    Button(library.planText(item).isEmpty ? "Add outline" : "View outline", systemImage: "list.bullet.clipboard") { showsOutline = true }
+                            .accessibilityIdentifier("outline.menu")
+                }
                 Button("Edit title", systemImage: "pencil") { editBodyFirst = false; editingDraft = true }
                 Button("Edit text", systemImage: "square.and.pencil") { editBodyFirst = true; editingDraft = true }
                 if showsScheduleAction {
