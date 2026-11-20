@@ -686,10 +686,28 @@ struct WorkspaceConnections: View {
                                     .disabled(accounts.connecting != nil || testing != nil)
                                 Button("Disconnect…") { disconnecting = platform }
                                     .disabled(accounts.connecting != nil || testing != nil)
+                            } else if platform == .linkedin {
+                                let sharedSignIn = accounts.availability.contains(.linkedin)
+                                let canConnect = sharedSignIn || accounts.developerAppIDs[.linkedin] != nil
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(canConnect ? "Connect your LinkedIn profile" : "Set up LinkedIn posting")
+                                        .fontWeight(.semibold)
+                                    Text(canConnect
+                                         ? "Sign in to LinkedIn and give Inkspring permission to publish as you."
+                                         : "Save your developer app credentials below, then sign in to your LinkedIn profile.")
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if accounts.connecting == platform { ProgressView().controlSize(.small) }
+                                if canConnect {
+                                    Button("Connect LinkedIn…") {
+                                        Task { await connect(.linkedin, developerApp: !sharedSignIn) }
+                                    }
+                                    .help("Open LinkedIn to sign in and approve publishing access for your profile.")
+                                    .disabled(accounts.connecting != nil || loading || testing != nil)
+                                }
                             } else {
-                                Text(accounts.availability.contains(platform) ? "Sign in with Inkspring"
-                                     : platform == .linkedin ? "Connect a personal profile with your own developer app"
-                                     : "Shared sign-in unavailable")
+                                Text(accounts.availability.contains(platform) ? "Sign in with Inkspring" : "Shared sign-in unavailable")
                                     .foregroundStyle(.secondary)
                                 Spacer()
                                 if accounts.connecting == platform { ProgressView().controlSize(.small) }
@@ -707,7 +725,11 @@ struct WorkspaceConnections: View {
                                 Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                             }
                         }
-                        DeveloperConnectionSettings(workspace: workspace, platform: platform)
+                        DeveloperConnectionSettings(
+                            workspace: workspace, platform: platform,
+                            showsConnectButton: platform != .linkedin || accounts.availability.contains(.linkedin)
+                                || accounts.profiles[.linkedin] != nil
+                        )
                             .padding(.top, 7)
                         if platform == .linkedin && accounts.profiles[.linkedin] != nil {
                             Button("Refresh LinkedIn company pages") {
@@ -1370,6 +1392,7 @@ struct BackupControls: View {
 private struct DeveloperConnectionSettings: View {
     let workspace: Workspace
     let platform: SocialPlatform
+    let showsConnectButton: Bool
     @State private var clientID = ""
     @State private var clientSecret = ""
     @State private var pages = false
@@ -1377,55 +1400,28 @@ private struct DeveloperConnectionSettings: View {
 
     private var accounts: ManagedSocialAccounts { workspace.socialAccounts }
 
-    init(workspace: Workspace, platform: SocialPlatform, initiallyExpanded: Bool = false) {
+    init(workspace: Workspace, platform: SocialPlatform, initiallyExpanded: Bool = false, showsConnectButton: Bool = true) {
         self.workspace = workspace
         self.platform = platform
+        self.showsConnectButton = showsConnectButton
         _expanded = State(initialValue: initiallyExpanded)
     }
 
     var body: some View {
-        DisclosureGroup(platform == .linkedin ? "Use your own LinkedIn developer app" : "Use your own developer app",
-                        isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                SetupHelpLink("\(platform.name) setup and troubleshooting", topic: "connect-" + platform.rawValue)
-                LabeledContent("Authorized redirect URL") {
-                    Text(platform.developerCallback.absoluteString).textSelection(.enabled)
-                    Button("Copy") { copy(platform.developerCallback.absoluteString) }
-                }
-                TextField(platform == .tiktok ? "Client key" : "Client ID", text: $clientID)
-                    .studioInput()
-                if platform != .reddit {
-                    SecureField(platform.needsClientSecret ? "Client secret" : "Client secret (optional)", text: $clientSecret)
-                        .studioInput()
-                }
-                if platform == .linkedin {
-                    Toggle("Request company Page access", isOn: $pages)
-                    Text("Leave this off for personal posting. Turn it on only after LinkedIn approves your developer app for Community Management.")
-                        .font(.caption)
+        VStack(alignment: .leading, spacing: 8) {
+            if platform == .linkedin {
+                if accounts.connecting == .linkedin {
+                    Text("Finish signing in on LinkedIn. Click Allow if asked, then choose Return to Inkspring.")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                HStack {
-                    Button("Save developer app") {
-                        workspace.perform {
-                            try accounts.saveDeveloperApp(platform, input: DeveloperOAuthConfiguration(
-                                clientID: clientID, clientSecret: clientSecret, linkedInPages: pages
-                            ))
-                            clientSecret = ""
-                            workspace.notice = "Developer app saved"
-                        }
-                    }
-                    .disabled(clientID.isEmpty || accounts.connecting != nil)
-                    Button("Connect developer app…") {
-                        Task {
-                            do { try await accounts.connect(platform, developerApp: true) }
-                            catch is CancellationError {}
-                            catch { workspace.error = error.localizedDescription }
-                        }
-                    }
-                    .disabled(accounts.developerAppIDs[platform] == nil || accounts.connecting != nil)
-                }
+                SetupHelpLink("LinkedIn setup guide", topic: "connect-linkedin")
             }
-            .padding(.top, 7)
+            DisclosureGroup(platform == .linkedin ? "LinkedIn developer app credentials" : "Use your own developer app",
+                            isExpanded: $expanded) {
+                developerAppFields
+                    .padding(.top, 7)
+            }
         }
         .onChange(of: expanded, initial: true) { _, open in
             if open {
@@ -1439,6 +1435,58 @@ private struct DeveloperConnectionSettings: View {
             if expanded && (clientID.isEmpty || clientID == old) {
                 clientID = new ?? ""
                 pages = platform == .linkedin && accounts.developerPages
+            }
+        }
+    }
+
+    private var developerAppFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if platform == .linkedin {
+                Text("Your Client ID and secret identify your developer app. You’ll approve access to your profile separately on LinkedIn.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                StudioExternalLink("Open LinkedIn My Apps", destination: platform.developerConsole)
+            } else {
+                SetupHelpLink("\(platform.name) setup and troubleshooting", topic: "connect-" + platform.rawValue)
+            }
+            LabeledContent("Authorized redirect URL") {
+                Text(platform.developerCallback.absoluteString).textSelection(.enabled)
+                Button("Copy") { copy(platform.developerCallback.absoluteString) }
+            }
+            TextField(platform == .tiktok ? "Client key" : "Client ID", text: $clientID)
+                .studioInput()
+            if platform != .reddit {
+                SecureField(platform.needsClientSecret ? "Client secret" : "Client secret (optional)", text: $clientSecret)
+                    .studioInput()
+            }
+            if platform == .linkedin {
+                Toggle("Request company Page access", isOn: $pages)
+                    .help("Requires LinkedIn Community Management approval and a role on the Page.")
+                Text("For a personal profile, leave company Page access off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("Save developer app") {
+                    workspace.perform {
+                        try accounts.saveDeveloperApp(platform, input: DeveloperOAuthConfiguration(
+                            clientID: clientID, clientSecret: clientSecret, linkedInPages: pages
+                        ))
+                        clientSecret = ""
+                        workspace.notice = "Developer app saved"
+                    }
+                }
+                .disabled(clientID.isEmpty || accounts.connecting != nil)
+                if showsConnectButton {
+                    Button(platform == .linkedin ? "Connect LinkedIn with this app…" : "Connect developer app…") {
+                        Task {
+                            do { try await accounts.connect(platform, developerApp: true) }
+                            catch is CancellationError {}
+                            catch { workspace.error = error.localizedDescription }
+                        }
+                    }
+                    .disabled(accounts.developerAppIDs[platform] == nil || accounts.connecting != nil)
+                }
             }
         }
     }
