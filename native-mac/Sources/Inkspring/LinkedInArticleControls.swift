@@ -154,13 +154,18 @@ struct PostArticlePicker: View {
         let articles = workspace.records.filter {
             $0.projectID == projectID && (platform == .x ? $0.isXArticle : $0.isLinkedInArticle)
         }
-        let selected = articles.first { $0.id == articleID }
+        let defaultArticle = platform == .x && articleID.isEmpty && Set(xReplyArticles.map(\.id)).count == 1
+            ? xReplyArticles.first : nil
+        let selected = articles.first { $0.id == articleID } ?? defaultArticle
         VStack(alignment: .leading, spacing: 6) {
             Label(platform == .x ? "X article" : "LinkedIn article", systemImage: "doc.richtext")
                 .font(.callout.weight(.semibold))
             if let selected {
                 Button(selected.title, systemImage: "arrow.up.right") { openArticle(selected) }
                     .accessibilityIdentifier("postArticle.open")
+                if platform == .x {
+                    Text("Attached to this X post").font(.caption).foregroundStyle(palette.muted)
+                }
             } else if !articleID.isEmpty {
                 Text("Linked article unavailable").font(.caption).foregroundStyle(palette.muted)
             }
@@ -168,8 +173,8 @@ struct PostArticlePicker: View {
                 Button("In reply · " + article.title, systemImage: "arrow.turn.down.right") { openArticle(article) }
             }
             if allowsChanges {
-                if !articles.isEmpty || !articleID.isEmpty {
-                    Picker(platform == .x ? "Attach to opening post" : "Attach article", selection: $articleID) {
+                if defaultArticle == nil && (!articles.isEmpty || !articleID.isEmpty) {
+                    Picker(platform == .x ? "Attach an X article" : "Attach article", selection: $articleID) {
                         Text("None").tag("")
                         if !articleID.isEmpty && selected == nil { Text("Unavailable article").tag(articleID) }
                         ForEach(articles) { article in Text(article.title).tag(article.id) }

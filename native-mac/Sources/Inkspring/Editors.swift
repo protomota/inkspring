@@ -1005,9 +1005,18 @@ struct DraftStudio: View {
                     if let reference = initial.referenceID {
                         StudioCopyReference(reference: reference)
                     }
-                    Button("Save draft", systemImage: "square.and.arrow.down") { save() }
-                        .modifier(PrimaryActionStyle())
-                        .keyboardShortcut("s")
+                    Button(action: { save() }) {
+                        HStack(alignment: .center, spacing: 7) {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.system(size: 13, weight: .semibold))
+                                .frame(width: 15, height: 15)
+                                .offset(y: -1)
+                                .accessibilityHidden(true)
+                            Text("Save draft")
+                        }
+                    }
+                    .modifier(PrimaryActionStyle())
+                    .keyboardShortcut("s")
                 }
                 HStack(spacing: 15) {
                     StudioChoicePicker(title: "Platform", selection: value("platform"),
@@ -1024,16 +1033,6 @@ struct DraftStudio: View {
                 }
                 .onChange(of: initial["platform"]) { _, _ in
                     if !formats.contains(initial["format"]) { initial["format"] = formats[0] }
-                }
-                Toggle("Include a plan", isOn: Binding(get: { initial.fields["planMarkdown"] != nil }, set: {
-                    initial.fields["planMarkdown"] = $0 ? ContentPlan.starter(initial.title) : nil
-                }))
-                if initial.fields["planMarkdown"] != nil {
-                    ContentPlanSection(markdown: initial["planMarkdown"], reference: initial.referenceID ?? initial.id,
-                                       context: initial.title, recoveryID: initial.id) { text, base in
-                        guard initial["planMarkdown"] == base else { throw ContentPlanError.conflict }
-                        initial["planMarkdown"] = text
-                    }
                 }
                 if initial["platform"] == "linkedin" { linkedInOptions }
                 if initial["platform"] == "x", !["posting", "posted"].contains(initial.scheduleStatus) {
@@ -1358,6 +1357,17 @@ struct DraftStudio: View {
             if let video = initial.fields["video"] as? [String: Any], attached.count == 1 || selection == .video {
                 mediaRow(video["name"] as? String ?? "Video", kind: .video, url: workspace.videoURL(initial),
                          previewOnly: initial["format"] != "video" && !initial.needsNativePostVideo)
+                if initial["platform"] == "tiktok" {
+                    HStack(spacing: 10) {
+                        Text("Cover frame")
+                        TextField("Seconds", text: value("tiktokCoverTime"))
+                            .studioInput()
+                            .frame(width: 100)
+                            .accessibilityLabel("TikTok cover frame in seconds")
+                        Text("seconds into the video").foregroundStyle(.secondary)
+                    }
+                    .help("TikTok uses a frame from the video as its cover. Leave blank to use TikTok’s default.")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1436,7 +1446,10 @@ struct DraftStudio: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             StudioMoreMenu(title: "\(kind.title) actions") {
                 if kind == .video {
-                    Button(thumbnail == nil ? "Choose preview thumbnail…" : "Replace preview thumbnail…", systemImage: "photo") {
+                    let publishedCover = initial["platform"] == "instagram"
+                    Button(publishedCover
+                           ? (thumbnail == nil ? "Choose Reel cover…" : "Replace Reel cover…")
+                           : (thumbnail == nil ? "Choose preview thumbnail…" : "Replace preview thumbnail…"), systemImage: "photo") {
                         guard let url = workspace.chooseMedia([.png, .jpeg, .webP]) else { return }
                         workspace.perform {
                             initial.fields["videoThumbnail"] = try workspace.attachImage(url)
@@ -1464,7 +1477,10 @@ struct DraftStudio: View {
                 }
                 Button("Remove \(kind.rawValue)", systemImage: "trash", role: .destructive) {
                     initial.fields[kind.rawValue] = nil
-                    if kind == .video { initial.fields["videoThumbnail"] = nil }
+                    if kind == .video {
+                        initial.fields["videoThumbnail"] = nil
+                        initial.fields["tiktokCoverTime"] = nil
+                    }
                     markDirty()
                 }
             }
@@ -1679,6 +1695,9 @@ struct DraftStudio: View {
             }
             let isNewWriting = !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !workspace.records.contains { $0.id == draft.id }
+            if draft["platform"] == "tiktok", draft["format"] == "video" {
+                _ = try TikTokVideo.coverTimestamp(for: draft)
+            }
             if let status { draft["status"] = status }
             draft.prepareDraftForSave()
             if toSchedule, !["queued", "due"].contains(draft.scheduleStatus) {

@@ -148,3 +148,78 @@ import Testing
         #expect(receipt?["status"] == (platform == .x ? nil : "failed"))
     }
 }
+
+@Test(arguments: [true, false])
+@MainActor func instagramReelWaitsForTheUploadedVideo(succeeds: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspace = Workspace(directory: root)
+    let file = root.appending(path: "reel.mp4")
+    let bytes = Data("video fixture".utf8)
+    try bytes.write(to: file)
+    var video = WorkspaceRecord.new("local-video")
+    video["name"] = file.lastPathComponent
+    video["path"] = file.path
+    video["hash"] = try fileDigest(file).hash
+    video["type"] = "video/mp4"
+    video.fields["size"] = bytes.count
+    video.fields["duration"] = 98.3
+    video = try workspace.save(video)
+    var draft = WorkspaceRecord.new("draft", projectID: workspace.projectID)
+    draft["platform"] = "instagram"
+    draft["format"] = "video"
+    draft["content"] = "Here is the Reel."
+    draft.setDraftMedia(["id": video.id], as: .video)
+    draft = try workspace.save(draft)
+
+    let account = ManagedSocialAccount(
+        session: .init(accessToken: "fixture", refreshToken: nil, managedTicket: nil, expiresAt: 2_000_000_000_000, scopes: nil),
+        id: "123", name: "Fixture", username: "fixture")
+    let profile = R2Profile(configuration: .init(accountId: String(repeating: "a", count: 32), bucket: "media-fixture", jurisdiction: ""),
+                            accessKeyId: "TESTKEY", secretAccessKey: "SYNTHETIC")
+    var uploaded = false
+    var published = false
+    let r2 = R2Client(profile: profile) { request, input in
+        let file = try #require(input)
+        let url = try #require(request.url)
+        #expect(request.httpMethod == "PUT")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "video/mp4")
+        #expect(try Data(contentsOf: file) == bytes)
+        uploaded = true
+        return (Data(), try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+    }
+    let transport = SocialTransport { request in
+        let url = try #require(request.url)
+        let result: [String: Any]
+        switch url.path {
+        case "/v25.0/123/media":
+            #expect(uploaded)
+            let form = String(decoding: try #require(request.httpBody), as: UTF8.self).removingPercentEncoding
+            #expect(form?.contains("media_type=REELS") == true)
+            #expect(form?.contains("video_url=https://") == true)
+            #expect(form?.contains("image_url=") == false)
+            result = ["id": "456"]
+        case "/v25.0/456":
+            result = ["status_code": succeeds ? "FINISHED" : "ERROR"]
+        case "/v25.0/123/media_publish":
+            #expect(succeeds)
+            published = true
+            result = ["id": "789"]
+        case "/v25.0/789":
+            result = ["permalink": "https://www.instagram.com/reel/test/"]
+        default:
+            throw WorkspaceError("Unexpected Instagram request.")
+        }
+        return (try JSONSerialization.data(withJSONObject: result),
+                try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+    }
+    let publisher = SocialPublisher(workspace: workspace, transport: transport, authorize: { _ in account }, r2Client: { r2 })
+    let plan = try await publisher.review(draft)
+    if succeeds {
+        let receipt = try await publisher.publish(plan)
+        #expect(receipt["status"] == "published")
+    } else {
+        await #expect(throws: WorkspaceError.self) { _ = try await publisher.publish(plan) }
+    }
+    #expect(published == succeeds)
+}

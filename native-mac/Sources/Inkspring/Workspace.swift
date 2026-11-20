@@ -181,11 +181,11 @@ final class Workspace {
             guard !["posting", "posted"].contains(current.scheduleStatus) else {
                 throw WorkspaceError("This post is already publishing or published. Create a new draft to revise it.")
             }
-            let keys = ["title", "content", "format", "platform", "linkedinArticleID", "xArticleID"]
+            let keys = ["title", "content", "format", "platform", "linkedinArticleID", "xArticleID", "tiktokCoverTime"]
             let oldContent = keys.map { current[$0] }
             let newContent = keys.map { record[$0] }
-            let oldMedia = ["image", "video", "linkedinDestination"].map { current.fields[$0] as? NSDictionary }
-            let newMedia = ["image", "video", "linkedinDestination"].map { record.fields[$0] as? NSDictionary }
+            let oldMedia = ["image", "video", "videoThumbnail", "linkedinDestination"].map { current.fields[$0] as? NSDictionary }
+            let newMedia = ["image", "video", "videoThumbnail", "linkedinDestination"].map { record.fields[$0] as? NSDictionary }
             if !scheduling, ["queued", "due"].contains(current.scheduleStatus),
                oldContent != newContent || oldMedia != newMedia {
                 record.fields["schedule"] = ["status": "ready", "slotAt": "",
@@ -1338,6 +1338,17 @@ extension Workspace {
             }
             row["status"] = status
             try database.put(row)
+            try reload()
+        }
+    }
+
+    func ignoreReplies(_ ids: Set<String>) throws {
+        guard let database else { throw WorkspaceError("The workspace is unavailable.") }
+        try withChanges {
+            for var row in records where row.kind == "reply-inbox" && ids.contains(row.id) && row["status"] != "archived" {
+                row["status"] = "archived"
+                try database.put(row)
+            }
             try reload()
         }
     }

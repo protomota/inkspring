@@ -11,6 +11,7 @@ struct SocialPublishOptions {
     var creator: TikTokCreator?
     var video: TikTokVideo?
     var nativeVideo: PostVideo?
+    var instagramCover: URL?
     var linkedInDestination: LinkedInDestination?
     var useR2 = false
     var r2: R2Configuration?
@@ -29,13 +30,14 @@ struct XPostArticleLinks {
 
     init(draft: WorkspaceRecord, posts: [String], records: [WorkspaceRecord]) throws {
         let available = records.filter { $0.isXArticle && $0.projectID == draft.projectID }
+        let explicitlyLinked: WorkspaceRecord?
         if draft["xArticleID"].isEmpty {
-            opening = nil
+            explicitlyLinked = nil
         } else {
             guard let article = available.first(where: { $0.id == draft["xArticleID"] }) else {
                 throw WorkspaceError("Choose an available X article for the opening post.")
             }
-            opening = article
+            explicitlyLinked = article
         }
         var links: [Int: WorkspaceRecord] = [:]
         for (index, post) in posts.enumerated() where post.contains(XReplyArticle.prefix) {
@@ -46,6 +48,8 @@ struct XPostArticleLinks {
             }
             links[index] = article
         }
+        let replyArticleIDs = Set(links.values.map(\.id))
+        opening = explicitlyLinked ?? (replyArticleIDs.count == 1 ? links.values.first : nil)
         replies = links
     }
 
@@ -92,6 +96,8 @@ struct SocialPublishPlan {
     let creator: TikTokCreator?
     let video: TikTokVideo?
     let nativeVideo: PostVideo?
+    let instagramCover: URL?
+    let instagramCoverHash: String?
     let r2: R2Configuration?
 
     var fingerprint: String {
@@ -99,6 +105,7 @@ struct SocialPublishPlan {
         parts += [imageHash ?? "", linkedInAuthor ?? "", publicImage?.absoluteString ?? "", subreddit ?? "", flair ?? ""]
         parts += posts + (tiktok?.fingerprintFields ?? []) + (r2?.identity ?? [])
         if let nativeVideo { parts.append(nativeVideo.hash) }
+        if let instagramCoverHash { parts.append(instagramCoverHash) }
         if let article = linkedInArticle { parts += [article.articleID, article.title, article.url.absoluteString] }
         let data = (try? JSONEncoder().encode(parts)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -132,6 +139,18 @@ struct SocialPublishPlan {
         if draft.needsNativePostVideo && nativeVideo == nil {
             throw WorkspaceError("Attach the video file before publishing this post.")
         }
+        if platform == .instagram, nativeVideo != nil, draft.fields["videoThumbnail"] != nil {
+            guard let cover = options.instagramCover,
+                  let attributes = try? cover.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  attributes.isRegularFile == true, attributes.isSymbolicLink != true else {
+                throw WorkspaceError("The Instagram Reel cover is unavailable. Attach it again before publishing.")
+            }
+            instagramCover = cover
+            instagramCoverHash = try fileDigest(cover, limit: 20_000_000).hash
+        } else {
+            instagramCover = nil
+            instagramCoverHash = nil
+        }
         r2 = platform == .instagram && options.useR2 ? options.r2 : nil
         publicImage = (platform == .instagram && nativeVideo == nil && !options.useR2) || (platform == .tiktok && !options.imageURL.isEmpty)
             ? try Self.publicImageURL(options.imageURL) : nil
@@ -144,8 +163,12 @@ struct SocialPublishPlan {
                 throw WorkspaceError("Choose an X post, thread or reply.")
             }
             let parts = ["followup", "thread"].contains(draft["format"]) ? XThreadText.posts(in: text) : [text]
-            posts = try XPostArticleLinks(draft: draft, posts: parts, records: articles).resolve(parts, pending: pendingXArticleIDs)
+            let links = try XPostArticleLinks(draft: draft, posts: parts, records: articles)
+            posts = try links.resolve(parts, pending: pendingXArticleIDs)
             let limit = draft.fields["longPost"] as? Bool == true && !["followup", "thread"].contains(draft["format"]) ? 25_000 : 280
+            if links.opening != nil, let opening = posts.first, Self.xWeight(opening) > limit {
+                throw WorkspaceError("Shorten the opening X post to make room for its linked article.")
+            }
             if draft["format"] == "followup", posts.count != 2 {
                 throw WorkspaceError("A post with reply needs an opening post and one follow-up.")
             }
@@ -381,6 +404,9 @@ struct SocialPublisher {
                          options: SocialPublishOptions, pendingXArticleIDs: Set<String> = []) async throws -> SocialPublishPlan {
         var options = options
         options.nativeVideo = try PostVideo.forDraft(draft, in: workspace.records)
+        if draft["platform"] == "instagram", options.nativeVideo != nil {
+            options.instagramCover = workspace.videoThumbnailURL(draft)
+        }
         let url = draft["format"] == "video" ? workspace.videoURL(draft) : workspace.imageURL(draft)
         if draft["platform"] == "instagram", options.useR2 || options.nativeVideo != nil {
             options.useR2 = true
@@ -404,6 +430,7 @@ struct SocialPublisher {
         if draft["platform"] == "tiktok" {
             options.creator = try await tikTokCreator(account: account)
             if draft["format"] == "video", let url { options.video = try await TikTokVideo.inspect(url) }
+            if draft["format"] == "video" { options.tiktok?.coverTimestampMS = try TikTokVideo.coverTimestamp(for: draft) }
         }
         return try SocialPublishPlan(draft: draft, account: account, imageURL: url, options: options,
                                      articles: workspace.records, pendingXArticleIDs: pendingXArticleIDs)
@@ -550,6 +577,11 @@ struct SocialPublisher {
                 try workspace.saveR2Media(media, config: config)
                 values["video_url"] = try client.link(media.key).absoluteString
                 values["media_type"] = "REELS"
+                if let cover = plan.instagramCover, let hash = plan.instagramCoverHash {
+                    let art = try await client.uploadInstagram(cover, hash: hash)
+                    try workspace.saveR2Media(art, config: config)
+                    values["cover_url"] = try client.link(art.key).absoluteString
+                }
             } else if let config = plan.r2 {
                 guard let client = try r2Client(), client.profile.configuration == config,
                       let local = plan.image, let hash = plan.imageHash else {

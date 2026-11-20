@@ -41,6 +41,22 @@ import Testing
     #expect(throws: WorkspaceError.self) { try client.open(tampered, now: now) }
 }
 
+@Test func socialSessionsNormalizeInstagramPermissionArrays() throws {
+    let data = Data(#"{"accessToken":"fixture","expiresAt":2000000000000,"scopes":["instagram_business_basic","instagram_business_content_publish"]}"#.utf8)
+    let session = try JSONDecoder().decode(ManagedSocialSession.self, from: data)
+    #expect(session.scopes == "instagram_business_basic,instagram_business_content_publish")
+}
+
+@Test func tiktokCoverFrameMustBeInsideTheVideo() throws {
+    var draft = WorkspaceRecord.new("draft")
+    draft.fields["video"] = ["duration": 99.104]
+    #expect(try TikTokVideo.coverTimestamp(for: draft) == nil)
+    draft["tiktokCoverTime"] = "98.6"
+    #expect(try TikTokVideo.coverTimestamp(for: draft) == 98_600)
+    draft["tiktokCoverTime"] = "99.104"
+    #expect(throws: WorkspaceError.self) { try TikTokVideo.coverTimestamp(for: draft) }
+}
+
 @Test @MainActor func socialConnectionTestOnlyReadsAndRequiresTheSavedIdentity() async throws {
     for platform in SocialPlatform.allCases {
         var requests = 0

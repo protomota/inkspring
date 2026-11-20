@@ -183,6 +183,7 @@ import Testing
     _ = try await articlePublisher.publish(articlePublisher.review(article))
     let published = try #require(workspace.records.first { $0.id == article.id })
     let review = try await publisher.review(draft)
+    #expect(review.posts[0] == parts[0] + "\n" + published["articleURL"])
     #expect(review.posts[1] == XReplyArticle(reply).copy + "\n" + published["articleURL"])
     #expect(XThreadText.weight(reply) == XThreadText.weight(review.posts[1]))
     #expect(review.posts[2...] == parts[2...])
@@ -254,7 +255,7 @@ import Testing
         #expect(receipt["status"] == "published")
     }
     let url = "\nhttps://x.com/i/web/status/789"
-    #expect(postedTexts == ["The opening post." + (opening ? url : ""), reply + (opening ? "" : url)])
+    #expect(postedTexts == ["The opening post." + url, reply + (opening ? "" : url)])
     #expect(requests == ["/2/articles/draft", "/2/articles/456/publish"] +
         Array(repeating: "/2/tweets", count: failsFirstPost ? 3 : 2))
 }

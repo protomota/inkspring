@@ -72,13 +72,15 @@ import Testing
     let when = PostScheduling.fiveMinutesFromNow(now)
     var requests: [String] = []
     var remote: [String: Any] = [:]
+    var signedInUser = 18
+    var canEditPublication = true
     let service = Substack(workspace: workspace, now: { now }) { method, url, payload in
         requests.append(method + " " + url.path)
         if url.host() == "substack.com" {
             #expect(method == "GET")
-            return ["id": 18, "name": "Fixture author", "publicationUsers": [
+            return ["id": signedInUser, "name": "Fixture author", "publicationUsers": canEditPublication ? [
                 ["role": "owner", "publication": ["id": 95, "name": "Fixture newsletter", "subdomain": "fixture"]]
-            ]]
+            ] : []]
         }
         #expect(url.host() == "fixture.substack.com")
         switch (method, url.path) {
@@ -114,6 +116,16 @@ import Testing
     try await service.connect()
     #expect(service.selected == nil)
     try service.select("95")
+    let beforeCheck = requests.count
+    try await service.checkConnection()
+    #expect(Array(requests.dropFirst(beforeCheck)) == ["GET /api/v1/user/profile/self"])
+    signedInUser = 19
+    await #expect(throws: WorkspaceError.self) { try await service.checkConnection() }
+    signedInUser = 18
+    canEditPublication = false
+    await #expect(throws: WorkspaceError.self) { try await service.checkConnection() }
+    canEditPublication = true
+    #expect(service.selected?.id == "95")
     var item = WorkspaceRecord.new("newsletter", projectID: workspace.projectID)
     item["title"] = "Swift fixture"
     item["body"] = "A draft in **Markdown**."

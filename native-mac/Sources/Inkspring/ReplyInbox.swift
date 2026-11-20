@@ -44,7 +44,7 @@ struct ReplyInbox {
         return workspace.records.filter { $0.kind == "reply-inbox" && (account == nil || $0["accountId"] == account?.id) }
             .map { value in
                 var row = value
-                if published.contains(row["postId"]) { row["status"] = "replied" }
+                if row["status"] != "archived" && published.contains(row["postId"]) { row["status"] = "replied" }
                 return row
             }
             .map { row in (row: row, date: scheduleDate(row["createdAt"]) ?? .distantPast) }

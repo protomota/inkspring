@@ -1258,9 +1258,13 @@ struct PostPreview: View {
                         .keyboardShortcut(expanded ? .cancelAction : nil)
                 }
                 StudioRule()
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { previewActions }
-                    VStack(alignment: .leading, spacing: 8) { previewActions }
+                HStack(alignment: .top, spacing: 12) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) { previewActions }
+                        VStack(alignment: .leading, spacing: 8) { previewActions }
+                    }
+                    Spacer(minLength: 8)
+                    previewMoreActions
                 }
                 postArticleControls
                 if record.fields["video"] is [String: Any] {
@@ -1306,10 +1310,6 @@ struct PostPreview: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .studioSurface()
-                if !record["planMarkdown"].isEmpty {
-                    Button("View outline", systemImage: "list.bullet.clipboard") { outlineID = record.id }
-                        .controlSize(.small)
-                }
                 Text("Comments").font(InkspringTypography.editorial(19, relativeTo: .headline))
                 ForEach(Array(record.comments.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 3) {
@@ -1413,15 +1413,21 @@ struct PostPreview: View {
                 Button("Open in studio", systemImage: "arrow.up.right") { openInStudio(record) }
             }
         }
-        Menu {
-            Button(record["planMarkdown"].isEmpty ? "Add outline" : "View outline") { outlineID = record.id }
-        } label: { Label("More", systemImage: "ellipsis.circle") }
-        .labelStyle(.iconOnly).help("More actions")
-        Button("Copy", systemImage: "doc.on.doc") { copy(record.body) }
-        Button(record.kind == "idea" ? "Skip idea" : "Move to Trash", systemImage: "trash") {
-            workspace.perform { try workspace.trashLibraryItem(record) }
+    }
+
+    private var previewMoreActions: some View {
+        StudioFilterMenu(title: "More actions", value: "More actions") {
+            Button("Copy text", systemImage: "doc.on.doc") { copy(record.body) }
+            Button(record["planMarkdown"].isEmpty ? "Add private outline" : "View private outline",
+                   systemImage: "list.bullet.clipboard") { outlineID = record.id }
+                .help("Open notes for this draft. They stay in Inkspring when you publish.")
+            Divider()
+            Button(record.kind == "idea" ? "Skip idea" : "Move to Trash", systemImage: "trash") {
+                workspace.perform { try workspace.trashLibraryItem(record) }
+            }
+            .disabled(["posting", "posted", "uncertain"].contains(record.scheduleStatus))
         }
-        .disabled(["posting", "posted", "uncertain"].contains(record.scheduleStatus))
+        .help("Copy the text, open private draft notes, or move this item to Trash.")
     }
 }
 

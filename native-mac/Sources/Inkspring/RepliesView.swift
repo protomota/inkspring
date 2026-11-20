@@ -4,6 +4,8 @@ struct RepliesView: View {
     let workspace: Workspace
     let openDraft: (WorkspaceRecord) -> Void
     @State private var filter = "Inbox"
+    @State private var ignoring: Set<String> = []
+    @State private var confirmsIgnoreAll = false
 
     private var inbox: ReplyInbox { ReplyInbox(workspace: workspace) }
     private var rows: [WorkspaceRecord] {
@@ -32,7 +34,17 @@ struct RepliesView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(15)
                 .studioSurface()
-                StudioTabs(selection: $filter, tabs: ["Inbox", "Ignored"], label: { $0 })
+                HStack {
+                    StudioTabs(selection: $filter, tabs: ["Inbox", "Ignored"], label: { $0 })
+                    Spacer()
+                    if filter == "Inbox" && !rows.isEmpty {
+                        Button("Ignore all", systemImage: "tray.and.arrow.down") {
+                            ignoring = Set(rows.map(\.id))
+                            confirmsIgnoreAll = true
+                        }
+                        .help("Move the replies currently in your inbox to Ignored.")
+                    }
+                }
                 if rows.isEmpty {
                     ContentUnavailableView("No replies here", systemImage: "bubble.left.and.bubble.right")
                 }
@@ -75,6 +87,14 @@ struct RepliesView: View {
                 }
             }
             .studioPage()
+        }
+        .confirmationDialog("Ignore \(ignoring.count) replies?", isPresented: $confirmsIgnoreAll, titleVisibility: .visible) {
+            Button("Ignore all", role: .destructive) {
+                workspace.perform { try workspace.ignoreReplies(ignoring) }
+                ignoring.removeAll()
+            }
+        } message: {
+            Text("You can move any of these replies back from Ignored.")
         }
     }
 

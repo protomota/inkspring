@@ -78,6 +78,7 @@ struct WorkspaceRecord: Identifiable {
     mutating func setDraftMedia(_ attachment: [String: Any], as kind: DraftMediaKind) {
         if kind == .image || (fields["video"] as? [String: Any])?["id"] as? String != attachment["id"] as? String {
             fields["videoThumbnail"] = nil
+            fields["tiktokCoverTime"] = nil
         }
         fields[kind.rawValue] = attachment
         fields[kind == .image ? "video" : "image"] = nil

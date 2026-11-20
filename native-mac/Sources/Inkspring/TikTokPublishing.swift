@@ -30,9 +30,12 @@ struct TikTokReviewOptions: Codable {
     var yourBrand = false
     var branded = false
     var consent = false
+    var coverTimestampMS: Int?
 
     var fingerprintFields: [String] {
-        [privacy, title, caption] + [comment, duet, stitch, aiGenerated, yourBrand, branded, consent].map { String($0) }
+        var fields = [privacy, title, caption] + [comment, duet, stitch, aiGenerated, yourBrand, branded, consent].map { String($0) }
+        if let coverTimestampMS { fields.append(String(coverTimestampMS)) }
+        return fields
     }
 
     func validate(creator: TikTokCreator, video: TikTokVideo?) throws {
@@ -46,6 +49,9 @@ struct TikTokReviewOptions: Codable {
         if let video, creator.maxDuration <= 0 || video.duration > creator.maxDuration {
             throw WorkspaceError("This video exceeds the duration limit for the connected TikTok account.")
         }
+        if let coverTimestampMS, video.map({ coverTimestampMS >= 0 && Double(coverTimestampMS) / 1000 < $0.duration }) != true {
+            throw WorkspaceError("Choose a cover frame within the attached TikTok video.")
+        }
     }
 }
 
@@ -55,6 +61,16 @@ struct TikTokVideo: Sendable {
     let duration: Double
     let type: String
     let modified: Date?
+
+    static func coverTimestamp(for draft: WorkspaceRecord) throws -> Int? {
+        let raw = draft["tiktokCoverTime"].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        guard let time = Double(raw), let duration = (draft.fields["video"] as? [String: Any])?["duration"] as? Double,
+              time.isFinite, time >= 0, time < duration, time <= 600 else {
+            throw WorkspaceError("Enter a cover frame in seconds within the attached TikTok video.")
+        }
+        return Int((time * 1000).rounded())
+    }
 
     static func inspect(_ url: URL) async throws -> Self {
         let attributes = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey])
@@ -120,6 +136,7 @@ extension SocialPublisher {
                     info["disable_duet"] = !review.duet
                     info["disable_stitch"] = !review.stitch
                     info["is_aigc"] = review.aiGenerated
+                    if let cover = review.coverTimestampMS { info["video_cover_timestamp_ms"] = cover }
                     let chunks = video.ranges
                     let opened = try FileHandle(forReadingFrom: file)
                     defer { try? opened.close() }

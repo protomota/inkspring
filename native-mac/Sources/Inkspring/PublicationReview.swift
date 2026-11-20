@@ -93,6 +93,13 @@ struct PublicationReview: View {
                                 if let video = plan.nativeVideo {
                                     Label(video.name, systemImage: "video")
                                 }
+                                if let cover = plan.instagramCover {
+                                    Label("Reel cover", systemImage: "photo")
+                                    AttachedMedia(url: cover)
+                                }
+                                if let time = plan.tiktok?.coverTimestampMS {
+                                    Label("Cover frame at \(Double(time) / 1000, specifier: "%.3f") seconds", systemImage: "photo")
+                                }
                                 AttachedMedia(url: plan.nativeVideo?.url ?? plan.image)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
