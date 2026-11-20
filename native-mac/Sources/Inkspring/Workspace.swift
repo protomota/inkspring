@@ -120,6 +120,7 @@ final class Workspace {
         if record.kind == "draft" {
             record["title"] = record.draftTitle
             if record["platform"] != "linkedin" { record.fields["linkedinArticleID"] = nil }
+            if record["platform"] != "x" { record.fields["xArticleID"] = nil }
         }
         if ["script", "article"].contains(record.kind) {
             if record.kind == "script" { record["platform"] = "youtube" }
@@ -180,7 +181,7 @@ final class Workspace {
             guard !["posting", "posted"].contains(current.scheduleStatus) else {
                 throw WorkspaceError("This post is already publishing or published. Create a new draft to revise it.")
             }
-            let keys = ["title", "content", "format", "platform", "linkedinArticleID"]
+            let keys = ["title", "content", "format", "platform", "linkedinArticleID", "xArticleID"]
             let oldContent = keys.map { current[$0] }
             let newContent = keys.map { record[$0] }
             let oldMedia = ["image", "video", "linkedinDestination"].map { current.fields[$0] as? NSDictionary }
@@ -397,7 +398,7 @@ final class Workspace {
     }
 
     func updatePostText(_ input: WorkspaceRecord, title: String, text: String, format: String? = nil,
-                        linkedInArticleID: String? = nil) throws {
+                        linkedInArticleID: String? = nil, xArticleID: String? = nil) throws {
         try withChanges {
             guard var record = records.first(where: { $0.kind == input.kind && $0.id == input.id }),
                   record["updatedAt"] == input["updatedAt"] else {
@@ -422,6 +423,9 @@ final class Workspace {
                 }
                 if let linkedInArticleID, record["platform"] == "linkedin" {
                     record["linkedinArticleID"] = linkedInArticleID
+                }
+                if let xArticleID, record["platform"] == "x" {
+                    record["xArticleID"] = xArticleID
                 }
             default:
                 throw WorkspaceError("Choose an idea or post to edit.")
@@ -460,6 +464,15 @@ final class Workspace {
                           $0.isLinkedInArticle && $0.projectID == record.projectID && $0.id == record["linkedinArticleID"]
                       }) else {
                     throw WorkspaceError("Choose a LinkedIn article from this project.")
+                }
+            }
+            if !record["xArticleID"].isEmpty,
+               records.first(where: { $0.id == record.id })?["xArticleID"] != record["xArticleID"] {
+                guard record["platform"] == "x",
+                      records.contains(where: {
+                          $0.isXArticle && $0.projectID == record.projectID && $0.id == record["xArticleID"]
+                      }) else {
+                    throw WorkspaceError("Choose an X article from this project.")
                 }
             }
             if record["format"] == "reply" {
@@ -1089,6 +1102,14 @@ extension Workspace {
                 throw WorkspaceError("Check this post in Publishing history before scheduling it again.")
             }
             var personalURN: String?
+            if draft["platform"] == "x" {
+                let posts = ["followup", "thread"].contains(draft["format"]) ? XThreadText.posts(in: draft.body) : [draft.body]
+                let links = try XPostArticleLinks(draft: draft, posts: posts, records: records)
+                guard links.articles.allSatisfy({ $0["state"] == "published" }) else {
+                    throw WorkspaceError("Use Publish together on X to send the draft article and its post.")
+                }
+                _ = try links.resolve(posts, pending: [])
+            }
             if draft["platform"] == "linkedin" {
                 _ = try LinkedInArticleShare.resolve(post: draft, in: records)
                 guard let account = try override ?? socialAccounts.savedAccount(.linkedin) else {

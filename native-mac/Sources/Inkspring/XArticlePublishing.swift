@@ -74,6 +74,7 @@ struct XArticlePublishPlan {
     let articleID: String
     let revision: String
     let title: String
+    let body: String
     let accountKey: String
     let accountName: String
     let fingerprint: String
@@ -87,7 +88,7 @@ struct XArticlePublishPlan {
         guard scopes.isEmpty || scopes.contains("tweet.write") else {
             throw WorkspaceError("Reconnect X in Connections with permission to publish.")
         }
-        articleID = article.id; revision = article["updatedAt"]; title = article.title
+        articleID = article.id; revision = article["updatedAt"]; title = article.title; body = article.body
         accountKey = account.connectionKey
         accountName = account.username.isEmpty ? account.name : "@" + account.username
         payload = try XArticleDocument.payload(title: title, markdown: article.body)
@@ -111,9 +112,10 @@ struct XArticlePublishPlan {
         try XArticlePublishPlan(article: article, account: await authorize())
     }
 
-    func publish(_ plan: XArticlePublishPlan, fromAgent: Bool = false) async throws -> WorkspaceRecord {
+    func publish(_ plan: XArticlePublishPlan, fromAgent: Bool = false,
+                 using existingLease: PublicationLease? = nil) async throws -> WorkspaceRecord {
         let account = try await authorize()
-        let lease = try workspace.claimPublication()
+        let lease = try existingLease ?? workspace.claimPublication()
         defer { withExtendedLifetime(lease) {} }
         try workspace.reload()
         guard let article = workspace.records.first(where: { $0.id == plan.articleID && $0.isXArticle }),

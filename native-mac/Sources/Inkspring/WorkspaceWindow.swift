@@ -49,6 +49,7 @@ struct WorkspaceWindow: View {
     @State private var postBeingEdited: WorkspaceRecord?
     @State private var newsletterIdea: WorkspaceRecord?
     @State private var newsletterDraft: WorkspaceRecord?
+    @State private var linkedInArticlePostID: String?
     @State private var returnedDocumentID: String?
     @State private var newsletterBackPage: WorkspacePage?
     @State private var saveNewsletterBeforeLeaving: (() -> Bool)?
@@ -428,6 +429,8 @@ struct WorkspaceWindow: View {
         case .workspace, .library:
             ZStack {
                 PostBrowser(workspace: workspace, library: page == .library, edit: editPost, openInStudio: open,
+                            openArticle: openPostArticle,
+                            reviewPair: { reviewPublication($0, at: nil) { _ in } },
                             returnedDocumentID: returnedDocumentID, postBeingEdited: postBeingEdited, back: { navigate() }, finishedEditing: {
                                 postBeingEdited = nil
                                 studioDirty = false
@@ -447,6 +450,7 @@ struct WorkspaceWindow: View {
                                  newsletterDirtyChanged: { studioDirty = $0 },
                                  newsletterSaveBeforeLeaving: { saveNewsletterBeforeLeaving = $0 },
                                  reviewNewsletter: reviewNewsletter, openRelatedPost: { post in navigate { open(post) } },
+                                 linkedInPostID: linkedInArticlePostID,
                                  saved: { _ in })
                         .id(newsletterDraft.id)
                 }
@@ -474,7 +478,7 @@ struct WorkspaceWindow: View {
                                 studioDirty = false
                                 showSchedule(draft)
                             }, reviewPublication: reviewPublication, isActive: editor == nil,
-                            openArticle: { article in navigate { open(article) } })
+                            openArticle: openPostArticle)
                     .id(studioDraft.id)
             }
         case .settings:
@@ -536,6 +540,10 @@ struct WorkspaceWindow: View {
 
     private func reviewPublication(_ draft: WorkspaceRecord, at date: Date?,
                                    completed: @escaping (WorkspaceRecord) -> Void) {
+        if date == nil, let article = workspace.pendingLinkedInArticle(for: draft) {
+            openPostArticle(article, from: draft)
+            return
+        }
         editor = .publication(draft, date, completed)
     }
 
@@ -546,9 +554,11 @@ struct WorkspaceWindow: View {
 
     private func backFromNewsletter() {
         let destination = newsletterBackPage ?? .workspace
-        let documentID = newsletterDraft?.id
+        let documentID = linkedInArticlePostID ?? newsletterDraft?.id
+        let parent = linkedInArticlePostID.flatMap { id in workspace.drafts.first { $0.id == id } }
         navigate {
             returnedDocumentID = documentID
+            if destination == .studio, let parent { studioDraft = parent }
             page = destination
         }
     }
@@ -576,7 +586,21 @@ struct WorkspaceWindow: View {
     private func createDraft(_ type: WorkspaceDraftType) {
         navigate {
             guard let project = workspace.project else { add("project"); return }
-            open(type.makeRecord(projectID: project.id))
+            if type == .linkedInArticle {
+                var post = WorkspaceDraftType.post.makeRecord(projectID: project.id)
+                post["platform"] = "linkedin"
+                post["format"] = "post"
+                open(post)
+            } else {
+                open(type.makeRecord(projectID: project.id))
+            }
+        }
+    }
+
+    private func openPostArticle(_ article: WorkspaceRecord, from post: WorkspaceRecord) {
+        navigate {
+            open(article)
+            linkedInArticlePostID = post.id
         }
     }
 
@@ -637,6 +661,7 @@ struct WorkspaceWindow: View {
             postBeingEdited = nil
             if isEditingNewsletter {
                 newsletterDraft = nil
+                linkedInArticlePostID = nil
                 newsletterIdea = nil
                 newsletterBackPage = nil
             }
@@ -790,7 +815,8 @@ private struct WorkspaceDraftMenu: View {
         Menu {
             ForEach(WorkspaceDraftType.allCases, id: \.self) { type in
                 if type == .post {
-                    Button(type.name, systemImage: type.symbol) { create(type) }
+                    Button(type == .linkedInArticle ? "LinkedIn post with article" : type.name,
+                           systemImage: type.symbol) { create(type) }
                         .keyboardShortcut("n")
                 } else {
                     Button(type.name, systemImage: type.symbol) { create(type) }
@@ -868,6 +894,8 @@ struct PostBrowser: View {
     let library: Bool
     let edit: (WorkspaceRecord) -> Void
     let openInStudio: (WorkspaceRecord) -> Void
+    let openArticle: (WorkspaceRecord, WorkspaceRecord) -> Void
+    let reviewPair: (WorkspaceRecord) -> Void
     let returnedDocumentID: String?
     let postBeingEdited: WorkspaceRecord?
     let back: () -> Void
@@ -895,9 +923,10 @@ struct PostBrowser: View {
     }
 
     private func records(for filter: PostBrowserFilter, query: String = "") -> [WorkspaceRecord] {
-        (filter == .ideas ? workspace.ideas : workspace.workspaceDrafts).filter {
+        let rows = (filter == .ideas ? workspace.ideas : workspace.workspaceDrafts).filter {
             (type == nil || WorkspaceDraftType(record: $0) == type) && filter.matches($0, platform: platform, search: query, library: library)
         }
+        return type == nil ? LinkedInArticleShare.groupedDrafts(rows) : rows
     }
 
     var body: some View {
@@ -948,7 +977,10 @@ struct PostBrowser: View {
                     }
                 }), tabs: [nil] + WorkspaceDraftType.allCases.map(Optional.some),
                            label: { $0.map { $0.name + "s" } ?? "All drafts" },
-                           count: { format in workspace.workspaceDrafts.filter { format == nil || WorkspaceDraftType(record: $0) == format }.count })
+                           count: { format in
+                               if let format { return workspace.workspaceDrafts.filter { WorkspaceDraftType(record: $0) == format }.count }
+                               return LinkedInArticleShare.groupedDrafts(workspace.workspaceDrafts).count
+                           })
             }
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -963,14 +995,15 @@ struct PostBrowser: View {
                         if let postBeingEdited {
                             PostInlineEditor(record: postBeingEdited, workspace: workspace, back: back,
                                              saved: finishedEditing, onDirty: editDirtyChanged,
-                                             openArticle: { article in selectPost { openInStudio(article) } })
+                                             openArticle: openArticle)
                                 .id(postBeingEdited.id)
                         } else if let selected {
                             if selected.isLongForm, let format = WorkspaceDraftType(record: selected) {
                                 longFormPreview(selected, type: format)
                                     .id(selected.id)
                             } else {
-                                PostPreview(record: selected, workspace: workspace, edit: edit, openInStudio: openInStudio, showSchedule: showSchedule,
+                                PostPreview(record: selected, workspace: workspace, edit: edit, openInStudio: openInStudio,
+                                        openArticle: openArticle, reviewPair: reviewPair, showSchedule: showSchedule,
                                         expanded: expanded, togglePreview: togglePreview)
                                     .id(selected.id)
                             }
@@ -1173,6 +1206,8 @@ struct PostPreview: View {
     let workspace: Workspace
     let edit: (WorkspaceRecord) -> Void
     let openInStudio: (WorkspaceRecord) -> Void
+    let openArticle: (WorkspaceRecord, WorkspaceRecord) -> Void
+    let reviewPair: (WorkspaceRecord) -> Void
     let showSchedule: (WorkspaceRecord) -> Void
     let expanded: Bool
     let togglePreview: () -> Void
@@ -1227,6 +1262,7 @@ struct PostPreview: View {
                     HStack(spacing: 8) { previewActions }
                     VStack(alignment: .leading, spacing: 8) { previewActions }
                 }
+                postArticleControls
                 if record.fields["video"] is [String: Any] {
                     attachment("Video", icon: "video", url: workspace.videoURL(record))
                 }
@@ -1264,18 +1300,6 @@ struct PostPreview: View {
                             }
                         } else {
                             Text(record.body).font(InkspringTypography.interface(17)).lineSpacing(5).textSelection(.enabled)
-                            if record["platform"] == "linkedin", !record["linkedinArticleID"].isEmpty {
-                                if let article = workspace.records.first(where: { $0.isLinkedInArticle && $0.projectID == record.projectID && $0.id == record["linkedinArticleID"] }) {
-                                    Button(article.title, systemImage: "doc.richtext") { edit(article) }
-                                    if let url = LinkedInArticleShare.publishedURL(article["articleURL"]) {
-                                        StudioExternalLink("Published LinkedIn article", destination: url)
-                                    } else {
-                                        Text("Add the published article link before sharing.").font(.caption).foregroundStyle(palette.muted)
-                                    }
-                                } else {
-                                    Text("LinkedIn article unavailable").font(.caption).foregroundStyle(palette.muted)
-                                }
-                            }
                         }
                     }
                 }
@@ -1318,6 +1342,44 @@ struct PostPreview: View {
             .padding(.horizontal, expanded ? 34 : 24)
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder private var postArticleControls: some View {
+        if record.kind == "draft", let platform = SocialPlatform(rawValue: record["platform"]),
+           [.linkedin, .x].contains(platform), record.fields["manualQuote"] as? Bool != true {
+            let key = platform == .x ? "xArticleID" : "linkedinArticleID"
+            let allowsChanges = !["queued", "due", "posting", "posted", "uncertain"].contains(record.scheduleStatus)
+            let replies = workspace.xReplyArticles(for: record, body: record.body)
+            if allowsChanges || !record[key].isEmpty || !replies.isEmpty {
+                let canCreate = !record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && record["format"] != "reply"
+                let create: (() -> Void)? = canCreate ? { createLinkedArticle() } : nil
+                let hasUnpublishedArticle = workspace.pendingLinkedInArticle(for: record) != nil ||
+                    platform == .x && (replies.contains { $0["state"] != "published" } || workspace.records.contains {
+                        $0.isXArticle && $0.projectID == record.projectID && $0.id == record[key] && $0["state"] != "published"
+                    })
+                let publish: (() -> Void)? = canCreate && allowsChanges && hasUnpublishedArticle ? { reviewPair(record) } : nil
+                PostArticlePicker(workspace: workspace, projectID: record.projectID, platform: platform,
+                                  articleID: articleBinding(key), openArticle: { openArticle($0, record) }, createArticle: create,
+                                  xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish)
+            }
+        }
+    }
+
+    private func articleBinding(_ key: String) -> Binding<String> {
+        Binding(get: { record[key] }, set: { id in
+            workspace.perform {
+                var updated = record
+                updated[key] = id
+                try workspace.save(updated)
+            }
+        })
+    }
+
+    private func createLinkedArticle() {
+        workspace.perform {
+            let article = try workspace.linkedArticleDraft(from: record)
+            openArticle(article, record)
         }
     }
 

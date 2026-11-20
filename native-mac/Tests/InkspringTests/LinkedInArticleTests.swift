@@ -11,7 +11,7 @@ import Testing
     post["title"] = "Learning in public"
     post["content"] = "# The work\n\n" + String(repeating: "We build what we need and share what we learn. ", count: 100)
     post = try workspace.save(post)
-    let article = try workspace.linkedInArticleDraft(from: post)
+    let article = try workspace.linkedArticleDraft(from: post)
     let linked = try #require(workspace.records.first { $0.id == post.id })
     return (workspace, article, linked, directory)
 }
@@ -21,8 +21,10 @@ import Testing
     defer { try? FileManager.default.removeItem(at: directory) }
     #expect(article.isLinkedInArticle && article.body == post.body)
     #expect(article.body.count > 3_000 && post["linkedinArticleID"] == article.id)
-    #expect(try workspace.linkedInArticleDraft(from: post).id == article.id)
+    #expect(try workspace.linkedArticleDraft(from: post).id == article.id)
     #expect(try workspace.linkedInShareDraft(for: article.id).id == post.id)
+    #expect(LinkedInArticleShare.groupedDrafts([article, post]).map(\.id) == [post.id])
+    #expect(LinkedInArticleShare.groupedDrafts([article]).map(\.id) == [article.id])
     #expect(throws: WorkspaceError.self) { _ = try LinkedInArticleShare.resolve(post: post, in: workspace.records) }
 
     let saved = try workspace.saveLinkedInArticleURL(" https://linkedin.com/pulse/learning-in-public/?trk=share#preview ", article: article)

@@ -193,3 +193,68 @@ import Testing
         try SocialPublishPlan(draft: draft, account: articleAccount(), imageURL: nil, articles: [published])
     }
 }
+
+@Test(arguments: [true, false], [true, false])
+@MainActor func xPostPublishesWithItsArticleAndRetriesWithoutRepublishingArticle(opening: Bool, failsFirstPost: Bool) async throws {
+    let (workspace, article, folder) = try articleWorkspace()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let reference = try #require(article.referenceID)
+    var draft = WorkspaceRecord.new("draft", projectID: article.projectID)
+    draft["platform"] = "x"
+    draft["format"] = "thread"
+    draft["title"] = "Our launch"
+    if opening { draft["xArticleID"] = article.id }
+    let reply = "Here's the full story."
+    draft["content"] = ["The opening post.", opening ? reply : XReplyArticle.attach(reference, to: reply)]
+        .joined(separator: XThreadText.separator)
+    draft = try workspace.save(draft)
+
+    var requests: [String] = []
+    var postedTexts: [String] = []
+    let publisher = SocialPublisher(workspace: workspace, transport: .init { request in
+        let url = try #require(request.url)
+        requests.append(url.path)
+        let result: String
+        let status: Int
+        switch url.path {
+        case "/2/articles/draft":
+            result = #"{"data":{"id":"456"}}"#; status = 201
+        case "/2/articles/456/publish":
+            result = #"{"data":{"post_id":"789"}}"#; status = 200
+        case "/2/tweets":
+            let body = try #require(request.httpBody)
+            let payload = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let text = try #require(payload["text"] as? String)
+            #expect(!text.contains(XPostArticleLinks.pendingURL))
+            if failsFirstPost && requests.count == 3 {
+                result = #"{"detail":"Please retry"}"#; status = 429
+            } else {
+                postedTexts.append(text)
+                result = #"{"data":{"id":"\#(postedTexts.count + 100)"}}"#; status = 201
+            }
+        default: throw WorkspaceError("Unexpected fixture URL.")
+        }
+        return (Data(result.utf8), try #require(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)))
+    }, authorize: { _ in articleAccount() })
+    let pair = try #require(try await publisher.reviewXArticlePost(draft))
+    #expect(pair.articles.map(\.articleID) == [article.id])
+    #expect(requests.isEmpty)
+    #expect(throws: WorkspaceError.self) {
+        try workspace.scheduleDraft(draft, at: Date.now.addingTimeInterval(86400))
+    }
+    if failsFirstPost {
+        await #expect(throws: WorkspaceError.self) { _ = try await publisher.publishXArticlePost(pair) }
+        #expect(requests == ["/2/articles/draft", "/2/articles/456/publish", "/2/tweets"])
+        let retry = try #require(workspace.records.first { $0.id == draft.id })
+        #expect(try await publisher.reviewXArticlePost(retry) == nil)
+        let revised = try await publisher.review(retry)
+        _ = try await publisher.publish(revised)
+    } else {
+        let receipt = try await publisher.publishXArticlePost(pair)
+        #expect(receipt["status"] == "published")
+    }
+    let url = "\nhttps://x.com/i/web/status/789"
+    #expect(postedTexts == ["The opening post." + (opening ? url : ""), reply + (opening ? "" : url)])
+    #expect(requests == ["/2/articles/draft", "/2/articles/456/publish"] +
+        Array(repeating: "/2/tweets", count: failsFirstPost ? 3 : 2))
+}

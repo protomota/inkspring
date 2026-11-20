@@ -1,3 +1,4 @@
+import InkspringSchedule
 import SwiftUI
 
 struct PublicationReview: View {
@@ -8,6 +9,7 @@ struct PublicationReview: View {
     let completed: (WorkspaceRecord) -> Void
     let close: () -> Void
     @State private var plan: SocialPublishPlan?
+    @State private var xArticleReview: XArticlePostReview?
     @State private var message: String?
     @State private var publishing = false
     @State private var reviewing = false
@@ -26,7 +28,8 @@ struct PublicationReview: View {
                 .keyboardShortcut(.cancelAction)
             if publishing { ProgressView().controlSize(.small) }
             if let plan {
-                Button(scheduleAt == nil ? "Publish on \(plan.platform.name)" : "Schedule TikTok post") {
+                Button(xArticleReview != nil ? "Publish together on X" :
+                       scheduleAt == nil ? "Publish on \(plan.platform.name)" : "Schedule TikTok post") {
                     Task { await publish(plan) }
                 }
                 .modifier(PrimaryActionStyle())
@@ -44,6 +47,15 @@ struct PublicationReview: View {
                     }
                     if let plan {
                         StudioPlatformLabel(name: plan.platform.rawValue, title: "\(plan.platform.name) · \(plan.accountName)")
+                        if let xArticleReview {
+                            ForEach(xArticleReview.articles, id: \.articleID) { article in
+                                DisclosureGroup("X article · " + article.title) {
+                                    NewsletterPreview(title: "", subtitle: "", markdown: article.body, cover: nil)
+                                }
+                            }
+                            Text("Inkspring publishes the article to get its URL, then sends the post and replies with the article link.")
+                                .font(.callout).foregroundStyle(palette.muted)
+                        }
                         if let tiktok = plan.tiktok {
                             Text(TikTokCreator.privacyLabels[tiktok.privacy] ?? tiktok.privacy)
                                 .font(.headline)
@@ -60,7 +72,9 @@ struct PublicationReview: View {
                                     Text(tiktok.title).font(.headline)
                                 }
                                 ForEach(Array((plan.tiktok.map { [$0.caption] } ?? plan.posts).enumerated()), id: \.offset) { _, post in
-                                    Text(post).textSelection(.enabled)
+                                    Text(xArticleReview == nil ? post :
+                                         post.replacingOccurrences(of: XPostArticleLinks.pendingURL, with: "[X article link]"))
+                                        .textSelection(.enabled)
                                     if plan.posts.count > 1 { Divider() }
                                 }
                                 if let article = plan.linkedInArticle {
@@ -165,7 +179,17 @@ struct PublicationReview: View {
         message = nil
         defer { reviewing = false }
         if draft["platform"] == "tiktok" { options.tiktok = tiktok }
-        do { plan = try await SocialPublisher(workspace: workspace).review(draft, options: options) }
+        let publisher = SocialPublisher(workspace: workspace)
+        do {
+            if scheduleAt == nil, draft["platform"] == "x",
+               !draft["xArticleID"].isEmpty || draft.body.contains(XReplyArticle.prefix),
+               let paired = try await publisher.reviewXArticlePost(draft) {
+                xArticleReview = paired
+                plan = paired.post
+            } else {
+                plan = try await publisher.review(draft, options: options)
+            }
+        }
         catch { message = error.localizedDescription }
     }
 
@@ -181,7 +205,10 @@ struct PublicationReview: View {
                 close()
                 return
             }
-            let receipt = try await SocialPublisher(workspace: workspace).publish(plan)
+            let publisher = SocialPublisher(workspace: workspace)
+            let receipt: WorkspaceRecord
+            if let xArticleReview { receipt = try await publisher.publishXArticlePost(xArticleReview) }
+            else { receipt = try await publisher.publish(plan) }
             workspace.notice = "Published on \(plan.platform.name)"
             completed(receipt)
             close()

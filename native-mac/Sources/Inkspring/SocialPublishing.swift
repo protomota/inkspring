@@ -15,6 +15,59 @@ struct SocialPublishOptions {
     var r2: R2Configuration?
 }
 
+struct XPostArticleLinks {
+    static let pendingURL = "https://x.com/i/web/status/0"
+    let opening: WorkspaceRecord?
+    let replies: [Int: WorkspaceRecord]
+
+    var articles: [WorkspaceRecord] {
+        var seen: Set<String> = []
+        return ([opening].compactMap { $0 } + replies.sorted { $0.key < $1.key }.map(\.value))
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    init(draft: WorkspaceRecord, posts: [String], records: [WorkspaceRecord]) throws {
+        let available = records.filter { $0.isXArticle && $0.projectID == draft.projectID }
+        if draft["xArticleID"].isEmpty {
+            opening = nil
+        } else {
+            guard let article = available.first(where: { $0.id == draft["xArticleID"] }) else {
+                throw WorkspaceError("Choose an available X article for the opening post.")
+            }
+            opening = article
+        }
+        var links: [Int: WorkspaceRecord] = [:]
+        for (index, post) in posts.enumerated() where post.contains(XReplyArticle.prefix) {
+            let link = XReplyArticle(post)
+            guard index > 0, let reference = link.reference, !link.copy.contains(XReplyArticle.prefix),
+                  let article = available.first(where: { $0.referenceID == reference }) else {
+                throw WorkspaceError("Choose an available X article for this reply.")
+            }
+            links[index] = article
+        }
+        replies = links
+    }
+
+    func resolve(_ posts: [String], pending: Set<String>) throws -> [String] {
+        try posts.enumerated().map { index, post in
+            guard let article = index == 0 ? opening : replies[index] else { return post }
+            let url = pending.contains(article.id) ? Self.pendingURL : article["articleURL"]
+            guard pending.contains(article.id) || article["state"] == "published" &&
+                    url.range(of: #"\Ahttps://x\.com/i/web/status/[0-9]+\z"#, options: .regularExpression) != nil else {
+                throw WorkspaceError("Publish the X article “\(article.title)” before sending its link.")
+            }
+            let copy = index == 0 ? post : XReplyArticle(post).copy
+            return copy.isEmpty ? url : copy + "\n" + url
+        }
+    }
+}
+
+struct XArticlePostReview {
+    let post: SocialPublishPlan
+    let articles: [XArticlePublishPlan]
+    let accountKey: String
+}
+
 struct SocialPublishPlan {
     static let supported = Set(SocialPlatform.allCases)
 
@@ -48,7 +101,8 @@ struct SocialPublishPlan {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    init(draft: WorkspaceRecord, account: ManagedSocialAccount, imageURL: URL?, options: SocialPublishOptions = .init(), articles: [WorkspaceRecord] = []) throws {
+    init(draft: WorkspaceRecord, account: ManagedSocialAccount, imageURL: URL?, options: SocialPublishOptions = .init(),
+         articles: [WorkspaceRecord] = [], pendingXArticleIDs: Set<String> = []) throws {
         guard draft.fields["manualQuote"] as? Bool != true else {
             throw WorkspaceError("Open this quote draft in X to publish it.")
         }
@@ -82,23 +136,8 @@ struct SocialPublishPlan {
             guard ["post", "followup", "thread", "image", "reply"].contains(draft["format"]) else {
                 throw WorkspaceError("Choose an X post, thread, image post or reply.")
             }
-            if ["followup", "thread"].contains(draft["format"]) {
-                posts = try XThreadText.posts(in: text).enumerated().map { index, post in
-                    guard post.contains(XReplyArticle.prefix) else { return post }
-                    let link = XReplyArticle(post)
-                    guard index > 0, let reference = link.reference, !link.copy.contains(XReplyArticle.prefix),
-                          let article = articles.first(where: { $0.isXArticle && $0.projectID == draft.projectID && $0.referenceID == reference }) else {
-                        throw WorkspaceError("Choose an available X article for this reply.")
-                    }
-                    guard article["state"] == "published",
-                          article["articleURL"].range(of: #"\Ahttps://x\.com/i/web/status/[0-9]+\z"#, options: .regularExpression) != nil else {
-                        throw WorkspaceError("Publish the X article “\(article.title)” before posting this thread.")
-                    }
-                    return link.copy.isEmpty ? article["articleURL"] : link.copy + "\n" + article["articleURL"]
-                }
-            } else {
-                posts = [text]
-            }
+            let parts = ["followup", "thread"].contains(draft["format"]) ? XThreadText.posts(in: text) : [text]
+            posts = try XPostArticleLinks(draft: draft, posts: parts, records: articles).resolve(parts, pending: pendingXArticleIDs)
             let limit = draft.fields["longPost"] as? Bool == true && !["followup", "thread"].contains(draft["format"]) ? 25_000 : 280
             if draft["format"] == "followup", posts.count != 2 {
                 throw WorkspaceError("A post with reply needs an opening post and one follow-up.")
@@ -252,8 +291,65 @@ struct SocialPublisher {
         return try await prepare(draft, account: account, options: options)
     }
 
+    func reviewXArticlePost(_ draft: WorkspaceRecord) async throws -> XArticlePostReview? {
+        guard draft["platform"] == "x" else { return nil }
+        let account = try await authorize(.x)
+        return try await reviewXArticlePost(draft, account: account)
+    }
+
+    private func reviewXArticlePost(_ draft: WorkspaceRecord, account: ManagedSocialAccount) async throws -> XArticlePostReview? {
+        try workspace.reload()
+        guard let current = workspace.drafts.first(where: { $0.id == draft.id }), current["updatedAt"] == draft["updatedAt"] else {
+            throw WorkspaceError("The post changed. Open the review again.")
+        }
+        let parts = ["followup", "thread"].contains(current["format"]) ? XThreadText.posts(in: current.body) : [current.body]
+        let links = try XPostArticleLinks(draft: current, posts: parts, records: workspace.records)
+        let pending = links.articles.filter { $0["state"] != "published" }
+        guard !pending.isEmpty else { return nil }
+        guard !["posting", "posted", "uncertain"].contains(current.scheduleStatus), !workspace.records.contains(where: {
+            $0.kind == "publication" && $0["draftId"] == current.id && ["publishing", "published", "uncertain"].contains($0["status"])
+        }) else { throw WorkspaceError("Check the existing X publishing attempt before retrying.") }
+        let articles = try pending.map { try XArticlePublishPlan(article: $0, account: account) }
+        let plan = try await prepare(current, account: account, options: .init(), pendingXArticleIDs: Set(pending.map(\.id)))
+        return XArticlePostReview(post: plan, articles: articles, accountKey: account.connectionKey)
+    }
+
+    func publishXArticlePost(_ reviewed: XArticlePostReview) async throws -> WorkspaceRecord {
+        let account = try await authorize(.x)
+        let lease = try workspace.claimPublication()
+        defer { withExtendedLifetime(lease) {} }
+        try workspace.reload()
+        guard let draft = workspace.drafts.first(where: { $0.id == reviewed.post.draftID }),
+              draft["updatedAt"] == reviewed.post.revision, account.connectionKey == reviewed.accountKey,
+              let current = try await reviewXArticlePost(draft, account: account),
+              current.post.fingerprint == reviewed.post.fingerprint,
+              current.articles.map(\.revision) == reviewed.articles.map(\.revision),
+              current.articles.map(\.fingerprint) == reviewed.articles.map(\.fingerprint) else {
+            throw WorkspaceError("The post, article or X account changed. Open the review again.")
+        }
+        let publisher = XArticlePublisher(workspace: workspace, transport: transport, authorize: { try await authorize(.x) })
+        var published: [String] = []
+        do {
+            for article in reviewed.articles {
+                try workspace.reload()
+                guard workspace.drafts.first(where: { $0.id == draft.id })?["updatedAt"] == reviewed.post.revision else {
+                    throw WorkspaceError("The post changed. Review it again.")
+                }
+                _ = try await publisher.publish(article, using: lease)
+                published.append(article.title)
+            }
+            let plan = try await prepare(draft, account: account, options: .init())
+            return try await publish(plan, using: lease)
+        } catch {
+            if !published.isEmpty {
+                throw WorkspaceError("Published on X: \(published.joined(separator: ", ")). The remaining items need attention. \(error.localizedDescription)")
+            }
+            throw error
+        }
+    }
+
     private func prepare(_ draft: WorkspaceRecord, account: ManagedSocialAccount,
-                         options: SocialPublishOptions) async throws -> SocialPublishPlan {
+                         options: SocialPublishOptions, pendingXArticleIDs: Set<String> = []) async throws -> SocialPublishPlan {
         var options = options
         let url = draft["format"] == "video" ? workspace.videoURL(draft) : workspace.imageURL(draft)
         if draft["platform"] == "instagram", options.useR2 {
@@ -278,10 +374,12 @@ struct SocialPublisher {
             options.creator = try await tikTokCreator(account: account)
             if draft["format"] == "video", let url { options.video = try await TikTokVideo.inspect(url) }
         }
-        return try SocialPublishPlan(draft: draft, account: account, imageURL: url, options: options, articles: workspace.records)
+        return try SocialPublishPlan(draft: draft, account: account, imageURL: url, options: options,
+                                     articles: workspace.records, pendingXArticleIDs: pendingXArticleIDs)
     }
 
-    func publish(_ reviewed: SocialPublishPlan, automatic: Bool = false, fromAgent: Bool = false) async throws -> WorkspaceRecord {
+    func publish(_ reviewed: SocialPublishPlan, automatic: Bool = false, fromAgent: Bool = false,
+                 using existingLease: PublicationLease? = nil) async throws -> WorkspaceRecord {
         let account = try await authorize(reviewed.platform)
         try workspace.reload()
         guard let draft = workspace.records.first(where: { $0.id == reviewed.draftID && $0.kind == "draft" }),
@@ -295,7 +393,7 @@ struct SocialPublisher {
         guard plan.fingerprint == reviewed.fingerprint else {
             throw WorkspaceError("The account or attachment changed. Open the review again.")
         }
-        let lease = try workspace.claimPublication()
+        let lease = try existingLease ?? workspace.claimPublication()
         defer { withExtendedLifetime(lease) {} }
         try workspace.reload()
         guard let current = workspace.records.first(where: { $0.id == draft.id && $0.kind == "draft" }),

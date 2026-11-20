@@ -1,4 +1,5 @@
 import Foundation
+import InkspringSchedule
 
 extension WorkspaceRecord {
     var isLinkedInArticle: Bool { kind == "article" && self["platform"] == "linkedin" }
@@ -11,6 +12,12 @@ struct LinkedInArticleShare: Equatable {
     let articleID: String
     let title: String
     let url: URL
+
+    static func groupedDrafts(_ records: [WorkspaceRecord]) -> [WorkspaceRecord] {
+        let linked = Set(records.filter { $0.kind == "draft" && $0["platform"] == "linkedin" }
+            .map { $0.projectID + "/" + $0["linkedinArticleID"] })
+        return records.filter { !$0.isLinkedInArticle || !linked.contains($0.projectID + "/" + $0.id) }
+    }
 
     static func publishedURL(_ input: String) -> URL? {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -48,24 +55,41 @@ struct LinkedInArticleShare: Equatable {
 }
 
 extension Workspace {
-    func linkedInArticleDraft(from expected: WorkspaceRecord) throws -> WorkspaceRecord {
-        try withChanges {
+    func pendingLinkedInArticle(for post: WorkspaceRecord) -> WorkspaceRecord? {
+        guard post["platform"] == "linkedin", !post["linkedinArticleID"].isEmpty else { return nil }
+        return records.first {
+            $0.isLinkedInArticle && $0.projectID == post.projectID && $0.id == post["linkedinArticleID"]
+                && LinkedInArticleShare.publishedURL($0["articleURL"]) == nil
+        }
+    }
+
+    func linkedArticleDraft(from expected: WorkspaceRecord) throws -> WorkspaceRecord {
+        let platform = expected["platform"]
+        guard ["linkedin", "x"].contains(platform) else {
+            throw WorkspaceError("Choose a LinkedIn or X post to create its article.")
+        }
+        let key = platform == "x" ? "xArticleID" : "linkedinArticleID"
+        return try withChanges {
             guard var post = records.first(where: { $0.kind == "draft" && $0.id == expected.id }),
-                  post["updatedAt"] == expected["updatedAt"], post["platform"] == "linkedin",
-                  post["format"] == "post", !post.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !["posting", "posted"].contains(post.scheduleStatus) else {
-                throw WorkspaceError("Save a LinkedIn draft with post text before creating an article.")
+                  post["updatedAt"] == expected["updatedAt"], post["platform"] == platform,
+                  (platform == "x" ? post["format"] != "reply" : post["format"] == "post"),
+                  !post.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !["posting", "posted", "uncertain"].contains(post.scheduleStatus) else {
+                throw WorkspaceError("Save the current post text before creating an article.")
             }
-            if let article = records.first(where: { $0.isLinkedInArticle && $0.id == post["linkedinArticleID"] && $0.projectID == post.projectID }) {
+            if let article = records.first(where: {
+                $0.id == post[key] && $0.projectID == post.projectID && $0["platform"] == platform && $0.kind == "article"
+            }) {
                 return article
             }
             var article = WorkspaceRecord.new("article", projectID: post.projectID)
-            article["platform"] = "linkedin"
+            article["platform"] = platform
             article["title"] = post.title
-            article["body"] = post.body
+            article["body"] = platform == "x" && ["followup", "thread"].contains(post["format"])
+                ? XThreadText.posts(in: post.body).first ?? post.body : post.body
             article["sourceContentID"] = post.referenceID ?? post.id
             article = try save(article)
-            post["linkedinArticleID"] = article.id
+            post[key] = article.id
             try save(post)
             return article
         }
@@ -110,8 +134,9 @@ extension Workspace {
             var post = WorkspaceRecord.new("draft", projectID: article.projectID)
             post["platform"] = "linkedin"
             post["title"] = String(article.title.prefix(100))
+            post["content"] = article.title
             post["linkedinArticleID"] = id
-            return try save(post)
+            return post
         }
     }
 }
