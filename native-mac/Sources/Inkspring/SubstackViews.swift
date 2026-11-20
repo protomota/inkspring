@@ -302,8 +302,7 @@ struct NewsletterSendPage: View {
     private var hasText: Bool { item.map { !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false }
     private var needsSync: Bool {
         guard let item else { return false }
-        return item["remoteId"].isEmpty || item["state"] != "synced"
-            || item.fields["syncedRevision"] as? Int != item.fields["revision"] as? Int
+        return Substack.needsSync(item)
     }
 
     var body: some View {

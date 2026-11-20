@@ -222,6 +222,8 @@ private struct MobileWelcomeView: View {
 }
 
 private struct CompanionScheduleView: View {
+    private enum Feed: String, CaseIterable { case scheduled = "Scheduled", published = "Published" }
+
     let library: MobileLibrary
     let isSelected: Bool
     @Environment(\.mobileWideLayout) private var wideLayout
@@ -231,11 +233,20 @@ private struct CompanionScheduleView: View {
     @State private var cloudStore: CloudScheduleStore?
     @State private var candidate: CompanionPost?
     @State private var message: String?
+    @State private var feed = Feed.scheduled
 
     var body: some View {
         NavigationStack {
-            Group {
-                if state.schedule != nil || !library.pendingSchedules.isEmpty {
+            VStack(spacing: 0) {
+                Picker("Schedule view", selection: $feed) {
+                    ForEach(Feed.allCases, id: \.self) { section in Text(section.rawValue).tag(section) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                if feed == .published, let schedule = state.schedule {
+                    publishedFeed(schedule)
+                } else if feed == .scheduled, state.schedule != nil || !library.pendingSchedules.isEmpty {
                     let days = Dictionary(grouping: (state.schedule?.posts ?? []).sorted { $0.scheduledAt < $1.scheduledAt }) {
                         Calendar.current.startOfDay(for: $0.scheduledAt)
                     }
@@ -284,7 +295,7 @@ private struct CompanionScheduleView: View {
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
                 } else if state.loading {
-                    ProgressView("Checking iCloud…")
+                    ProgressView("Checking iCloud…").frame(maxHeight: .infinity)
                 } else {
                     ContentUnavailableView {
                         Label("Schedule unavailable", systemImage: "calendar.badge.clock")
@@ -350,6 +361,51 @@ private struct CompanionScheduleView: View {
             message = nil
             Task { await refresh() }
         }
+    }
+
+    private func publishedFeed(_ schedule: CompanionSchedule) -> some View {
+        List {
+            if state.error != nil {
+                Label("Showing the last synced posts.", systemImage: "exclamationmark.icloud")
+                    .foregroundStyle(.secondary).listRowBackground(palette.card)
+            }
+            if let published = schedule.published, !published.isEmpty {
+                ForEach(published) { post in
+                    VStack(alignment: .leading, spacing: 7) {
+                        StudioPlatformLabel(name: post.channel, title: post.channelName)
+                            .font(.subheadline.weight(.semibold))
+                        Text(post.title).font(.headline)
+                        Text(post.project).font(.subheadline).foregroundStyle(.secondary)
+                        Text(post.publishedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        if post.incomplete { Text("Partially published").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(Array(post.links.enumerated()), id: \.offset) { index, link in
+                            Link(destination: link) {
+                                Label(index == 0 ? "Open on \(post.channelName)" : "Open follow-up \(index)",
+                                      systemImage: "arrow.up.right")
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("schedule.open.\(post.id).\(index)")
+                        }
+                        if post.links.isEmpty { Text("No post link saved").font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .padding(.vertical, 6)
+                    .listRowBackground(palette.card)
+                }
+            } else {
+                ContentUnavailableView("No published posts", systemImage: "paperplane",
+                                       description: Text(schedule.published == nil
+                                         ? "Update Inkspring on your Mac and sync to see your published posts."
+                                         : "Posts appear here after Inkspring confirms that they went out."))
+                    .listRowBackground(Color.clear)
+            }
+            if schedule.hasOlderPublications == true {
+                Text("Older posts are available in Schedule on your Mac.")
+                    .font(.footnote).foregroundStyle(.secondary).listRowBackground(Color.clear)
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
     }
 
     private func row(_ post: CompanionPost) -> some View {
@@ -452,6 +508,10 @@ private struct CompanionScheduleView: View {
                       channel: "LinkedIn", scheduledAt: .now.addingTimeInterval(10_800), state: .queued, canCancel: true),
         CompanionPost(id: "fixture-2", revision: "1", title: "This month’s studio notes", project: "Studio",
                       channel: "Substack", scheduledAt: .now.addingTimeInterval(91_000), state: .queued, canCancel: false)
+    ], published: [
+        CompanionPublication(id: "fixture-published", title: "A quieter way to publish", project: "Studio",
+                             channel: "substack", publishedAt: .now.addingTimeInterval(-3_600),
+                             links: [URL(string: "https://newsletter.protomota.com/")!])
     ])
 #endif
 }

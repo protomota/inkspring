@@ -47,6 +47,23 @@ enum NewsletterDocument {
         return ["type": "doc", "attrs": ["schemaVersion": "v1"], "content": try children(root).map { try block($0, depth: 1) }]
     }
 
+    static func withLeadingCover(_ document: [String: Any], url: String, title: String) -> [String: Any] {
+        var updated = document
+        var content = document["content"] as? [[String: Any]] ?? []
+        if content.first?["type"] as? String == "captionedImage",
+           let first = (content.first?["content"] as? [[String: Any]])?.first,
+           let attrs = first["attrs"] as? [String: Any], attrs["src"] as? String == url { return document }
+        content.insert(imageBlock(url, alt: "Cover for " + title), at: 0)
+        updated["content"] = content
+        return updated
+    }
+
+    private static func imageBlock(_ source: String, alt: String) -> [String: Any] {
+        ["type": "captionedImage", "content": [
+            ["type": "image2", "attrs": ["src": source, "alt": alt.isEmpty ? NSNull() : alt as Any]]
+        ]]
+    }
+
     private static func children(_ node: OpaquePointer) -> [OpaquePointer] {
         var results: [OpaquePointer] = []
         var next = cmark_node_first_child(node)
@@ -89,9 +106,7 @@ enum NewsletterDocument {
         if kind == "paragraph" || kind == "heading" {
             if descendants.count == 1, let image = descendants.first, type(image) == "image", let src = link(image) {
                 let alt = try inline(children(image), marks: [], depth: depth + 1).compactMap { $0["text"] as? String }.joined()
-                return ["type": "captionedImage", "content": [
-                    ["type": "image2", "attrs": ["src": src, "alt": alt.isEmpty ? NSNull() : alt as Any]]
-                ]]
+                return imageBlock(src, alt: alt)
             }
             var block: [String: Any] = ["type": kind, "content": try inline(descendants, marks: [], depth: depth + 1)]
             if kind == "heading" { block["attrs"] = ["level": Int(cmark_node_get_heading_level(node))] }

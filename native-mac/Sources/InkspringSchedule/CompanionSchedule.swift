@@ -27,17 +27,75 @@ public struct CompanionPost: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct CompanionPublication: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let title: String
+    public let project: String
+    public let channel: String
+    public let publishedAt: Date
+    public let links: [URL]
+    public let incomplete: Bool
+
+    public init(id: String, title: String, project: String, channel: String, publishedAt: Date, links: [URL],
+                incomplete: Bool = false) {
+        self.id = id
+        self.title = title
+        self.project = project
+        self.channel = channel
+        self.publishedAt = publishedAt
+        self.links = links
+        self.incomplete = incomplete
+    }
+
+    public var channelName: String {
+        ["x": "X", "linkedin": "LinkedIn", "reddit": "Reddit", "instagram": "Instagram",
+         "tiktok": "TikTok", "substack": "Substack"][channel] ?? channel.capitalized
+    }
+
+    public static func postURL(_ address: String) -> URL? {
+        guard address.utf8.count <= 2_000, let url = URL(string: address), url.scheme == "https",
+              let host = url.host(), !host.isEmpty, url.user == nil, url.password == nil, url.port == nil else { return nil }
+        return url
+    }
+}
+
 public struct CompanionSchedule: Codable, Equatable, Sendable {
+    static let maxEncodedSize = 512_000
     public let workspaceID: UUID
     public var sharing: Bool
     public var updatedAt: Date
     public var posts: [CompanionPost]
+    public var published: [CompanionPublication]?
+    public private(set) var hasOlderPublications: Bool?
 
-    public init(workspaceID: UUID, sharing: Bool = true, updatedAt: Date = .now, posts: [CompanionPost]) {
+    public init(workspaceID: UUID, sharing: Bool = true, updatedAt: Date = .now, posts: [CompanionPost],
+                published: [CompanionPublication]? = nil) {
         self.workspaceID = workspaceID
         self.sharing = sharing
         self.updatedAt = updatedAt
         self.posts = posts
+        self.published = published
+    }
+
+    public mutating func setPublished(_ entries: [CompanionPublication]) throws {
+        published = entries
+        hasOlderPublications = false
+        let encoder = JSONEncoder()
+        guard try encoder.encode(self).count >= Self.maxEncodedSize else { return }
+        // Keep the schedule writable even when the history exceeds the snapshot budget.
+        var lower = 0
+        var upper = entries.count
+        hasOlderPublications = true
+        while lower < upper {
+            let count = (lower + upper + 1) / 2
+            published = Array(entries.prefix(count))
+            if try encoder.encode(self).count < Self.maxEncodedSize {
+                lower = count
+            } else {
+                upper = count - 1
+            }
+        }
+        published = Array(entries.prefix(lower))
     }
 
     public mutating func cancel(_ post: CompanionPost) throws {

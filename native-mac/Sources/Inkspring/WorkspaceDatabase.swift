@@ -39,6 +39,15 @@ struct WorkspaceRecord: Identifiable {
         return value.isEmpty ? "Untitled" : value
     }
 
+    var isPublishedContent: Bool {
+        switch kind {
+        case "draft": scheduleStatus == "posted"
+        case "newsletter": self["state"] == "published"
+        case "article": self["state"] == "published" || !self["articleURL"].isEmpty
+        default: false
+        }
+    }
+
     var draftTitle: String {
         let stored = self["title"].trimmingCharacters(in: .whitespacesAndNewlines)
         let attachmentNote = #"(?i)\s*\(attach\s+(?:https?://[^\r\n]+|[^\r\n]+\.(?:mp4|mov|webm|png|jpe?g|webp))\)\s*$"#

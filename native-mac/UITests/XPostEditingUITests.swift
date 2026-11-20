@@ -44,6 +44,24 @@ final class WalkthroughTests: XCTestCase {
         capture("Ask Inkspring on-device assistant", app)
     }
 
+    func testScheduleShowsPublishedPostsAndTheirOriginalLinks() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--schedule-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let upcoming = app.staticTexts["A quieter way to draft"]
+        XCTAssertTrue(upcoming.waitForExistence(timeout: 10))
+        capture("Mobile Scheduled queue", app)
+        app.buttons["Published"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["A quieter way to publish"].waitForExistence(timeout: 5))
+        let link = app.descendants(matching: .any).matching(identifier: "schedule.open.fixture-published.0").firstMatch
+        XCTAssertTrue(link.exists)
+        XCTAssertEqual(link.label, "Open on Substack")
+        capture("Mobile Published feed and original post link", app)
+        app.buttons["Scheduled"].firstMatch.tap()
+        XCTAssertTrue(upcoming.exists)
+    }
+
     func testXArticleReviewsAccountAndPublishesFullTextThroughMac() {
         continueAfterFailure = false
         let app = XCUIApplication()

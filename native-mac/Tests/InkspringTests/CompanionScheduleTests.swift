@@ -3,6 +3,47 @@ import Testing
 @testable import Inkspring
 @testable import InkspringSchedule
 
+@Test func companionHistoryKeepsPublishedReceiptsAndSupportsOldSchedules() throws {
+    let date = Date(timeIntervalSince1970: 1_800_000_000)
+    var draft = WorkspaceRecord.new("draft", projectID: "studio")
+    draft.fields["schedule"] = ["status": "posted", "postedAt": workspaceTimestamp(date)]
+    var receipt = WorkspaceRecord.new("publication", projectID: "studio")
+    receipt["draftId"] = draft.id
+    receipt["title"] = "An X post"
+    receipt["platform"] = "x"
+    receipt["status"] = "published"
+    receipt["publishedAt"] = workspaceTimestamp(date)
+    receipt.fields["steps"] = [
+        ["url": "https://x.com/i/web/status/123"],
+        ["url": "https://x.com/i/web/status/456"],
+        ["url": "javascript:alert(0)"]
+    ]
+    var newsletter = WorkspaceRecord.new("newsletter", projectID: "studio")
+    newsletter["title"] = "The newsletter"
+    newsletter["state"] = "published"
+    newsletter["publishedAt"] = workspaceTimestamp(date.addingTimeInterval(60))
+    newsletter["postUrl"] = "https://fixture.substack.com/p/newsletter"
+
+    let history = PublishedPostFeed.entries(in: [draft, newsletter, receipt])
+    #expect(history.map(\.id) == [newsletter.id, draft.id])
+    #expect(history.last?.links.map(\.absoluteString) == ["https://x.com/i/web/status/123", "https://x.com/i/web/status/456"])
+    #expect(PublishedPostFeed.entries(in: [receipt]).first?.id == draft.id)
+
+    let upcoming = CompanionPost(id: "next", revision: "1", title: "Next post", project: "Studio",
+                                 channel: "X", scheduledAt: date, state: .queued, canCancel: true)
+    var schedule = CompanionSchedule(workspaceID: UUID(), posts: [upcoming])
+    let oldPayload = try JSONEncoder().encode(schedule)
+    #expect(try JSONDecoder().decode(CompanionSchedule.self, from: oldPayload).published == nil)
+    try schedule.setPublished(history)
+    try schedule.cancel(upcoming)
+    let payload = try JSONEncoder().encode(schedule)
+    #expect(try JSONDecoder().decode(CompanionSchedule.self, from: payload).published == history)
+    try schedule.setPublished(Array(repeating: history[0], count: 3_000))
+    #expect(schedule.hasOlderPublications == true)
+    #expect(try JSONEncoder().encode(schedule).count < CompanionSchedule.maxEncodedSize)
+    #expect(schedule.posts.first?.state == .cancelled)
+}
+
 @Test func phoneScheduleKeepsOutagesReadOnlyAndDropsResponsesFromAnOldAccount() throws {
     let post = CompanionPost(id: "fixture", revision: "first", title: "Synthetic post", project: "Studio",
                              channel: "X", scheduledAt: .now, state: .queued, canCancel: true)

@@ -60,7 +60,7 @@ final class Workspace {
     var project: WorkspaceRecord? { projects.first { $0.id == projectID } }
     var drafts: [WorkspaceRecord] { items("draft") }
     var workspaceDrafts: [WorkspaceRecord] {
-        records.filter { $0.projectID == projectID && ($0.kind == "draft" || $0.isLongForm) }
+        records.filter { $0.projectID == projectID && ($0.kind == "draft" || $0.isLongForm) && !$0.isPublishedContent }
     }
     var ideas: [WorkspaceRecord] { items("idea") }
     var sources: [WorkspaceRecord] { items("source") }
@@ -170,7 +170,7 @@ final class Workspace {
                 guard current["updatedAt"] == record["updatedAt"] else {
                     throw WorkspaceError("Reopen the latest version of this newsletter before saving.")
                 }
-                for key in record.kind == "newsletter" ? ["remoteId", "publication", "editUrl", "syncedRevision", "remoteFingerprint", "error"] : [] {
+                for key in record.kind == "newsletter" ? ["remoteId", "publication", "editUrl", "syncedRevision", "remoteFingerprint", "embeddedCoverURL", "error"] : [] {
                     record.fields[key] = current.fields[key]
                 }
             }
@@ -983,6 +983,25 @@ extension Workspace {
                draft.scheduleStatus != "posted" || receipt["status"] == "published" {
                 try database.put(draftAfterPublication(draft, receipt: receipt))
             }
+            try reload()
+        }
+    }
+
+    func savePublishedPostLink(_ input: WorkspaceRecord, address: String) throws {
+        guard let url = CompanionPublication.postURL(address.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw WorkspaceError("Enter a valid HTTPS link to the published post.")
+        }
+        guard let database else { throw WorkspaceError("The workspace is unavailable.") }
+        try withChanges {
+            guard var draft = records.first(where: { $0.id == input.id && $0.kind == "draft" }),
+                  draft.scheduleStatus == "posted", draft["updatedAt"] == input["updatedAt"] else {
+                throw WorkspaceError("This published post changed. Open it again before adding its link.")
+            }
+            var schedule = draft.schedule
+            schedule["url"] = url.absoluteString
+            draft.fields["schedule"] = schedule
+            draft.markUpdated()
+            try database.put(draft)
             try reload()
         }
     }

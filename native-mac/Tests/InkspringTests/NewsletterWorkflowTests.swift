@@ -71,6 +71,7 @@ import Testing
     let workspace = Workspace(directory: root)
     var now = Date(timeIntervalSince1970: 1_800_000_010)
     let when = PostScheduling.fiveMinutesFromNow(now)
+    let coverURL = "https://images.substackcdn.com/example.png"
     var requests: [String] = []
     var remote: [String: Any] = [:]
     var signedInUser = 18
@@ -85,9 +86,19 @@ import Testing
         }
         #expect(url.host() == "fixture.substack.com")
         switch (method, url.path) {
+        case ("POST", "/api/v1/image"):
+            #expect((payload?["image"] as? String)?.hasPrefix("data:image/png;base64,") == true)
+            return ["url": coverURL]
         case ("POST", "/api/v1/drafts"), ("PUT", "/api/v1/drafts/73"):
             remote = try #require(payload)
             #expect(remote["should_send_email"] as? Bool == emailSubscribers)
+            #expect(remote["cover_image"] as? String == coverURL)
+            let body = try #require(remote["draft_body"] as? String)
+            let document = try #require(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+            let blocks = try #require(document["content"] as? [[String: Any]])
+            let image = try #require((blocks.first?["content"] as? [[String: Any]])?.first)
+            #expect(blocks.map { $0["type"] as? String } == ["captionedImage", "paragraph"])
+            #expect((image["attrs"] as? [String: String])?["src"] == coverURL)
             remote["id"] = 73
             remote["is_published"] = false
             return ["id": 73]
@@ -133,10 +144,19 @@ import Testing
     if !emailSubscribers { item.fields["sendEmail"] = false }
     item["title"] = "Swift fixture"
     item["body"] = "A draft in **Markdown**."
+    let cover = root.appending(path: "cover.png")
+    let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII="))
+    try png.write(to: cover)
+    item.fields["coverImage"] = try workspace.attachImage(cover)
     item = try workspace.save(item)
     item = try await service.sync(item.id)
     #expect(item["state"] == "synced")
     #expect(item.fields["syncedRevision"] as? Int == 1)
+    #expect(item["embeddedCoverURL"] == coverURL)
+    var legacyCover = item
+    legacyCover["embeddedCoverURL"] = ""
+    #expect(Substack.needsSync(legacyCover))
+    #expect(workspace.workspaceDrafts.contains { $0.id == item.id })
 
     let firstReview = try await service.prepare(item.id, at: when)
     remote["draft_title"] = "Edited externally"
@@ -157,6 +177,11 @@ import Testing
     #expect(item["state"] == "scheduled")
     #expect(item["scheduledAt"] == workspaceTimestamp(when))
     await #expect(throws: WorkspaceError.self) { _ = try await service.commit(scheduleReview) }
+    now = when.addingTimeInterval(10)
+    remote["trigger_at"] = nil
+    item = try await service.refresh(item.id)
+    #expect(item["state"] == "scheduled")
+    remote["trigger_at"] = workspaceTimestamp(when)
     item = try await service.cancel(item.id)
     #expect(item["state"] == "synced")
     #expect(item["scheduledAt"].isEmpty)
@@ -165,6 +190,7 @@ import Testing
     item = try await service.commit(publishReview)
     #expect(item["state"] == "published")
     #expect(item["postUrl"] == "https://fixture.substack.com/p/swift-fixture")
+    #expect(!workspace.workspaceDrafts.contains { $0.id == item.id })
     await #expect(throws: WorkspaceError.self) { _ = try await service.commit(publishReview) }
     #expect(requests.filter { $0 == "POST /api/v1/drafts/73/publish" }.count == 1)
 

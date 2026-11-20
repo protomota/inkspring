@@ -5,7 +5,7 @@ import InkspringSchedule
 import WebKit
 
 enum WorkspacePage: String, CaseIterable, Identifiable {
-    case ideas = "Post ideas", schedule = "Schedule", workspace = "Workspace"
+    case ideas = "Post ideas", schedule = "Schedule", published = "Published", workspace = "Workspace"
     case research = "Research", replies = "Replies", analytics = "Analytics"
     case studio = "Writing studio", library = "Library"
     case connections = "Connections", trash = "Trash", about = "About Inkspring", settings = "Settings"
@@ -16,6 +16,7 @@ enum WorkspacePage: String, CaseIterable, Identifiable {
         switch self {
         case .ideas: "newspaper"
         case .schedule: "calendar.badge.clock"
+        case .published: "paperplane"
         case .workspace: "folder"
         case .research: "antenna.radiowaves.left.and.right"
         case .replies: "bubble.left.and.bubble.right"
@@ -70,6 +71,7 @@ struct WorkspaceWindow: View {
     private var theme: StudioTheme { StudioTheme(preference: workspace.settings[StudioTheme.preferenceKey]) }
     private var palette: StudioPalette { StudioPalette(theme: theme.resolve(for: systemScheme)) }
     private var isEditingNewsletter: Bool { newsletterDraft != nil }
+    private var selectedPage: WorkspacePage { page == .schedule && scheduleTab == .history ? .published : page }
     private var showsEditorPage: Bool {
         if case .newsletterSend = editor { return false }
         return editor != nil
@@ -333,9 +335,13 @@ struct WorkspaceWindow: View {
 
     private func navButton(_ item: WorkspacePage) -> some View {
         Button {
-            if page != item || isEditingNewsletter || showsOnDeviceAssistant {
+            if selectedPage != item || isEditingNewsletter || showsOnDeviceAssistant {
                 navigate {
                     if item == .studio, studioDraft == nil { newDraft() }
+                    else if item == .schedule || item == .published {
+                        scheduleTab = item == .published ? .history : .scheduled
+                        page = .schedule
+                    }
                     else { page = item }
                 }
             }
@@ -355,10 +361,10 @@ struct WorkspaceWindow: View {
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .frame(minHeight: 32)
-            .foregroundStyle(page == item ? palette.text : palette.muted)
+            .foregroundStyle(selectedPage == item ? palette.text : palette.muted)
         }
-        .buttonStyle(StudioRowStyle(selected: page == item, indicator: true))
-        .accessibilityAddTraits(page == item ? .isSelected : [])
+        .buttonStyle(StudioRowStyle(selected: selectedPage == item, indicator: true))
+        .accessibilityAddTraits(selectedPage == item ? .isSelected : [])
     }
 
     private func count(for item: WorkspacePage) -> Int? {
@@ -381,7 +387,7 @@ struct WorkspaceWindow: View {
         HStack(spacing: 9) {
             Text(workspaceTitle).fontWeight(.medium).foregroundStyle(palette.text)
             Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
-            Text(page.rawValue)
+            Text(selectedPage.rawValue)
             if let newsletterDraft, let type = WorkspaceDraftType(record: newsletterDraft) {
                 Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
                 Text(type.name)
@@ -463,7 +469,7 @@ struct WorkspaceWindow: View {
             ResearchView(workspace: workspace, add: { add("source") }, edit: open,
                          editProject: { if let project = workspace.project { open(project) } }, openDraft: open)
                 .id(workspace.projectID)
-        case .schedule:
+        case .schedule, .published:
             ScheduleView(workspace: workspace, open: open, focusDraftID: $scheduleFocus, tab: $scheduleTab,
                          revise: { editor = .scheduledRevision($0, $1) }, reviewPublication: reviewPublication,
                          chooseTime: { editor = .scheduleTime($0, $1) }, reviewNewsletter: reviewNewsletter)
@@ -598,6 +604,10 @@ struct WorkspaceWindow: View {
     }
 
     private func openPostArticle(_ article: WorkspaceRecord, from post: WorkspaceRecord) {
+        if article.isPublishedContent {
+            open(article)
+            return
+        }
         navigate {
             open(article)
             linkedInArticlePostID = post.id
@@ -637,6 +647,16 @@ struct WorkspaceWindow: View {
     }
 
     private func open(_ record: WorkspaceRecord) {
+        if record.isPublishedContent {
+            if let url = PublishedPostFeed.entries(in: workspace.records, projectID: record.projectID)
+                .first(where: { $0.id == record.id })?.links.first {
+                NSWorkspace.shared.open(url)
+            } else {
+                scheduleTab = .history
+                page = .schedule
+            }
+            return
+        }
         if ["draft", "newsletter", "script", "article"].contains(record.kind), record.projectID != workspace.projectID,
            workspace.projects.contains(where: { $0.id == record.projectID }) {
             workspace.selectProject(record.projectID)
@@ -1295,8 +1315,12 @@ struct PostPreview: View {
                                     if !link.copy.isEmpty { Text(link.copy).font(InkspringTypography.interface(17)).lineSpacing(5).textSelection(.enabled) }
                                     if let ref = link.reference {
                                         if let article = workspace.records.first(where: { $0.projectID == record.projectID && $0.isXArticle && $0.referenceID == ref }) {
-                                            Button("X article · " + article.title, systemImage: "doc.text") { edit(article) }
-                                            if article["articleURL"].isEmpty { Text("Publish the article first to include its X link.").font(.caption).foregroundStyle(palette.muted) }
+                                            if let url = CompanionPublication.postURL(article["articleURL"]) {
+                                                StudioExternalLink("Open X article · " + article.title, destination: url)
+                                            } else {
+                                                Button("X article · " + article.title, systemImage: "doc.text") { edit(article) }
+                                                Text("Publish the article first to include its X link.").font(.caption).foregroundStyle(palette.muted)
+                                            }
                                         } else { Text("Linked X article unavailable · " + ref).font(.caption) }
                                     }
                                 }

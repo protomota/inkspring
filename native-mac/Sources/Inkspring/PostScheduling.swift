@@ -5,7 +5,7 @@ struct ScheduleListing {
     enum Section: String, CaseIterable, Identifiable {
         case ready = "Ready to schedule"
         case scheduled = "Scheduled"
-        case history = "History"
+        case history = "Published"
 
         var id: Self { self }
     }
@@ -64,6 +64,58 @@ struct ScheduleListing {
         if section == .scheduled { return (item.schedule["slotAt"] as? String).flatMap(scheduleDate) }
         let key = section == .ready ? "pickedAt" : item.scheduleStatus == "posted" ? "postedAt" : "skippedAt"
         return (item.schedule[key] as? String).flatMap(scheduleDate) ?? scheduleDate(item["updatedAt"])
+    }
+}
+
+enum PublishedPostFeed {
+    static func entries(in records: [WorkspaceRecord], projectID: String? = nil,
+                        channel: String? = nil) -> [CompanionPublication] {
+        let projects = Dictionary(records.filter { $0.kind == "project" }.map { ($0.id, $0.title) },
+                                  uniquingKeysWith: { first, _ in first })
+        var entries: [String: CompanionPublication] = [:]
+        for receipt in records where receipt.kind == "publication"
+            && (projectID == nil || receipt.projectID == projectID) {
+            let platform = receipt["platform"]
+            guard !platform.isEmpty, channel == nil || channel == platform else { continue }
+            let steps = receipt.fields["steps"] as? [[String: Any]] ?? []
+            let complete = receipt["status"] == "published"
+            guard complete || !steps.isEmpty && ["partial", "publishing", "uncertain"].contains(receipt["status"]),
+                  let date = scheduleDate(receipt["publishedAt"])
+                    ?? (steps.first?["at"] as? String).flatMap(scheduleDate)
+                    ?? scheduleDate(receipt["updatedAt"]) else { continue }
+            let id = receipt["draftId"].isEmpty ? receipt.id : receipt["draftId"]
+            let links = steps.compactMap { ($0["url"] as? String).flatMap(CompanionPublication.postURL) }
+            if let existing = entries[id] {
+                if !existing.incomplete && !complete { continue }
+                if existing.incomplete == !complete && existing.publishedAt >= date { continue }
+            }
+            entries[id] = CompanionPublication(id: id, title: receipt.title, project: projects[receipt.projectID] ?? "Inkspring",
+                                                channel: platform, publishedAt: date, links: links, incomplete: !complete)
+        }
+        for item in records where projectID == nil || item.projectID == projectID {
+            let platform = ScheduleListing.channel(of: item)
+            guard channel == nil || channel == platform else { continue }
+            let date: Date?
+            let address: String
+            if item.kind == "newsletter", item["state"] == "published" {
+                date = scheduleDate(item["publishedAt"]) ?? scheduleDate(item["updatedAt"])
+                address = item["postUrl"]
+            } else if item.kind == "draft", item.scheduleStatus == "posted" {
+                date = ScheduleListing.date(for: item, in: .history)
+                address = item.schedule["url"] as? String ?? ""
+            } else if item.kind == "article", item.isPublishedContent {
+                date = scheduleDate(item["articlePublishedAt"]) ?? scheduleDate(item["updatedAt"])
+                address = item["articleURL"]
+            } else { continue }
+            guard let date else { continue }
+            let link = CompanionPublication.postURL(address)
+            if let existing = entries[item.id], !existing.links.isEmpty || link == nil { continue }
+            entries[item.id] = CompanionPublication(id: item.id, title: item.title, project: projects[item.projectID] ?? "Inkspring",
+                                                     channel: platform, publishedAt: date, links: link.map { [$0] } ?? [])
+        }
+        return entries.values.sorted { first, second in
+            first.publishedAt == second.publishedAt ? first.id < second.id : first.publishedAt > second.publishedAt
+        }
     }
 }
 

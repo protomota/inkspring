@@ -148,6 +148,7 @@ final class WorkspaceLifecycle: NSObject, NSApplicationDelegate, UNUserNotificat
             self?.updateScheduledActivity()
         }
         repeatEvery(.seconds(60)) {
+            await workspace.refreshDueSubstackNewsletters()
             await workspace.refreshScheduledWork()
             await workspace.refillIdeaQueueIfNeeded()
         }

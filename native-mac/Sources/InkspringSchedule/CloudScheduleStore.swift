@@ -236,7 +236,7 @@ public struct CloudScheduleStore {
             try mutation(&schedule)
             if record.recordChangeTag != nil && schedule == previous { return schedule }
             let bytes = try JSONEncoder().encode(schedule)
-            guard bytes.count < 512_000 else { throw CompanionScheduleError.oversized }
+            guard bytes.count < CompanionSchedule.maxEncodedSize else { throw CompanionScheduleError.oversized }
             record["schedule"] = bytes as CKRecordValue
             do {
                 let result = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged)

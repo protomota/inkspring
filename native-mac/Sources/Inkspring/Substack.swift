@@ -134,7 +134,7 @@ struct Substack {
                   item["title"] != "Untitled newsletter" else {
                 throw WorkspaceError("Save a title and body, and check the draft’s status in Substack before syncing.")
             }
-            let document = try NewsletterDocument.parse(item["body"])
+            var document = try NewsletterDocument.parse(item["body"])
             let publication = try await authorized(item)
             guard let author = Int64(publication.userId), author <= 9_007_199_254_740_991 else {
                 throw WorkspaceError("Substack returned an unsupported author ID.")
@@ -142,7 +142,6 @@ struct Substack {
             let path = try draftPath(item["remoteId"])
             var payload: [String: Any] = [
                 "draft_title": item["title"], "draft_subtitle": item["subtitle"],
-                "draft_body": try NewsletterDocument.canonical(document),
                 "draft_bylines": [["id": author, "is_guest": false]],
                 "audience": item["audience"], "type": "newsletter", "should_send_email": Self.emails(item),
                 "section_chosen": true, "draft_section_id": NSNull(), "cover_image": NSNull()
@@ -156,8 +155,11 @@ struct Substack {
                 payload["last_updated_at"] = previous["draft_updated_at"]
             }
             if item.fields["coverImage"] is [String: Any] {
-                payload["cover_image"] = try await uploadCover(item, publication)
+                let coverURL = try await uploadCover(item, publication)
+                payload["cover_image"] = coverURL
+                document = NewsletterDocument.withLeadingCover(document, url: coverURL, title: item.title)
             }
+            payload["draft_body"] = try NewsletterDocument.canonical(document)
             let previousState = item["state"]
             item = try workspace.patchNewsletter(item, ["state": "syncing", "error": ""])
             var responseArrived = false
@@ -174,7 +176,8 @@ struct Substack {
                     throw WorkspaceError("The Substack draft differs from this newsletter. Check its editor.")
                 }
                 return try workspace.patchNewsletter(item, ["state": "synced", "syncedRevision": Self.revision(item),
-                                                            "remoteFingerprint": try Self.fingerprint(actual), "error": ""])
+                                                            "remoteFingerprint": try Self.fingerprint(actual),
+                                                            "embeddedCoverURL": payload["cover_image"] as? String ?? "", "error": ""])
             } catch {
                 let uncertain = responseArrived || !item["remoteId"].isEmpty || (error as? SubstackRequestError)?.uncertain == true
                 _ = try workspace.patchNewsletter(item, ["state": uncertain ? "uncertain" : previousState, "error": error.localizedDescription])
@@ -252,6 +255,10 @@ struct Substack {
             if Self.isPublished(post) || Self.schedule(post) != nil
                 || (item["state"] == "uncertain" && item["requestedAction"] == "cancel") {
                 return try recordRemote(item, post, publication)
+            }
+            if item["state"] == "scheduled", item["requestedAction"] == "schedule",
+               let date = scheduleDate(item["scheduledAt"]), (0..<600).contains(now().timeIntervalSince(date)) {
+                return item
             }
             if ["uncertain", "scheduled"].contains(item["state"]) {
                 return try workspace.patchNewsletter(item, ["state": "uncertain", "error": "Substack reports a draft. Check its editor and confirm the outcome."])
@@ -418,9 +425,14 @@ struct Substack {
 
     private static func canSend(_ item: WorkspaceRecord, _ publication: SubstackPublication) throws {
         guard publication.role != "contributor" else { throw WorkspaceError("This role can save drafts. Ask a publication editor to send.") }
-        guard item["state"] == "synced", item.fields["syncedRevision"] as? Int == revision(item) else {
+        guard !needsSync(item) else {
             throw WorkspaceError("Save the latest newsletter to Substack before reviewing the send.")
         }
+    }
+
+    static func needsSync(_ item: WorkspaceRecord) -> Bool {
+        item["state"] != "synced" || item["remoteId"].isEmpty || item.fields["syncedRevision"] as? Int != revision(item)
+            || (item.fields["coverImage"] is [String: Any] && item["embeddedCoverURL"].isEmpty)
     }
 
     private static func verify(_ item: WorkspaceRecord, _ post: [String: Any], fingerprint: String) throws {
@@ -465,7 +477,11 @@ struct Substack {
     private static func matches(_ item: WorkspaceRecord, _ post: [String: Any], document: [String: Any]? = nil) throws -> Bool {
         guard post["draft_title"] as? String == item.title, (post["draft_subtitle"] as? String ?? "") == item["subtitle"],
               post["audience"] as? String == item["audience"], post["should_send_email"] as? Bool == emails(item) else { return false }
-        return try NewsletterDocument.canonical(body(post)) == NewsletterDocument.canonical(document ?? NewsletterDocument.parse(item["body"]))
+        var expected = try document ?? NewsletterDocument.parse(item["body"])
+        if document == nil, !item["embeddedCoverURL"].isEmpty {
+            expected = NewsletterDocument.withLeadingCover(expected, url: item["embeddedCoverURL"], title: item.title)
+        }
+        return try NewsletterDocument.canonical(body(post)) == NewsletterDocument.canonical(expected)
     }
 
     static func fingerprint(_ post: [String: Any]) throws -> String {
@@ -473,5 +489,20 @@ struct Substack {
                              try body(post), post["audience"] ?? NSNull(), post["should_send_email"] ?? NSNull(),
                              post["cover_image"] ?? NSNull(), post["draft_section_id"] ?? NSNull()]
         return SHA256.hash(data: Data(try NewsletterDocument.canonical(values).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+extension Workspace {
+    func refreshDueSubstackNewsletters(now: Date = .now) async {
+        guard !substackBusy, Substack(workspace: self).selected != nil else { return }
+        let due = records.filter { item in
+            guard item.kind == "newsletter", ["scheduled", "uncertain"].contains(item["state"]),
+                  item["requestedAction"] != "cancel", let date = scheduleDate(item["scheduledAt"]) else { return false }
+            return (0..<86_400).contains(now.timeIntervalSince(date))
+        }
+        for item in due.prefix(4) {
+            if Task.isCancelled { return }
+            _ = try? await Substack(workspace: self).refresh(item.id)
+        }
     }
 }

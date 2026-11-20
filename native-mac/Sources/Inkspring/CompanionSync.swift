@@ -31,9 +31,11 @@ extension Workspace {
                 companionTransfer = nil
                 try beginCompanionSetup(account: account, pausePosting: false)
                 let posts = companionPosts()
+                let published = PublishedPostFeed.entries(in: records)
                 let schedule = try await cloud.update(workspaceID: id, createIfMissing: true, expectedAccount: account) {
                     $0.sharing = true
                     $0.mirror(posts, recoverAbandonedSends: true)
+                    try $0.setPublished(published)
                 }
                 try applyCompanionCancellations(schedule)
                 try set("companionSetupPending", to: false)
@@ -45,6 +47,7 @@ extension Workspace {
                     let schedule = try await cloud.update(workspaceID: id, createIfMissing: false, expectedAccount: account) {
                         $0.sharing = false
                         $0.posts.removeAll { $0.state != .cancelled }
+                        try $0.setPublished([])
                     }
                     try applyCompanionCancellations(schedule)
                 } catch CompanionScheduleError.missing where companionSetupPending {
@@ -74,8 +77,10 @@ extension Workspace {
             }
             try beginCompanionSetup(account: account, pausePosting: true)
             let posts = companionPosts()
+            let published = PublishedPostFeed.entries(in: records)
             let schedule = try await cloud.update(workspaceID: offer.previousWorkspace, createIfMissing: false, expectedAccount: account) {
                 $0 = try $0.transferred(to: id, posts: posts)
+                try $0.setPublished(published)
             }
             try applyCompanionCancellations(schedule)
             try set("companionSetupPending", to: false)
@@ -89,6 +94,7 @@ extension Workspace {
         await withCompanionSync {
             let id = try companionWorkspaceID()
             let posts = companionPosts()
+            let published = PublishedPostFeed.entries(in: records)
             let setupPending = companionSetupPending
             let cloud = try override ?? companionCloud()
             let account = try companionAccountKey()
@@ -101,7 +107,9 @@ extension Workspace {
                 updated.sharing = true
                 // The publication lease rules out a local send still owning a claim.
                 updated.mirror(posts, recoverAbandonedSends: true)
+                try updated.setPublished(published)
                 if updated.sharing != schedule.sharing || updated.posts != schedule.posts ||
+                    updated.published != schedule.published || updated.hasOlderPublications != schedule.hasOlderPublications ||
                     Date.now.timeIntervalSince(schedule.updatedAt) >= 300 {
                     schedule = updated
                 }
@@ -220,10 +228,11 @@ extension Workspace {
             state = record.scheduleStatus == "due" ? .review : .queued
             revision = record.schedule["companionRevision"] as? String ?? slot
             channel = SocialPlatform(rawValue: record["platform"])?.name ?? record["platform"]
-        } else if record.kind == "newsletter", record["state"] == "scheduled", let date = scheduleDate(record["scheduledAt"]) {
+        } else if record.kind == "newsletter", ["scheduled", "releasing", "uncertain"].contains(record["state"]),
+                  let date = scheduleDate(record["scheduledAt"]) ?? scheduleDate(record["requestedAt"]) {
             scheduledAt = date
-            state = .queued
-            revision = record["scheduledAt"]
+            state = record["state"] == "scheduled" ? .queued : .review
+            revision = record["scheduledAt"].isEmpty ? record["requestedAt"] : record["scheduledAt"]
             channel = "Substack"
         } else { return nil }
         let project = projects.first { $0.id == record.projectID }?["name"] ?? "Inkspring"

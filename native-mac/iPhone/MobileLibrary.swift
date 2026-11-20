@@ -1161,7 +1161,10 @@ struct MobileReviewView: View {
 
     private var drafts: [CompanionLibrary.Item] {
         let posts = library.visibleItems.filter { $0.kind == .draft && $0.isTrashed != true }
-        return posts + (library.snapshot?.newsletters ?? []) + library.visibleScripts
+        return (posts + (library.snapshot?.newsletters ?? []) + library.visibleScripts).filter {
+            $0.status != "published" && $0.status != "posted"
+                && ($0.kind != .article || ($0.publicationURL ?? "").isEmpty)
+        }
     }
 
     private var platformOptions: [String] {
@@ -1279,8 +1282,10 @@ struct MobileReviewView: View {
             .refreshable { await library.refresh() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Ask Inkspring", systemImage: "sparkles") { askingInkspring = true }
-                        .accessibilityIdentifier("assistant.open")
+                    Button { askingInkspring = true } label: {
+                        Label("Ask Inkspring", systemImage: "sparkles").labelStyle(.titleAndIcon)
+                    }
+                    .accessibilityIdentifier("assistant.open")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {

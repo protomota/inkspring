@@ -301,7 +301,7 @@ struct RecordEditor: View {
     private var newsletterNeedsSave: Bool {
         if latestNewsletter != nil { return newsletterHasEdits }
         return ["title", "subtitle", "body"].contains { !record[$0].isEmpty }
-            || record["audience"] != "everyone" || Substack.emails(record) || record.fields["coverImage"] != nil
+            || record.fields["coverImage"] != nil
     }
 
     private var newsletterAutosaveValues: [String] {

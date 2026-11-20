@@ -1,4 +1,5 @@
 import SwiftUI
+import InkspringSchedule
 
 struct ScheduleView: View {
     @Environment(\.studioPalette) private var palette
@@ -15,6 +16,8 @@ struct ScheduleView: View {
     @State private var projectFilter: String?
     @State private var channelFilter: String?
     @State private var manuallyPosted: WorkspaceRecord?
+    @State private var editingPublishedLink: WorkspaceRecord?
+    @State private var publishedLink = ""
     @State private var cancellingNewsletter: WorkspaceRecord?
     @State private var checkingNewsletter: WorkspaceRecord?
     @State private var returningIdea: Workspace.IdeaReturnPlan?
@@ -25,17 +28,19 @@ struct ScheduleView: View {
 
     var body: some View {
         let listing = ScheduleListing(records: workspace.records, projectID: projectFilter, channel: channelFilter)
-        let rows = listing[tab]
+        let published = PublishedPostFeed.entries(in: workspace.records, projectID: projectFilter, channel: channelFilter)
+        let publishedIDs = Set(published.map(\.id))
+        let rows = tab == .history ? listing[.history].filter { !publishedIDs.contains($0.id) } : listing[tab]
         let totals = projectFilter == nil && channelFilter == nil ? listing : ScheduleListing(records: workspace.records)
         ScrollViewReader { proxy in
             StudioScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
-                        PageHeading(title: "Choose when it goes out.",
-                                    subtitle: "Review drafts and choose when to send them.")
+                        PageHeading(title: tab == .history ? "Published" : "Schedule",
+                                    subtitle: tab == .history ? "Open a post to read and respond on its original platform."
+                                        : "Review drafts and check what’s going out.")
                         Spacer()
                     }
-                    postingControls
                     Label("\(totals[.scheduled].count) scheduled · \(totals[.ready].count) ready across all projects",
                           systemImage: "calendar")
                         .font(InkspringTypography.interface(13))
@@ -57,8 +62,12 @@ struct ScheduleView: View {
                                            icon: { $0.flatMap(PlatformMark.image) })
                     }
                     StudioTabs(selection: $tab, tabs: ScheduleListing.Section.allCases, label: { $0.rawValue },
-                               count: { listing[$0].count })
-                    if rows.isEmpty {
+                               count: { $0 == .history ? published.count : listing[$0].count })
+                    if tab == .scheduled { postingControls }
+                    if tab == .history {
+                        ForEach(published) { post in publishedCard(post).id(post.id) }
+                    }
+                    if rows.isEmpty && (tab != .history || published.isEmpty) {
                         VStack(spacing: 10) {
                             Image(systemName: "calendar")
                                 .font(.system(size: 26, weight: .medium))
@@ -73,6 +82,9 @@ struct ScheduleView: View {
                         }
                         .frame(maxWidth: .infinity, minHeight: 144)
                         .studioSurface()
+                    }
+                    if tab == .history, !rows.isEmpty {
+                        Text("Other activity").font(.headline)
                     }
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, draft in
                         let day = scheduledDay(draft)
@@ -93,7 +105,7 @@ struct ScheduleView: View {
             }
             .task(id: focusDraftID) {
                 guard let id = focusDraftID,
-                      let draft = workspace.records.first(where: { $0.kind == "draft" && $0.id == id }),
+                      let draft = workspace.records.first(where: { $0.id == id }),
                       let section = ScheduleListing.section(for: draft) else { return }
                 projectFilter = draft.projectID
                 channelFilter = nil
@@ -117,6 +129,15 @@ struct ScheduleView: View {
             }
         } message: { draft in
             Text("Use this for “\(draft.title)” after you’ve published it yourself.")
+        }
+        .alert("Add the published post link", isPresented: Binding(
+            get: { editingPublishedLink != nil }, set: { if !$0 { editingPublishedLink = nil } }
+        ), presenting: editingPublishedLink) { draft in
+            TextField("HTTPS post link", text: $publishedLink)
+            Button("Save link") {
+                workspace.perform { try workspace.savePublishedPostLink(draft, address: publishedLink) }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog("Return this idea to the queue?", isPresented: Binding(
             get: { returningIdea != nil }, set: { if !$0 { returningIdea = nil } }
@@ -291,11 +312,37 @@ struct ScheduleView: View {
         }
     }
 
+    private func publishedCard(_ post: CompanionPublication) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            StudioPlatformLabel(name: post.channel, title: post.channelName).font(.callout.weight(.semibold))
+            Text(post.title).font(.headline)
+            Text("\(post.project) · \(post.publishedAt.formatted(date: .abbreviated, time: .shortened))")
+                .font(.callout).foregroundStyle(palette.muted)
+            if post.incomplete { Text("Partially published").font(.caption).foregroundStyle(palette.muted) }
+            ForEach(Array(post.links.enumerated()), id: \.offset) { index, link in
+                StudioExternalLink(index == 0 ? "Open on \(post.channelName)" : "Open follow-up \(index)", destination: link)
+            }
+            if post.links.isEmpty {
+                if let draft = workspace.records.first(where: { $0.id == post.id && $0.kind == "draft" && $0.scheduleStatus == "posted" }) {
+                    Button("Add post link…", systemImage: "link") {
+                        publishedLink = ""
+                        editingPublishedLink = draft
+                    }
+                } else {
+                    Text("No post link saved").font(.caption).foregroundStyle(palette.muted)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .studioSurface()
+    }
+
     private var emptyMessage: String {
         switch tab {
         case .scheduled: "Nothing scheduled"
         case .ready: "Nothing ready to schedule"
-        case .history: "No publishing history"
+        case .history: "No published posts"
         }
     }
 
