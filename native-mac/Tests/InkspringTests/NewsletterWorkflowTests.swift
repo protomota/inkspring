@@ -64,7 +64,8 @@ import Testing
     #expect(!html.contains("<script>"))
 }
 
-@Test @MainActor func substackChecksRemoteDraftAndConfirmsScheduleCancellationAndPublication() async throws {
+@Test(arguments: [false, true])
+@MainActor func substackChecksRemoteDraftAndConfirmsScheduleCancellationAndPublication(emailSubscribers: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let workspace = Workspace(directory: root)
@@ -86,6 +87,7 @@ import Testing
         switch (method, url.path) {
         case ("POST", "/api/v1/drafts"), ("PUT", "/api/v1/drafts/73"):
             remote = try #require(payload)
+            #expect(remote["should_send_email"] as? Bool == emailSubscribers)
             remote["id"] = 73
             remote["is_published"] = false
             return ["id": 73]
@@ -101,9 +103,9 @@ import Testing
             return [:]
         case ("DELETE", "/api/v1/drafts/73/scheduled_release"):
             remote["trigger_at"] = nil
-            return [:]
+            throw SubstackRequestError("Substack returned an unreadable cancellation response.", uncertain: true)
         case ("POST", "/api/v1/drafts/73/publish"):
-            #expect(payload?["send"] as? Bool == false)
+            #expect(payload?["send"] as? Bool == emailSubscribers)
             remote["is_published"] = true
             remote["post_date"] = workspaceTimestamp(now)
             remote["slug"] = "swift-fixture"
@@ -127,6 +129,8 @@ import Testing
     canEditPublication = true
     #expect(service.selected?.id == "95")
     var item = WorkspaceRecord.new("newsletter", projectID: workspace.projectID)
+    #expect(Substack.emails(item))
+    if !emailSubscribers { item.fields["sendEmail"] = false }
     item["title"] = "Swift fixture"
     item["body"] = "A draft in **Markdown**."
     item = try workspace.save(item)
@@ -148,6 +152,7 @@ import Testing
     now = initialTime
 
     let scheduleReview = try await service.prepare(item.id, at: when)
+    #expect(scheduleReview.sendEmail == emailSubscribers)
     item = try await service.commit(scheduleReview)
     #expect(item["state"] == "scheduled")
     #expect(item["scheduledAt"] == workspaceTimestamp(when))
@@ -227,7 +232,7 @@ import Testing
     let studio = ContentStudio(workspace: workspace, model: model)
     let generated = try await studio.writeNewsletter(draft, brief: "Write a draft.", sourceIDs: [selected.id])
     #expect(generated["state"] == "draft")
-    #expect(generated.fields["sendEmail"] as? Bool == false)
+    #expect(generated.fields["sendEmail"] as? Bool == true)
     #expect(generated.fields["revision"] as? Int == 1)
     #expect(workspace.records.first { $0.id == draft.id }?["body"] == "A fresh **newsletter**.")
 

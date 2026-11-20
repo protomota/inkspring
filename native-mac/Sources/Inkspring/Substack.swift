@@ -249,7 +249,10 @@ struct Substack {
             let publication = try await authorized(item)
             guard !item["remoteId"].isEmpty else { throw WorkspaceError("No draft ID was confirmed. Check the drafts in Substack.") }
             let post = try await remote(publication, item["remoteId"])
-            if Self.isPublished(post) || Self.schedule(post) != nil { return try recordRemote(item, post, publication) }
+            if Self.isPublished(post) || Self.schedule(post) != nil
+                || (item["state"] == "uncertain" && item["requestedAction"] == "cancel") {
+                return try recordRemote(item, post, publication)
+            }
             if ["uncertain", "scheduled"].contains(item["state"]) {
                 return try workspace.patchNewsletter(item, ["state": "uncertain", "error": "Substack reports a draft. Check its editor and confirm the outcome."])
             }
@@ -271,7 +274,11 @@ struct Substack {
             let path = try draftPath(item["remoteId"])
             item = try workspace.patchNewsletter(item, ["state": "releasing", "requestedAction": "cancel", "error": ""])
             do {
-                _ = try await request("DELETE", publication, path + "/scheduled_release")
+                do {
+                    _ = try await request("DELETE", publication, path + "/scheduled_release")
+                } catch let error as SubstackRequestError where error.uncertain {
+                    // The draft readback below can confirm cancellation even if the response was unreadable.
+                }
                 let result = try await remote(publication, item["remoteId"])
                 guard !Self.isPublished(result), Self.schedule(result) == nil else {
                     throw WorkspaceError("Substack hasn’t confirmed cancellation. Check its editor.")

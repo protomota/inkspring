@@ -130,7 +130,7 @@ struct WorkspaceRecord: Identifiable {
             fields["suggestedPlatforms"] = ["x"]
         case "newsletter":
             fields["state"] = "draft"
-            fields["sendEmail"] = false
+            fields["sendEmail"] = true
             fields["audience"] = "everyone"
         case "script", "article":
             fields["platform"] = kind == "article" ? "x" : "youtube"
