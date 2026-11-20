@@ -1363,7 +1363,8 @@ struct PostPreview: View {
                     ? { reviewPair(record) } : nil
                 PostArticlePicker(workspace: workspace, projectID: record.projectID, platform: platform,
                                   articleID: articleBinding(key), openArticle: { openArticle($0, record) }, createArticle: create,
-                                  xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish)
+                                  xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish,
+                                  requiresVideo: record.needsNativePostVideo)
             }
         }
     }

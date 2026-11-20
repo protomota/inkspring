@@ -148,6 +148,7 @@ struct PostArticlePicker: View {
     var xReplyArticles: [WorkspaceRecord] = []
     var allowsChanges = true
     var publishTogether: (() -> Void)? = nil
+    var requiresVideo = false
 
     var body: some View {
         let articles = workspace.records.filter {
@@ -187,7 +188,8 @@ struct PostArticlePicker: View {
                 if let url = LinkedInArticleShare.publishedURL(selected["articleURL"]) {
                     StudioExternalLink("Published article link", destination: url)
                 } else if publishTogether == nil {
-                    Text("Open the article to publish it together with this feed post.")
+                    Text(requiresVideo ? "Save the published article URL before sending this video post."
+                                       : "Open the article to publish it together with this feed post.")
                         .font(.caption).foregroundStyle(palette.muted)
                 }
             }

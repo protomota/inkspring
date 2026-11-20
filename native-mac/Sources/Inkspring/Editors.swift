@@ -167,7 +167,8 @@ struct PostInlineEditor: View {
             let create: (() -> Void)? = hasText && format != "reply" ? { createLinkedArticle() } : nil
             PostArticlePicker(workspace: workspace, projectID: record.projectID, platform: platform, articleID: identifier,
                               openArticle: openAttachedArticle, createArticle: create,
-                              xReplyArticles: workspace.xReplyArticles(for: current, body: markdown))
+                              xReplyArticles: workspace.xReplyArticles(for: current, body: markdown),
+                              requiresVideo: current.needsNativePostVideo)
         }
     }
 
@@ -1134,7 +1135,7 @@ struct DraftStudio: View {
             }
             if !["posting", "posted"].contains(initial.scheduleStatus) {
                 PostArticlePicker(workspace: workspace, projectID: initial.projectID, articleID: value("linkedinArticleID"),
-                    openArticle: openAttachedArticle, createArticle: convert)
+                    openArticle: openAttachedArticle, createArticle: convert, requiresVideo: initial.needsNativePostVideo)
             }
         }
         .task { linkedInDestinations = (try? workspace.socialAccounts.savedLinkedInDestinations()) ?? [] }
