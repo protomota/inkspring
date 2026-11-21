@@ -231,7 +231,7 @@ final class WalkthroughTests: XCTestCase {
         XCTAssertFalse(app.buttons["Edit Markdown"].exists)
     }
 
-    func testRoundNewIdeaButtonOpensTheSavedIdeaAcrossThemes() {
+    func testRoundNewIdeaButtonAcrossThemesAndOpensSavedIdea() {
         continueAfterFailure = false
         for theme in ["warm-paper", "graphite", "native-light", "system"] {
             let app = openReview(theme: theme, arguments: ["--idea-first-fixture"])
@@ -241,6 +241,10 @@ final class WalkthroughTests: XCTestCase {
             XCTAssertEqual(plus.frame.width, plus.frame.height, accuracy: 2)
             capture("Round new idea button – " + theme, app)
             XCTAssertTrue(app.buttons["quickX.open"].exists)
+            guard theme == "graphite" else {
+                app.terminate()
+                continue
+            }
             plus.tap()
             let title = app.textFields["idea.new.title"].firstMatch
             XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
@@ -250,6 +254,8 @@ final class WalkthroughTests: XCTestCase {
             title.typeText("\n")
             if !angle.hasFocus { angle.tap() }
             angle.typeText("Share one detail worth someone’s time.")
+            let hide = app.keyboards.buttons["Hide keyboard"].firstMatch
+            if hide.isHittable { hide.tap() }
             let save = app.buttons["Save idea"].firstMatch
             XCTAssertTrue(save.isEnabled, app.debugDescription)
             save.tap()

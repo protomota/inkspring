@@ -261,24 +261,50 @@ struct StudioProofreadAction: View {
             get: { reviewInSheet && review?.edits.isEmpty == false },
             set: { if !$0 { review = nil } }
         )) {
-            if let review {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Suggested corrections").font(.title2.bold())
-                    ScrollView { correctionRows(review).frame(maxWidth: .infinity, alignment: .leading) }
-                    HStack {
-                        Button("Cancel", role: .cancel) { self.review = nil }
-                        Spacer()
-                        Button("Apply corrections") { applyCorrections(review) }
-                            .buttonStyle(.borderedProminent)
-                            .accessibilityIdentifier("proofread.apply")
-                    }
-                }
-                .padding(24)
-                .frame(idealWidth: 430, idealHeight: 340)
-                .background(palette.canvas)
-            }
+            if let review { reviewSheet(review) }
         }
         .onDisappear { task?.cancel() }
+    }
+
+    @ViewBuilder private func reviewSheet(_ review: ProofreadReview) -> some View {
+        let content = VStack(alignment: .leading, spacing: 16) {
+            Text("Suggested corrections").font(.title2.bold())
+            ViewThatFits(in: .vertical) {
+                correctionRows(review).fixedSize(horizontal: false, vertical: true)
+                ScrollView { correctionRows(review).frame(maxWidth: .infinity, alignment: .leading) }
+            }
+            .frame(maxHeight: 230, alignment: .topLeading)
+            HStack(spacing: 12) {
+                Button("Cancel", role: .cancel) { self.review = nil }
+                    .frame(minHeight: 44)
+                Spacer(minLength: 0)
+                Button { applyCorrections(review) } label: {
+                    Text("Apply corrections")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(palette.accentText)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .frame(minHeight: 44)
+                        .background(palette.primaryAction, in: .capsule)
+                        .contentShape(.capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("proofread.apply")
+            }
+        }
+        .foregroundStyle(palette.text)
+        .padding(24)
+        .frame(idealWidth: 430, maxWidth: 480)
+        .background(palette.canvas)
+        #if os(iOS)
+        if #available(iOS 18, *) {
+            content.presentationSizing(.fitted)
+        } else {
+            content.presentationDetents([.medium, .large])
+        }
+        #else
+        content
+        #endif
     }
 
     private func correctionRows(_ review: ProofreadReview) -> some View {
