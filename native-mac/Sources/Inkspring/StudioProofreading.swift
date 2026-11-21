@@ -216,6 +216,7 @@ struct StudioProofreadAction: View {
     let document: ProofreadDocument
     var unavailable: String?
     var begin: () -> Void = {}
+    var reviewInSheet = false
     let check: @MainActor (ProofreadDocument) async throws -> ProofreadReview
     let apply: (ProofreadDocument) -> Void
 
@@ -235,20 +236,10 @@ struct StudioProofreadAction: View {
                 Text(message).font(.caption).foregroundStyle(palette.muted)
                     .accessibilityIdentifier("proofread.message")
             }
-            if let review, !review.edits.isEmpty {
+            if let review, !review.edits.isEmpty, !reviewInSheet {
                 DisclosureGroup(isExpanded: $showEdits) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(review.edits.indices, id: \.self) { index in
-                                let edit = review.edits[index]
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(edit.reason).font(.caption.weight(.semibold))
-                                    Text(edit.original).strikethrough().foregroundStyle(palette.muted)
-                                    if !edit.replacement.isEmpty { Text(edit.replacement) }
-                                }
-                                .font(.callout)
-                            }
-                        }
+                        correctionRows(review)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 155)
@@ -257,16 +248,7 @@ struct StudioProofreadAction: View {
                         .font(.callout.weight(.semibold))
                 }
                 HStack {
-                    Button("Apply corrections") {
-                        guard unavailable == nil, review.original == document else {
-                            self.review = nil
-                            message = "The text changed. Run Proofread again."
-                            return
-                        }
-                        apply(review.corrected)
-                        self.review = nil
-                        message = review.edits.count == 1 ? "Applied 1 correction." : "Applied \(review.edits.count) corrections."
-                    }
+                    Button("Apply corrections") { applyCorrections(review) }
                     .accessibilityIdentifier("proofread.apply")
                     Button("Dismiss") { self.review = nil; message = nil }
                 }
@@ -275,7 +257,53 @@ struct StudioProofreadAction: View {
         #if os(iOS)
         .buttonStyle(.bordered)
         #endif
+        .sheet(isPresented: Binding(
+            get: { reviewInSheet && review?.edits.isEmpty == false },
+            set: { if !$0 { review = nil } }
+        )) {
+            if let review {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Suggested corrections").font(.title2.bold())
+                    ScrollView { correctionRows(review).frame(maxWidth: .infinity, alignment: .leading) }
+                    HStack {
+                        Button("Cancel", role: .cancel) { self.review = nil }
+                        Spacer()
+                        Button("Apply corrections") { applyCorrections(review) }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("proofread.apply")
+                    }
+                }
+                .padding(24)
+                .frame(idealWidth: 430, idealHeight: 340)
+                .background(palette.canvas)
+            }
+        }
         .onDisappear { task?.cancel() }
+    }
+
+    private func correctionRows(_ review: ProofreadReview) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(review.edits.indices, id: \.self) { index in
+                let edit = review.edits[index]
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(edit.reason).font(.caption.weight(.semibold))
+                    Text("Before: " + edit.original).foregroundStyle(palette.muted)
+                    Text(edit.replacement.isEmpty ? "Remove this text" : "After: " + edit.replacement)
+                }
+                .font(.callout)
+            }
+        }
+    }
+
+    private func applyCorrections(_ review: ProofreadReview) {
+        guard unavailable == nil, review.original == document else {
+            self.review = nil
+            message = "The text changed. Run Proofread again."
+            return
+        }
+        apply(review.corrected)
+        self.review = nil
+        message = review.edits.count == 1 ? "Applied 1 correction." : "Applied \(review.edits.count) corrections."
     }
 
     private func start() {

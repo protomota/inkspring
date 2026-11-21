@@ -38,19 +38,30 @@ struct MobileIdeasView: View {
     @State private var availabilityMessage: String?
     @State private var generating = false
     @State private var message: String?
+    @State private var savedIdeaID: String?
     let library: MobileLibrary
     let isSelected: Bool
+    let onSaved: ((String) -> Void)?
+    @Environment(\.dismiss) private var dismiss
+
+    init(library: MobileLibrary, isSelected: Bool, initialProject: String? = nil, onSaved: ((String) -> Void)? = nil) {
+        self.library = library
+        self.isSelected = isSelected
+        self.onSaved = onSaved
+        _projectID = State(initialValue: initialProject)
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                if library.snapshot == nil {
+                if onSaved != nil || library.snapshot == nil {
                     captureForm
-                    recentlySaved
+                    if onSaved == nil { recentlySaved }
                 }
 
                 Section {
-                    TextField("What would you like ideas about?", text: $topic, axis: .vertical)
+                    TextField("Topic to explore", text: $topic,
+                              prompt: Text("For example, what have you learned about building in public?"), axis: .vertical)
                         .lineLimit(2...4)
                         .focused($focusedField, equals: .topic)
                     Button("Generate ideas", systemImage: "sparkles") { Task { await generate() } }
@@ -77,7 +88,7 @@ struct MobileIdeasView: View {
                 }
                 .listRowBackground(palette.card)
 
-                if library.snapshot != nil {
+                if library.snapshot != nil && onSaved == nil {
                     captureForm
                     recentlySaved
                 }
@@ -85,11 +96,34 @@ struct MobileIdeasView: View {
             .scrollContentBackground(.hidden)
             .frame(maxWidth: 680)
             .mobileCanvas()
-            .mobilePageTitle("New ideas", wide: wideLayout, background: palette.canvas)
+            .mobilePageTitle(onSaved == nil ? "New ideas" : "Draft a new idea", wide: wideLayout, background: palette.canvas)
             .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
+            .toolbar {
+                if onSaved != nil {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                }
+            }
             .refreshable {
                 checkAvailability()
                 await library.refresh()
+            }
+            .navigationDestination(item: $savedIdeaID) { id in
+                if let snapshot = library.snapshot, let item = library.visibleItems.first(where: { $0.id == id }) {
+                    MobileReviewDetail(item: item, library: library, workspaceID: snapshot.workspaceID)
+                } else if let idea = library.pendingIdeas.first(where: { $0.id.uuidString.lowercased() == id }) {
+                    Form {
+                        Section {
+                            Text(idea.title).font(.headline)
+                            Text(idea.text).textSelection(.enabled)
+                        } footer: {
+                            Text("Saved on this device. Connect your Mac to create platform drafts from this idea.")
+                        }
+                        .listRowBackground(palette.card)
+                    }
+                    .scrollContentBackground(.hidden)
+                    .mobileCanvas()
+                    .navigationTitle("Idea")
+                }
             }
             .alert("Inkspring", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
                 Button("OK", role: .cancel) { message = nil }
@@ -151,10 +185,18 @@ struct MobileIdeasView: View {
                     }
                 }
             }
-            TextField("Title", text: $title).focused($focusedField, equals: .title)
-            TextField("Angle or notes", text: $bodyText, axis: .vertical)
+            TextField("Title", text: $title, prompt: Text("Give the idea a working title"))
+                .focused($focusedField, equals: .title)
+                .accessibilityIdentifier("idea.new.title")
+            TextField("Angle or notes", text: $bodyText,
+                      prompt: Text("What do you want to say, and why does it matter?"), axis: .vertical)
                 .lineLimit(3...8)
                 .focused($focusedField, equals: .angle)
+                .accessibilityIdentifier("idea.new.angle")
+            StudioProofreadAction(document: .init(title: title, body: bodyText),
+                                  unavailable: MobileProofreading.availabilityMessage,
+                                  begin: { focusedField = nil }, reviewInSheet: true,
+                                  check: MobileProofreading.check) { title = $0.title; bodyText = $0.body }
             if library.snapshot?.supportsContentPlans == true {
                 Toggle("Include a plan", isOn: $includesPlan)
             }
@@ -218,7 +260,7 @@ struct MobileIdeasView: View {
     private func saveIdea() {
         guard canSave else { return }
         do {
-            try library.saveIdea(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            let id = try library.saveIdea(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                                  text: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
                                  projectID: projectID, plan: includesPlan ? ContentPlan.starter(title) : nil)
             focusedField = nil
@@ -226,6 +268,8 @@ struct MobileIdeasView: View {
             bodyText = ""
             includesPlan = false
             InkspringReview.recordActivity()
+            if let onSaved { onSaved(id) }
+            else { savedIdeaID = id }
         } catch { message = error.localizedDescription }
     }
 }

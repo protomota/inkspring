@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 @testable import Inkspring
+@testable import InkspringSchedule
 
 @Test func managedHandshakeChecksSignatureEncryptionAndState() throws {
     let signing = Curve25519.Signing.PrivateKey()
@@ -87,6 +88,37 @@ import Testing
         await #expect(throws: WorkspaceError.self) { _ = try await accounts.verifyIdentity(platform, account: saved) }
         #expect(requests == 2)
     }
+}
+
+@Test @MainActor func mobileQuickXPublishesOnePostToTheConfirmedAccount() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspace = Workspace(directory: root)
+    let text = "First paragraph.\n\nStill the same post."
+    var change = CompanionLibrary.Change(action: .note, itemID: workspace.projectID, text: text)
+    change.quickXAccountKey = "an-old-account"
+    var sends = 0
+    let publisher = SocialPublisher(workspace: workspace, transport: .init { request in
+        #expect(request.url?.host == "api.x.com")
+        let payload = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        #expect(json["text"] as? String == text)
+        #expect(json["reply"] == nil)
+        sends += 1
+        let url = try #require(request.url)
+        let response = try #require(HTTPURLResponse(url: url, statusCode: 201, httpVersion: nil, headerFields: nil))
+        return (Data(#"{"data":{"id":"101"}}"#.utf8), response)
+    }, authorize: { _ in account })
+    let switched = await workspace.publishMobileQuickX(change, publisher: publisher)
+    #expect(switched.error?.contains("account changed") == true)
+    #expect(!workspace.drafts.contains { $0.id == change.id.uuidString.lowercased() })
+    change.quickXAccountKey = account.connectionKey
+    let published = await workspace.publishMobileQuickX(change, publisher: publisher)
+    let retried = await workspace.publishMobileQuickX(change, publisher: publisher)
+    #expect(published.error == nil)
+    #expect(published.publicationURL?.hasSuffix("/101") == true)
+    #expect(retried == published)
+    #expect(sends == 1)
 }
 
 @Test(arguments: ["thread", "followup"]) @MainActor func xThreadResumesOnlyAfterConfirmedSteps(format: String) async throws {

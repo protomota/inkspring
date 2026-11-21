@@ -84,10 +84,8 @@ struct PostInlineEditor: View {
             if writingAssistantOpen, workspace.writingToolsAvailable {
                 ScrollView {
                 StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue,
-                    requests: current.comments.enumerated().map { index, comment in
-                        StudioWritingRequest(id: comment["revisionRequestID"] as? String ?? "saved-\(index)", text: comment["text"] as? String ?? "",
-                            state: current.appliedRevisionCommentIDs.contains(comment["revisionRequestID"] as? String ?? "") ? "Applied" : "Waiting for Mac")
-                    }, reply: current["notesReply"], error: current["writingRequestError"].isEmpty ? nil : current["writingRequestError"]) { prompt in
+                    requests: current.revisionRequests.map(StudioWritingRequest.init),
+                    reply: current["notesReply"], error: current["writingRequestError"].isEmpty ? nil : current["writingRequestError"]) { prompt in
                         if dirty {
                             try workspace.updatePostText(baseline ?? record, title: title, text: markdown, format: format,
                                                          xArticleID: xArticleID)
@@ -243,6 +241,8 @@ struct RecordEditor: View {
     @State private var newsletterWriting: Task<Void, Never>?
     @State private var showsCoverGenerator = false
     @State private var coverPrompt = ""
+    @State private var ideaSuggestion: ProofreadDocument?
+    @State private var shapingIdea = false
 
     private enum NewsletterField: Hashable { case title, subtitle }
 
@@ -351,10 +351,10 @@ struct RecordEditor: View {
         StudioEditorPage(title: heading) {
             Button("Cancel", role: .cancel, action: closeRecord)
                 .keyboardShortcut(.cancelAction)
-            Button("Save", action: saveRecord)
+            Button(record.kind == "idea" ? "Save idea" : "Save", action: saveRecord)
                 .modifier(PrimaryActionStyle())
                 .keyboardShortcut("s")
-                .disabled(!hasRecordEdits)
+                .disabled(!hasRecordEdits || record.kind == "idea" && !validIdea)
         } content: {
             StudioScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -377,8 +377,9 @@ struct RecordEditor: View {
                         field("Author", "author")
                         field("Notes", "text", multiline: true, height: 160)
                     case "idea":
-                        field("Topic", "topic")
-                        field("Idea", "text", multiline: true, height: 235)
+                        field("Working title", "topic")
+                        field("Angle or notes", "text", multiline: true, height: 235)
+                        if original["topic"].isEmpty { ideaWritingHelp }
                         field("Media plan", "mediaPlan")
                         field("Notes", "notes", multiline: true)
                         Toggle("Include a plan", isOn: Binding(get: { record.fields["planMarkdown"] != nil }, set: {
@@ -409,6 +410,57 @@ struct RecordEditor: View {
 
     private var hasRecordEdits: Bool {
         (original.fields as NSDictionary) != (record.fields as NSDictionary)
+    }
+
+    private var validIdea: Bool {
+        !record["topic"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !record["text"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var ideaWritingHelp: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button("Shape with Claude", systemImage: "sparkles") { Task { await shapeIdea() } }
+                .disabled(shapingIdea || !workspace.agentAccessEnabled || StudioChatAgent.claude.executable == nil
+                          || (record["topic"] + record["text"]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if shapingIdea { ProgressView("Claude is shaping the idea…").controlSize(.small) }
+            if let ideaSuggestion {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(ideaSuggestion.title).font(.headline)
+                    Text(ideaSuggestion.body).textSelection(.enabled)
+                    HStack {
+                        Button("Use this idea") {
+                            record["topic"] = ideaSuggestion.title
+                            record["text"] = ideaSuggestion.body
+                            self.ideaSuggestion = nil
+                        }.modifier(PrimaryActionStyle())
+                        Button("Dismiss") { self.ideaSuggestion = nil }
+                    }
+                }.padding(12).studioSurface()
+            }
+        }
+    }
+
+    private func shapeIdea() async {
+        guard !shapingIdea else { return }
+        shapingIdea = true
+        message = nil
+        defer { shapingIdea = false }
+        do {
+            let model = StudioChatAgent.claude.writingModel(workspace: workspace, providers: WritingProviders(settings: workspace.settings))
+            let result = try await model.object("""
+                Help the author shape these notes into one specific, editable idea for a future social post.
+                Keep the author's angle, language, and opinions. Do not draft the post or invent facts.
+                Return an object with strings title (up to 140 characters) and body (up to 2,000 characters).
+                """, ["title": record["topic"], "notes": record["text"]])
+            guard let title = result["title"] as? String, let body = result["body"] as? String,
+                  !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw WorkspaceError("Claude didn’t return an idea. Try adding a little more detail.")
+            }
+            ideaSuggestion = .init(title: String(title.prefix(140)), body: String(body.prefix(2_000)))
+        } catch {
+            message = error.localizedDescription
+        }
     }
 
     private func saveRecord() {
@@ -500,10 +552,9 @@ struct RecordEditor: View {
                 if writingAssistantOpen, workspace.writingToolsAvailable {
                     StudioRule(axis: .vertical)
                     StudioScrollView {
-                        StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue, requests: (latestNewsletter ?? record).comments.enumerated().map { index, comment in
-                            StudioWritingRequest(id: comment["revisionRequestID"] as? String ?? "saved-\(index)", text: comment["text"] as? String ?? "",
-                                state: (latestNewsletter ?? record).appliedRevisionCommentIDs.contains(comment["revisionRequestID"] as? String ?? "") ? "Applied" : "Waiting for Mac")
-                        }, reply: (latestNewsletter ?? record)["notesReply"], error: (latestNewsletter ?? record)["writingRequestError"].isEmpty ? nil : (latestNewsletter ?? record)["writingRequestError"]) { prompt in
+                        StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue,
+                            requests: (latestNewsletter ?? record).revisionRequests.map(StudioWritingRequest.init),
+                            reply: (latestNewsletter ?? record)["notesReply"], error: (latestNewsletter ?? record)["writingRequestError"].isEmpty ? nil : (latestNewsletter ?? record)["writingRequestError"]) { prompt in
                             guard saveNewsletter(), let current = workspace.records.first(where: { $0.id == record.id }) else {
                                 throw WorkspaceError("Save the current draft before asking for a change.")
                             }
@@ -819,7 +870,7 @@ struct RecordEditor: View {
         switch record.kind {
         case "project": record["name"].isEmpty ? "New project" : "Edit project"
         case "source": original["title"].isEmpty ? "New research reference" : "Edit research reference"
-        case "idea": original["topic"].isEmpty ? "New idea" : "Edit idea"
+        case "idea": original["topic"].isEmpty ? "Draft a new idea" : "Edit idea"
         default: "Edit"
         }
     }

@@ -59,6 +59,43 @@ func socialWritingRequestsApplyOnceAndRetainTheirComments(kind: String) async th
     #expect(revised["writingRequestError"].isEmpty)
 }
 
+@Test @MainActor func multipleRequestsShareAnEditAndKeepTheFullSyncTrail() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    try workspace.set("mcpEnabled", to: true)
+    var idea = WorkspaceRecord.new("idea", projectID: workspace.projectID)
+    idea["topic"] = "A specific idea"
+    idea["text"] = "Original angle."
+    idea = try workspace.save(idea)
+    for index in 1...5 {
+        try workspace.addComment(to: idea, text: "Historical note \(index)", revisionRequestID: nil)
+    }
+    let requests = ["Add a concrete example.", "Keep the original angle."].map {
+        CompanionLibrary.Change(action: .note, itemID: idea.id, revision: idea["updatedAt"],
+                                text: $0, requestsWritingHelp: true)
+    }
+    for request in requests {
+        #expect(try workspace.applyCompanionLibraryChange(request).error == nil)
+    }
+    var calls = 0
+    let model = ContentStudio.Model(provider: "fixture", name: "fixture", draft: { _, _ in [:] }, object: { _, input in
+        calls += 1
+        #expect(input["notes"] as? String == "Add a concrete example.\n\nKeep the original angle.")
+        return ["text": "Original angle with a concrete example."]
+    }, prompt: { _ in "" }, image: { _ in (Data(), "") }, imageProvider: "fixture")
+    await workspace.runDraftRevisionComments(model: model)
+    #expect(calls == 1)
+    let workspaceID = UUID()
+    var library = workspace.makeCompanionLibrary(workspaceID: workspaceID)
+    let detached = try library.separateFullText()
+    let data = try #require(detached)
+    try library.applyFullText(data)
+    let history = try #require(library.items.first { $0.id == idea.id }?.revisionRequests)
+    #expect(history.count == 7)
+    #expect(Set(history.filter { $0.state == .actedOn }.map(\.id)) == Set(requests.map { $0.id.uuidString.lowercased() }))
+}
+
 @Test(arguments: ["newsletter", "article", "script"]) @MainActor
 func writingRequestCreatesBriefOnMacAndRetainsHistory(kind: String) async throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

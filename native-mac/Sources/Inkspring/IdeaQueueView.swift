@@ -257,6 +257,78 @@ enum IdeaAction {
     }
 }
 
+struct MacSavedIdeaPage: View {
+    let idea: WorkspaceRecord
+    let close: () -> Void
+    let edit: () -> Void
+    let draft: () -> Void
+    let media: (String) -> Void
+
+    var body: some View {
+        StudioEditorPage(title: "Post idea") {
+            Button("Done", action: close)
+                .keyboardShortcut(.cancelAction)
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(idea.title).font(InkspringTypography.editorial(32, relativeTo: .title))
+                        .accessibilityAddTraits(.isHeader)
+                    Text(idea.body).lineSpacing(3).textSelection(.enabled)
+                    Button("Edit idea", systemImage: "pencil", action: edit)
+                    if idea["status"] == "draft" {
+                        Button("Draft from post idea", systemImage: "square.and.pencil", action: draft)
+                            .modifier(PrimaryActionStyle())
+                        Menu("Create media draft", systemImage: "photo.on.rectangle") {
+                            Button("TikTok video") { media("tiktok") }
+                            Button("Instagram post") { media("instagram") }
+                        }
+                    }
+                }
+                .frame(maxWidth: 760, alignment: .leading)
+                .studioPage()
+            }
+        }
+    }
+}
+
+struct MacQuickXPage: View {
+    @Environment(\.studioPalette) private var palette
+    let workspace: Workspace
+    let close: () -> Void
+    let review: (String) -> Void
+    @State private var text = ""
+
+    private var post: String { XThreadText.singlePost(text) }
+    private var valid: Bool {
+        !post.isEmpty && XThreadText.valid(post, format: "post")
+            && !post.contains(XThreadText.separator) && XReplyArticle(post).reference == nil
+    }
+
+    var body: some View {
+        StudioEditorPage(title: "Quick X post") {
+            Button("Cancel", role: .cancel, action: close).keyboardShortcut(.cancelAction)
+            Button("Review on X") { review(post) }
+                .modifier(PrimaryActionStyle()).disabled(!valid)
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("Your post", text: $text, prompt: Text("Write the one thing you want to say."), axis: .vertical)
+                        .textFieldStyle(.plain).lineLimit(4...10)
+                        .padding(12).studioSurface()
+                        .accessibilityIdentifier("quickX.text")
+                    Text("\(XThreadText.weight(post)) / 280").font(.caption).foregroundStyle(palette.muted)
+                    StudioProofreadAction(document: .init(title: "", body: text),
+                                          unavailable: workspace.agentConnected ? nil : "Connect a writing agent to proofread.",
+                                          reviewInSheet: true,
+                                          check: { try await ContentStudio.proofread($0, workspace: workspace) }) { text = $0.body }
+                }
+                .frame(maxWidth: 650, alignment: .leading)
+                .studioPage()
+            }
+        }
+    }
+}
+
 struct IdeaActionPage: View {
     @State var idea: WorkspaceRecord
     let action: IdeaAction
@@ -272,7 +344,9 @@ struct IdeaActionPage: View {
     @State private var failure: Error?
 
     private var busy: Bool { progress != nil }
-    private var linked: [String: String] { idea.fields["versions"] as? [String: String] ?? [:] }
+    private var linked: [String: String] {
+        idea.draftVersions.merging(idea.fields["mobileWritingVersions"] as? [String: String] ?? [:]) { current, _ in current }
+    }
     private var createLabel: String {
         switch chosen.count {
         case 0: "Create drafts"
@@ -337,8 +411,8 @@ struct IdeaActionPage: View {
                 .accessibilityAddTraits(.isHeader)
             Text("You’ll get one editable draft per platform you select.")
                 .foregroundStyle(palette.muted)
-            HStack(spacing: 16) {
-                ForEach(["x", "linkedin", "instagram"], id: \.self) { platform in
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), alignment: .leading)], alignment: .leading, spacing: 12) {
+                ForEach(CompanionLibrary.ideaDraftPlatforms, id: \.self) { platform in
                     if linked[platform] != nil {
                         StudioPlatformLabel(name: platform, title: platformName(platform) + " drafted")
                             .foregroundStyle(palette.muted)

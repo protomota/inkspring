@@ -6,6 +6,7 @@ struct PublicationReview: View {
     let draft: WorkspaceRecord
     let workspace: Workspace
     var scheduleAt: Date? = nil
+    var quickX = false
     let completed: (WorkspaceRecord) -> Void
     let close: () -> Void
     @State private var plan: SocialPublishPlan?
@@ -212,7 +213,14 @@ struct PublicationReview: View {
             }
             let publisher = SocialPublisher(workspace: workspace)
             let receipt: WorkspaceRecord
-            if let xArticleReview { receipt = try await publisher.publishXArticlePost(xArticleReview) }
+            if quickX {
+                let saved = try workspace.save(draft)
+                let fresh = try await publisher.review(saved)
+                guard fresh.accountID == plan.accountID, fresh.posts == plan.posts, fresh.replyID == nil else {
+                    throw WorkspaceError("The X account or post changed. Review the post before trying again.")
+                }
+                receipt = try await publisher.publish(fresh)
+            } else if let xArticleReview { receipt = try await publisher.publishXArticlePost(xArticleReview) }
             else { receipt = try await publisher.publish(plan) }
             workspace.showPostResult(receipt)
             completed(receipt)

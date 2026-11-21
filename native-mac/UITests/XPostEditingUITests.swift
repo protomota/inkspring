@@ -49,20 +49,29 @@ final class WalkthroughTests: XCTestCase {
 
     func testIdeaRevisionRequestUsesTheMacWritingConnection() {
         continueAfterFailure = false
-        let app = openIdea(theme: "graphite", extraArguments: ["--script-fixture"])
+        let app = openIdea(theme: "graphite", extraArguments: ["--script-fixture", "--revision-requests-fixture"])
+        let addRequest = app.buttons["review.addRevisionRequest"].firstMatch
         let input = app.descendants(matching: .any).matching(identifier: "review.revisionRequest").firstMatch
-        for _ in 0..<4 where !input.isHittable { app.swipeUp() }
-        XCTAssertTrue(input.isHittable)
-        XCTAssertFalse(app.staticTexts["Comments"].exists)
-        capture("Idea revision request and example", app)
-        input.tap()
-        input.typeText("Focus on one practical example.")
         let send = app.buttons["Send revision request"].firstMatch
-        for _ in 0..<4 where !send.isHittable { app.swipeUp() }
-        XCTAssertTrue(send.isHittable)
-        send.tap()
-        XCTAssertTrue(app.staticTexts["Focus on one practical example."].firstMatch.waitForExistence(timeout: 8))
-        capture("Idea revision request sent to the Mac queue", app)
+        let requests = ["Focus on one practical example.", "Keep the original source links."]
+        for (index, text) in requests.enumerated() {
+            for _ in 0..<4 where !addRequest.isHittable { app.swipeUp() }
+            XCTAssertTrue(addRequest.isHittable)
+            XCTAssertFalse(input.exists)
+            addRequest.tap()
+            XCTAssertTrue(input.waitForExistence(timeout: 5))
+            if index == 0 { capture("Idea revision request and example", app) }
+            input.tap()
+            input.typeText(text)
+            for _ in 0..<4 where !send.isHittable { app.swipeUp() }
+            XCTAssertTrue(send.isHittable)
+            send.tap()
+            XCTAssertTrue(app.staticTexts[text].firstMatch.waitForExistence(timeout: 8))
+        }
+        XCTAssertTrue(app.staticTexts["Acted on"].firstMatch.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Acted on").count, 2)
+        for text in requests { XCTAssertEqual(app.staticTexts.matching(identifier: text).count, 1) }
+        capture("Both Inkspring revision requests marked acted on", app)
     }
 
     private func verifyIdeaDraftActions(theme: String) {
@@ -108,17 +117,14 @@ final class WalkthroughTests: XCTestCase {
 
     func testMediaDraftsStartWithMediaAndCaption() {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let review = app.buttons["Review"].firstMatch
-        if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(review.waitForExistence(timeout: 10))
-        review.tap()
-        for (title, picker) in [("New TikTok video", "Choose a video"), ("New Instagram post", "Choose a photo or video")] {
-            app.buttons["writing.new"].firstMatch.tap()
-            app.buttons[title].firstMatch.tap()
+        let app = openIdea(theme: "warm-paper")
+        for (title, picker) in [("TikTok video", "Choose a video"), ("Instagram post", "Choose a photo or video")] {
+            let media = app.buttons["idea.media.open"].firstMatch
+            for _ in 0..<4 where !media.isHittable { app.swipeUp() }
+            media.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)).tap()
+            let choice = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", title)).firstMatch
+            XCTAssertTrue(choice.waitForExistence(timeout: 5), app.debugDescription)
+            choice.tap()
             XCTAssertTrue(app.buttons[picker].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
             XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Caption (optional)").firstMatch.exists)
             XCTAssertFalse(app.staticTexts["Hashtags"].exists)
@@ -197,14 +203,7 @@ final class WalkthroughTests: XCTestCase {
 
     func testXArticleReviewsAccountAndPublishesFullTextThroughMac() {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "--script-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let menu = app.buttons["writing.new"].firstMatch
-        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
-        app.buttons["New X article"].firstMatch.tap()
+        let app = openExistingWriting("Untitled X article")
         let more = app.buttons["newsletter.more"].firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
         app.buttons["Edit Markdown"].firstMatch.tap()
@@ -230,51 +229,94 @@ final class WalkthroughTests: XCTestCase {
         XCTAssertFalse(app.buttons["Edit Markdown"].exists)
     }
 
-    func testLongFormMenuGroupsNewsletterArticleAndScript() {
-        for theme in ["warm-paper", "graphite"] {
-            let app = XCUIApplication()
-            app.launchArguments = ["--library-fixture", "--script-fixture", "-inkspring.mobile.theme", theme]
-            app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-            app.launch()
-            let menu = app.buttons["writing.new"].firstMatch
-            if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-            XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
-            for name in ["New Substack newsletter", "New X article", "New YouTube script", "New X post or thread"] {
-                XCTAssertTrue(app.buttons[name].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
-            }
-            capture("Grouped long-form menu \(theme)", app)
+    func testRoundNewIdeaButtonOpensTheSavedIdeaAcrossThemes() {
+        continueAfterFailure = false
+        for theme in ["warm-paper", "graphite", "native-light", "system"] {
+            let app = openReview(theme: theme, arguments: ["--idea-first-fixture"])
+            let plus = app.buttons["idea.new"].firstMatch
+            XCTAssertTrue(plus.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertEqual(plus.label, "Draft a new idea")
+            XCTAssertEqual(plus.frame.width, plus.frame.height, accuracy: 2)
+            capture("Round new idea button – " + theme, app)
+            XCTAssertTrue(app.buttons["quickX.open"].exists)
+            plus.tap()
+            let title = app.textFields["idea.new.title"].firstMatch
+            XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
+            title.tap()
+            title.typeText("Make time for careful work")
+            let angle = app.descendants(matching: .any)["idea.new.angle"].firstMatch
+            angle.tap()
+            angle.typeText("Share one detail worth someone’s time.")
+            let save = app.buttons["Save idea"].firstMatch
+            XCTAssertTrue(save.isEnabled, app.debugDescription)
+            save.tap()
+            let draft = app.buttons["idea.draft.open"].firstMatch
+            XCTAssertTrue(draft.waitForExistence(timeout: 10), app.debugDescription)
+            let savedTitle = app.buttons["idea.detail.title"].firstMatch
+            XCTAssertTrue(savedTitle.exists, app.debugDescription)
+            XCTAssertEqual(savedTitle.label, "Make time for careful work")
+            capture("Saved idea opens – " + theme, app)
             app.terminate()
         }
     }
 
-    func testDisconnectedAgentStaysOutOfTheNewDraftMenu() {
+    func testQuickXProofreadReviewAndPublishConfirmation() {
+        continueAfterFailure = false
+        let app = openReview(theme: "graphite", arguments: ["--quick-x-fixture"])
+        let quick = app.buttons["quickX.open"].firstMatch
+        XCTAssertTrue(quick.waitForExistence(timeout: 8))
+        quick.tap()
+        let field = app.descendants(matching: .any)["quickX.text"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Share teh work.")
+        let proofread = app.staticTexts["Proofread"].firstMatch
+        proofread.tap()
+        let apply = app.buttons["proofread.apply"].firstMatch
+        XCTAssertTrue(apply.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Before: teh"].exists)
+        XCTAssertTrue(app.staticTexts["After: the"].exists)
+        capture("Review Apple Intelligence proofreading suggestions", app)
+        apply.tap()
+        XCTAssertTrue((field.value as? String ?? "").contains("Share the work."))
+        app.buttons["quickX.review"].firstMatch.tap()
+        let publish = app.buttons["Publish to X"].firstMatch
+        XCTAssertTrue(publish.waitForExistence(timeout: 5), app.debugDescription)
+        capture("Quick X confirmation includes account and final copy", app)
+        publish.tap()
+        let result = app.descendants(matching: .any)["quickX.published"].firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 10), app.debugDescription)
+    }
+
+    private func openReview(theme: String, arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "--script-fixture", "--no-mcp-fixture"]
+        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", theme] + arguments
         app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
         app.launch()
-        let menu = app.buttons["writing.new"].firstMatch
-        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(menu.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.buttons["assistant.open"].exists)
-        menu.tap()
-        XCTAssertTrue(app.buttons["New Substack newsletter"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["New X post or thread"].firstMatch.exists)
-        capture("New draft menu without an MCP connection", app)
+        let review = app.buttons["Review"].firstMatch
+        if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(review.waitForExistence(timeout: 8))
+        review.tap()
+        return app
+    }
+
+    private func openExistingWriting(_ title: String, arguments: [String] = []) -> XCUIApplication {
+        let app = openReview(theme: "warm-paper", arguments: ["--script-fixture", "--existing-writing-fixture"] + arguments)
+        let item = app.staticTexts[title].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 8), app.debugDescription)
+        item.tap()
+        return app
     }
 
     func testNewsletterCreationAndAskAIApplyBriefWithoutLeavingEditor() {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "--script-fixture", "--history-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let menu = app.buttons["writing.new"].firstMatch
-        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
-        app.buttons["New Substack newsletter"].firstMatch.tap()
+        let app = openExistingWriting("Untitled newsletter", arguments: ["--history-fixture"])
         let more = app.buttons["newsletter.more"].firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
         app.buttons["Ask AI…"].firstMatch.tap()
+        let addRequest = app.buttons["writing.addRevisionRequest"].firstMatch
+        XCTAssertTrue(addRequest.waitForExistence(timeout: 8))
+        addRequest.tap()
         let prompt = app.textFields["writing.prompt"].firstMatch
         XCTAssertTrue(prompt.waitForExistence(timeout: 8), app.debugDescription)
         prompt.tap(); prompt.typeText("Write a quick brief about local AI models.")
@@ -284,7 +326,7 @@ final class WalkthroughTests: XCTestCase {
         let reply = app.staticTexts["writing.reply"].firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 12), app.debugDescription)
         XCTAssertTrue(reply.label.contains("Wrote a short brief"))
-        XCTAssertTrue(app.staticTexts["Applied"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["Acted on"].firstMatch.exists)
         capture("Saved writing request and applied response", app)
         app.buttons["writing.close"].tap()
         let editor = app.textViews["newsletter.markdown"].firstMatch
@@ -334,16 +376,7 @@ final class WalkthroughTests: XCTestCase {
 
     func testYouTubeScriptsCreateEditAndReopenWithoutPublishing() {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "--script-fixture", "--history-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let newMenu = app.buttons["writing.new"].firstMatch
-        if !newMenu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(newMenu.waitForExistence(timeout: 8)); newMenu.tap()
-        let newScript = app.buttons["New YouTube script"].firstMatch
-        if !newScript.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(newScript.waitForExistence(timeout: 8)); newScript.tap()
+        let app = openExistingWriting("Untitled YouTube script", arguments: ["--history-fixture"])
         let more = app.buttons["newsletter.more"].firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
         app.buttons["Edit Markdown"].firstMatch.tap()
@@ -371,14 +404,7 @@ final class WalkthroughTests: XCTestCase {
 
     func testXArticleIsClearlyLabeledAndEditsAsLongForm() {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "--script-fixture", "--history-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let newMenu = app.buttons["writing.new"].firstMatch
-        if !newMenu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(newMenu.waitForExistence(timeout: 8)); newMenu.tap()
-        app.buttons["New X article"].firstMatch.tap()
+        let app = openExistingWriting("Untitled X article", arguments: ["--history-fixture"])
         XCTAssertTrue(app.navigationBars["X article"].waitForExistence(timeout: 8))
         let more = app.buttons["newsletter.more"].firstMatch
         more.tap(); app.buttons["Edit Markdown"].firstMatch.tap()

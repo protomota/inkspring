@@ -34,10 +34,12 @@ enum WorkspacePage: String, CaseIterable, Identifiable {
 struct WorkspaceWindow: View {
     private enum EditorRoute {
         case record(WorkspaceRecord)
+        case savedIdea(WorkspaceRecord)
+        case quickX
         case ideaAction(WorkspaceRecord, IdeaAction)
         case scheduledRevision(WorkspaceRecord, (WorkspaceRecord) -> Void)
         case scheduleTime(WorkspaceRecord, () -> Void)
-        case publication(WorkspaceRecord, Date?, (WorkspaceRecord) -> Void)
+        case publication(WorkspaceRecord, Date?, Bool, (WorkspaceRecord) -> Void)
         case newsletterSend(WorkspaceRecord, Bool, (WorkspaceRecord) -> Void)
     }
 
@@ -127,7 +129,7 @@ struct WorkspaceWindow: View {
             }
             if previewExpanded && editor == nil {
                 ToolbarItem(placement: .primaryAction) {
-                    WorkspaceDraftMenu(create: createDraft)
+                    creationActions
                 }
             }
             if editor == nil {
@@ -290,7 +292,7 @@ struct WorkspaceWindow: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 3) {
             VStack(spacing: 8) {
-                WorkspaceDraftMenu(fillsWidth: true, create: createDraft)
+                creationActions
                 sidebarDraftButton("Reply to a post", symbol: "arrowshape.turn.up.left") { navigate { newDraft(reply: true) } }
             }
             .padding(.horizontal, 6)
@@ -363,7 +365,7 @@ struct WorkspaceWindow: View {
         Button {
             if selectedPage != item || isEditingNewsletter || showsOnDeviceAssistant {
                 navigate {
-                    if item == .studio, studioDraft == nil { newDraft() }
+                    if item == .studio, studioDraft == nil { startIdea() }
                     else if item == .schedule || item == .published {
                         scheduleTab = item == .published ? .history : .scheduled
                         page = .schedule
@@ -420,7 +422,7 @@ struct WorkspaceWindow: View {
             }
             Spacer()
             if !showsSidebar {
-                WorkspaceDraftMenu(create: createDraft)
+                creationActions
             }
             Button("Ask Inkspring", systemImage: "sparkles") { navigate { showsOnDeviceAssistant = true } }
             if workspace.agentConnected, localAgent.executable != nil {
@@ -471,7 +473,7 @@ struct WorkspaceWindow: View {
                             }, editDirtyChanged: { studioDirty = $0 }, selectPost: navigate,
                             showSchedule: showSchedule,
                             editProject: { open(workspace.project ?? .new("project")) },
-                            compose: createDraft, expanded: previewExpanded,
+                            expanded: previewExpanded,
                             searchRequest: page == .library ? librarySearchRequest : 0,
                             togglePreview: { setPreviewExpanded(!previewExpanded) })
                     .id("\(workspace.projectID)-\(page.rawValue)")
@@ -530,13 +532,31 @@ struct WorkspaceWindow: View {
         switch route {
         case .record(let record):
             RecordEditor(record: record, workspace: workspace, closeRecord: closeEditor) { saved in
-                editor = nil
                 if saved.kind == "project" {
+                    editor = nil
                     workspace.selectProject(saved.id)
                     page = .workspace
+                } else if saved.kind == "idea" {
+                    editor = .savedIdea(saved)
+                } else {
+                    editor = nil
                 }
             }
             .id(record.id)
+        case .savedIdea(let idea):
+            MacSavedIdeaPage(idea: idea, close: closeEditor,
+                             edit: { editor = .record(idea) },
+                             draft: { editor = .ideaAction(idea, .draft) },
+                             media: { createMediaDraft($0, from: idea) })
+                .id(idea.id)
+        case .quickX:
+            MacQuickXPage(workspace: workspace, close: closeEditor) { text in
+                var post = WorkspaceRecord.new("draft", projectID: workspace.projectID)
+                post["platform"] = "x"
+                post["format"] = "post"
+                post["content"] = text
+                editor = .publication(post, nil, true, { _ in })
+            }
         case .ideaAction(let idea, let action):
             IdeaActionPage(idea: idea, action: action, workspace: workspace, close: closeEditor) { drafts in
                 let noun = drafts.count == 1 ? "draft" : "drafts"
@@ -550,8 +570,8 @@ struct WorkspaceWindow: View {
             ScheduleTimePage(draft: draft, workspace: workspace, close: closeEditor, scheduled: scheduled,
                              reviewPublication: reviewPublication)
                 .id(draft.id)
-        case .publication(let draft, let slot, let completed):
-            PublicationReview(draft: draft, workspace: workspace, scheduleAt: slot, completed: completed, close: closeEditor)
+        case .publication(let draft, let slot, let quickX, let completed):
+            PublicationReview(draft: draft, workspace: workspace, scheduleAt: slot, quickX: quickX, completed: completed, close: closeEditor)
                 .id(draft.id)
         case .newsletterSend(let draft, let scheduling, let completed):
             NewsletterSendPage(record: draft, workspace: workspace, scheduling: scheduling, close: closeEditor,
@@ -573,7 +593,7 @@ struct WorkspaceWindow: View {
 
     private func reviewPublication(_ draft: WorkspaceRecord, at date: Date?,
                                    completed: @escaping (WorkspaceRecord) -> Void) {
-        editor = .publication(draft, date, completed)
+        editor = .publication(draft, date, false, completed)
     }
 
     private func reviewNewsletter(_ draft: WorkspaceRecord, scheduling: Bool,
@@ -612,11 +632,40 @@ struct WorkspaceWindow: View {
         open(.new(kind, projectID: workspace.projectID))
     }
 
-    private func createDraft(_ type: WorkspaceDraftType) {
-        navigate {
-            guard let project = workspace.project else { add("project"); return }
-            open(type.makeRecord(projectID: project.id))
+    private var creationActions: some View {
+        HStack(spacing: 10) {
+            StudioNewIdeaButton(action: startIdea).keyboardShortcut("n")
+            Button {
+                navigate {
+                    guard workspace.project != nil else { add("project"); return }
+                    editor = .quickX
+                }
+            } label: {
+                StudioPlatformLabel(name: "x", title: "Quick X post")
+            }
+            .buttonStyle(StudioActionStyle())
+            .accessibilityIdentifier("quickX.open")
         }
+    }
+
+    private func startIdea() {
+        navigate { add("idea") }
+    }
+
+    private func createMediaDraft(_ platform: String, from idea: WorkspaceRecord) {
+        var draft = WorkspaceRecord.new("draft", projectID: idea.projectID)
+        draft["ideaId"] = idea.id
+        draft["platform"] = platform
+        draft["format"] = platform == "tiktok" ? "video" : "image"
+        editor = nil
+        open(draft)
+    }
+
+    private func newDraft(reply: Bool) {
+        guard let project = workspace.project else { add("project"); return }
+        var draft = WorkspaceRecord.new("draft", projectID: project.id)
+        if reply { draft["format"] = "reply" }
+        open(draft)
     }
 
     private func openXPostArticle(_ article: WorkspaceRecord, from post: WorkspaceRecord) {
@@ -628,13 +677,6 @@ struct WorkspaceWindow: View {
             open(article)
             openingXPostID = post.id
         }
-    }
-
-    private func newDraft(reply: Bool = false) {
-        guard let project = workspace.project else { add("project"); return }
-        var draft = WorkspaceRecord.new("draft", projectID: project.id)
-        if reply { draft["format"] = "reply" }
-        open(draft)
     }
 
     private func draftReply(_ item: WorkspaceRecord) {
@@ -806,7 +848,8 @@ struct RecordCard: View {
 }
 
 func platformName(_ value: String) -> String {
-    ["youtube": "YouTube", "x": "X", "linkedin": "LinkedIn", "instagram": "Instagram", "reddit": "Reddit", "tiktok": "TikTok"][value]
+    ["youtube": "YouTube", "x": "X", "linkedin": "LinkedIn", "instagram": "Instagram", "reddit": "Reddit", "tiktok": "TikTok",
+     "x-article": "X article", "linkedin-article": "LinkedIn article", "substack": "Substack"][value]
         ?? value.capitalized
 }
 
@@ -843,35 +886,6 @@ enum WorkspaceDraftType: String, CaseIterable {
         case .article, .linkedInArticle: "doc.richtext"
         case .script: "play.rectangle"
         }
-    }
-}
-
-private struct WorkspaceDraftMenu: View {
-    var fillsWidth = false
-    let create: (WorkspaceDraftType) -> Void
-
-    var body: some View {
-        Menu {
-            ForEach(WorkspaceDraftType.allCases, id: \.self) { type in
-                if type == .post {
-                    Button(type.name,
-                           systemImage: type.symbol) { create(type) }
-                        .keyboardShortcut("n")
-                } else {
-                    Button(type.name, systemImage: type.symbol) { create(type) }
-                }
-            }
-        } label: {
-            HStack {
-                Label("New draft", systemImage: "plus")
-                if fillsWidth { Spacer() }
-                Image(systemName: "chevron.down").font(.caption2).accessibilityHidden(true)
-            }
-        }
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
-        .buttonStyle(StudioActionStyle(prominent: true, fillsWidth: fillsWidth))
-        .accessibilityLabel("New draft")
     }
 }
 
@@ -942,7 +956,6 @@ struct PostBrowser: View {
     let selectPost: (@escaping () -> Void) -> Void
     let showSchedule: (WorkspaceRecord) -> Void
     let editProject: () -> Void
-    let compose: (WorkspaceDraftType) -> Void
     let expanded: Bool
     let searchRequest: Int
     let togglePreview: () -> Void
@@ -1002,7 +1015,6 @@ struct PostBrowser: View {
                         PageHeading(title: "Library", titleSize: 32)
                     }
                     Spacer(minLength: 8)
-                    WorkspaceDraftMenu(create: compose)
                 }
                 .padding(.bottom, 18)
                 StudioTabs(selection: Binding(get: { type }, set: { newType in
@@ -1049,9 +1061,6 @@ struct PostBrowser: View {
                                 ContentUnavailableView("No matching drafts", systemImage: "doc.text")
                                 if expanded {
                                     Button("Exit full-window preview", action: togglePreview).keyboardShortcut(.cancelAction)
-                                } else if filter == .all && search.isEmpty && platform == nil {
-                                    Button("New " + (type?.name.lowercased() ?? "social post"), systemImage: "plus") { compose(type ?? .post) }
-                                        .modifier(PrimaryActionStyle())
                                 }
                             }
                         }
@@ -1249,6 +1258,7 @@ struct PostPreview: View {
     let expanded: Bool
     let togglePreview: () -> Void
     @State private var revisionRequest = ""
+    @State private var composingRevisionRequest = false
     @State private var outlineID: String?
 
     var body: some View {
@@ -1364,20 +1374,11 @@ struct PostPreview: View {
         let current = workspace.records.first { $0.id == record.id && $0.kind == record.kind } ?? record
         return VStack(alignment: .leading, spacing: 12) {
             Text(StudioRevisionRequestCopy.heading).font(InkspringTypography.editorial(19, relativeTo: .headline))
-            ForEach(Array(current.comments.enumerated()), id: \.offset) { _, item in
-                VStack(alignment: .leading, spacing: 3) {
-                    if let date = (item["at"] as? String).flatMap(scheduleDate) {
-                        Text(date, format: .dateTime.month().day().year().hour().minute())
-                                .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text(item["text"] as? String ?? "").textSelection(.enabled)
-                    let label = (item["revisionRequestID"] as? String).map { id in
-                        current.appliedRevisionCommentIDs.contains(id) ? "Revision applied" : "Waiting for revision"
-                    } ?? "Saved note"
-                    Text(label).font(.caption).foregroundStyle(palette.muted)
-                }
-            }
             if current.acceptsRevisionComments {
+                if !composingRevisionRequest {
+                    Button(StudioRevisionRequestCopy.add, systemImage: "plus") { composingRevisionRequest = true }
+                        .disabled(!workspace.writingToolsAvailable)
+                } else {
                 HStack(alignment: .firstTextBaseline) {
                     TextField(StudioRevisionRequestCopy.field, text: $revisionRequest,
                               prompt: Text(current.kind == "idea" ? StudioRevisionRequestCopy.ideaExample : StudioRevisionRequestCopy.draftExample),
@@ -1388,11 +1389,13 @@ struct PostPreview: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .studioSurface(StudioRadius.control)
+                    Button("Cancel") { composingRevisionRequest = false }
                     Button(StudioRevisionRequestCopy.send) {
                         let text = revisionRequest.trimmingCharacters(in: .whitespacesAndNewlines)
                         workspace.perform {
                             try workspace.addComment(to: current, text: text, revisionRequestID: UUID().uuidString.lowercased())
                             revisionRequest = ""
+                            composingRevisionRequest = false
                             InkspringReview.recordActivity()
                             Task { await workspace.runDraftRevisionComments() }
                         }
@@ -1401,9 +1404,13 @@ struct PostPreview: View {
                               || revisionRequest.utf16.count > 4_000)
                 }
                 .disabled(!workspace.writingToolsAvailable)
+                }
                 if !workspace.writingToolsAvailable {
                     Text("Connect a writing agent to send a revision request.").font(.caption).foregroundStyle(palette.muted)
                 }
+            }
+            ForEach(current.revisionRequests) { request in
+                StudioRevisionRequestRow(request: .init(request))
             }
         }
     }

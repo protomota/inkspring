@@ -1,5 +1,6 @@
 import CloudKit
 import CryptoKit
+import FoundationModels
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -103,8 +104,37 @@ final class MobileLibrary {
 
     var canUseAgentFeatures: Bool { snapshot?.enabled == true && snapshot?.supportsAgentFeatures == true }
 
+    func revisionRequests(for item: CompanionLibrary.Item) -> [StudioWritingRequest] {
+        let current = (snapshot?.items ?? []).first { $0.id == item.id }
+            ?? (snapshot?.newsletters ?? []).first { $0.id == item.id }
+            ?? (snapshot?.scripts ?? []).first { $0.id == item.id }
+            ?? (snapshot?.articles ?? []).first { $0.id == item.id }
+            ?? item
+        let saved = current.revisionRequests?.map(StudioWritingRequest.init) ?? current.notes.enumerated().map { index, text in
+            let raw = current.noteStates?.indices.contains(index) == true ? current.noteStates?[index] : nil
+            let state: CompanionLibrary.RevisionRequest.State = switch raw {
+            case "applied": .actedOn
+            case "pending": .pending
+            case "waitingForDraft": .waitingForEditable
+            default: .savedNote
+            }
+            let date = current.noteDates?.indices.contains(index) == true ? current.noteDates?[index] : nil
+            return StudioWritingRequest(.init(id: "legacy-\(index)", text: text, date: date, state: state))
+        }
+        let synced = Set(saved.map(\.id))
+        return saved + pendingChanges(for: item.id).compactMap { entry in
+            let id = entry.requestID.uuidString.lowercased()
+            guard entry.requestsWritingHelp == true, !synced.contains(id) else { return nil }
+            return StudioWritingRequest(id: id, text: entry.text, state: entry.error ?? "Waiting for your Mac to revise")
+        }
+    }
+
     var pendingMediaDrafts: [CompanionLibraryOutbox.Entry] {
         outbox.entries.filter { $0.mediaDraft != nil && $0.workspaceID == snapshot?.workspaceID && $0.account == account }
+    }
+
+    var pendingQuickXPosts: [CompanionLibraryOutbox.Entry] {
+        outbox.entries.filter { $0.quickXAccountKey != nil && $0.workspaceID == snapshot?.workspaceID && $0.account == account }
     }
 
     func pendingChanges(for itemID: String) -> [CompanionLibraryOutbox.Entry] {
@@ -222,7 +252,7 @@ final class MobileLibrary {
     }
 
     var visibleItems: [CompanionLibrary.Item] {
-        (snapshot?.items ?? []).compactMap { original in
+        let remote: [CompanionLibrary.Item] = (snapshot?.items ?? []).compactMap { original in
             var item = original
             for change in pendingChanges(for: item.id) where change.error == nil {
                 switch change.action {
@@ -234,6 +264,18 @@ final class MobileLibrary {
             }
             return item
         }
+        let remoteIDs = Set(remote.map(\.id))
+        let local = pendingIdeas.compactMap { entry -> CompanionLibrary.Item? in
+            let id = entry.id.uuidString.lowercased()
+            guard !remoteIDs.contains(id) else { return nil }
+            var item = CompanionLibrary.Item(id: id, revision: "pending-add", kind: .idea,
+                projectID: entry.itemID ?? snapshot?.projects.first?.id ?? "", title: entry.title, body: entry.text,
+                shortened: false, platform: "", status: "draft", notes: [])
+            item.generationStatus = entry.error ?? (snapshot == nil ? "Saved on this device" : "Waiting for your Mac to sync this idea")
+            item.planMarkdown = entry.initialPlan
+            return item
+        }
+        return local + remote
     }
 
     func isChanging(_ itemID: String) -> Bool {
@@ -275,9 +317,12 @@ final class MobileLibrary {
         return change.id.uuidString.lowercased()
     }
 
-    func saveIdea(title: String, text: String, projectID: String?, plan: String? = nil) throws {
-        try queue(.init(id: UUID(), action: .addIdea, itemID: projectID, revision: "", title: title, text: text,
+    @discardableResult
+    func saveIdea(title: String, text: String, projectID: String?, plan: String? = nil) throws -> String {
+        let id = UUID()
+        try queue(.init(id: id, action: .addIdea, itemID: projectID, revision: "", title: title, text: text,
                         workspaceID: snapshot?.workspaceID, account: account, initialPlan: plan))
+        return id.uuidString.lowercased()
     }
 
     func saveChange(_ change: CompanionLibrary.Change, workspaceID: UUID) throws {
@@ -287,6 +332,7 @@ final class MobileLibrary {
             throw CompanionLibraryError.macUpdateForIdeaDrafts
         }
         guard change.mediaDraft == nil || snapshot?.supportsMediaDrafts == true else { throw CompanionLibraryError.disabled }
+        guard change.quickXAccountKey == nil || snapshot?.supportsQuickXPost == true else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.isLongFormEdit, try JSONEncoder().encode(change).count > change.payloadLimit {
             throw CompanionLibraryError.invalid
@@ -305,14 +351,24 @@ final class MobileLibrary {
                         afterTrash: afterTrash, publishesXArticle: change.publishesXArticle, xArticleAccountKey: change.xArticleAccountKey, requestsWritingHelp: change.requestsWritingHelp, writingKind: change.writingKind, baseScriptTitle: change.baseScriptTitle, editsScript: change.editsScript, createsScript: change.createsScript, editsNewsletter: change.editsNewsletter, afterNewsletterEdit: predecessor,
                         baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft,
                         restoresRevision: change.restoresRevision, subtitle: change.subtitle, contentOperation: change.contentOperation, basePlan: change.basePlan, initialPlan: change.initialPlan,
-                        ideaDraftPlatforms: change.ideaDraftPlatforms, mediaDraft: change.mediaDraft))
+                        ideaDraftPlatforms: change.ideaDraftPlatforms, mediaDraft: change.mediaDraft, quickXAccountKey: change.quickXAccountKey))
+    }
+
+    func queueQuickXPost(text: String, projectID: String, accountKey: String) throws -> UUID {
+        guard let snapshot, snapshot.supportsQuickXPost == true, snapshot.xArticleAccountKey == accountKey else {
+            throw CompanionLibraryError.disabled
+        }
+        var request = CompanionLibrary.Change(action: .note, itemID: projectID, text: text)
+        request.quickXAccountKey = accountKey
+        try saveChange(request, workspaceID: snapshot.workspaceID)
+        return request.id
     }
 
     private func mediaOutboxURL(_ id: UUID) -> URL {
         URL.applicationSupportDirectory.appending(path: "Inkspring/Media Outbox/\(id.uuidString.lowercased())")
     }
 
-    func queueMediaDraft(file: URL, platform: String, caption: String, projectID: String) throws {
+    func queueMediaDraft(file: URL, platform: String, caption: String, projectID: String, ideaID: String? = nil) throws {
         guard let snapshot else { throw CompanionScheduleError.changed }
         let opened = file.startAccessingSecurityScopedResource()
         defer { if opened { file.stopAccessingSecurityScopedResource() } }
@@ -322,7 +378,7 @@ final class MobileLibrary {
         let data = try Data(contentsOf: file, options: .mappedIfSafe)
         let name = file.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         var change = CompanionLibrary.Change(action: .note, itemID: projectID, title: name, text: caption)
-        change.mediaDraft = .init(platform: platform, fileName: name, data: data)
+        change.mediaDraft = .init(platform: platform, fileName: name, data: data, ideaID: ideaID)
         guard change.valid else { throw CompanionLibraryError.invalid }
         let destination = mediaOutboxURL(change.id)
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -358,7 +414,7 @@ final class MobileLibrary {
         }
         try persist(next)
         if (entry.isLongFormEdit || entry.requestsWritingHelp == true || entry.publishesXArticle == true
-            || entry.ideaDraftPlatforms != nil || entry.mediaDraft != nil) && busy {
+            || entry.ideaDraftPlatforms != nil || entry.mediaDraft != nil || entry.quickXAccountKey != nil) && busy {
             newsletterRefreshPending = true
         } else {
             Task { await refresh() }
@@ -465,6 +521,20 @@ final class MobileLibrary {
                 for change in try prepareChanges(in: fixture, account: "fixture").prefix(24 - fixture.pending.count) {
                     try fixture.enqueue(change)
                 }
+                if ProcessInfo.processInfo.arguments.contains("--quick-x-fixture") {
+                    fixture.acknowledge(fixture.pending.filter { $0.quickXAccountKey != nil }
+                        .map { .init(id: $0.id, publicationURL: "https://x.com/i/web/status/789") })
+                }
+                if ProcessInfo.processInfo.arguments.contains("--idea-first-fixture") {
+                    let additions = fixture.pending.filter { $0.action == .addIdea && $0.createsScript != true }
+                    for change in additions {
+                        fixture.items.insert(.init(id: change.id.uuidString.lowercased(),
+                            revision: Date.now.ISO8601Format(.init(includingFractionalSeconds: true)), kind: .idea,
+                            projectID: change.itemID, title: change.title, body: change.text,
+                            shortened: false, platform: "", status: "draft", notes: []), at: 0)
+                    }
+                    fixture.acknowledge(additions.map { .init(id: $0.id) })
+                }
                 if ProcessInfo.processInfo.arguments.contains("--history-fixture") {
                     for change in fixture.pending where change.action == .saveRevision || change.action == .editDraft && change.editsNewsletter != true {
                         guard let index = fixture.items.firstIndex(where: { $0.id == change.itemID }) else { continue }
@@ -486,6 +556,20 @@ final class MobileLibrary {
                     let completed = Set(fixture.results.map(\.id))
                     fixture.pending.removeAll { completed.contains($0.id) }
                     fixture.updatedAt = .now
+                }
+                if ProcessInfo.processInfo.arguments.contains("--revision-requests-fixture"),
+                   let index = fixture.items.firstIndex(where: { $0.kind == .idea }) {
+                    let itemID = fixture.items[index].id
+                    let requests = fixture.pending.filter { $0.itemID == itemID && $0.requestsWritingHelp == true }
+                    if requests.count >= 2 {
+                        fixture.items[index].revisionRequests = requests.map {
+                            .init(id: $0.id.uuidString.lowercased(), text: $0.text, date: nil, state: .actedOn)
+                        }
+                        let ids = Set(requests.map(\.id))
+                        fixture.results += requests.map { .init(id: $0.id) }
+                        fixture.pending.removeAll { ids.contains($0.id) }
+                        fixture.updatedAt = .now
+                    }
                 }
                 if ProcessInfo.processInfo.arguments.contains("--script-fixture") {
                     var writing = (fixture.scripts ?? []) + (fixture.articles ?? []) + (fixture.newsletters ?? [])
@@ -678,6 +762,11 @@ final class MobileLibrary {
         value.supportsContentPlans = true
         value.supportsClaudeIdeaDrafts = !ProcessInfo.processInfo.arguments.contains("--old-idea-draft-mac-fixture")
         value.supportsMediaDrafts = true
+        if ProcessInfo.processInfo.arguments.contains("--quick-x-fixture") {
+            value.supportsQuickXPost = true
+            value.xArticleAccountKey = "fixture:connected"
+            value.xArticleAccountName = "@fixture"
+        }
         if ProcessInfo.processInfo.arguments.contains("--x-thread-fixture") {
             var draft = CompanionLibrary.Item(id: "x-followup-demo", revision: "2026-11-18T16:00:00.000Z", kind: .draft,
                 projectID: "studio", title: "I started a cult", body: ["We build useful tools and give them away.", "Read more: https://newsletter.protomota.com/", "Join us: https://protomota.com/discord"].joined(separator: XThreadText.separator),
@@ -725,6 +814,15 @@ final class MobileLibrary {
                       projectID: "studio", title: "Notes from the studio", body: "What changed after a week of testing.",
                       shortened: false, platform: "substack", status: "published", notes: [], referenceID: "STU-003")
             ]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--existing-writing-fixture") {
+            let revision = "2026-11-19T12:00:00.000Z"
+            value.articles = [.init(id: "article-fixture", revision: revision, kind: .article, projectID: "studio",
+                title: "Untitled X article", body: "", shortened: false, platform: "x", status: "draft", notes: [])]
+            value.scripts = [.init(id: "script-fixture", revision: revision, kind: .script, projectID: "studio",
+                title: "Untitled YouTube script", body: "", shortened: false, platform: "youtube", status: "draft", notes: [])]
+            value.newsletters = [.init(id: "newsletter-fixture", revision: revision, kind: .newsletter, projectID: "studio",
+                title: "Untitled newsletter", body: "", shortened: false, platform: "substack", status: "draft", notes: [])]
         }
         if ProcessInfo.processInfo.arguments.contains("--project-filter-fixture") {
             value.projects.append(.init(id: "field-notes", name: "Field Notes"))
@@ -984,13 +1082,7 @@ private struct MobileNewsletterDetail: View {
     }
 
     private var writingRequests: [StudioWritingRequest] {
-        let pending = library.pendingChanges(for: item.id).filter { $0.requestsWritingHelp == true }.map {
-            StudioWritingRequest(id: $0.id.uuidString, text: $0.text, state: $0.error == nil ? "Saved; waiting for Mac" : "Needs attention")
-        }
-        return item.notes.enumerated().map { index, text in
-            let state = (item.noteStates ?? []).indices.contains(index) ? item.noteStates?[index] : nil
-            return StudioWritingRequest(id: "saved-\(index)", text: text, state: state == "applied" ? "Applied" : "Waiting for Mac")
-        } + pending
+        library.revisionRequests(for: item)
     }
 
     private func syncMessage(_ status: MobileLibrary.NewsletterSyncStatus) -> String {
@@ -1173,6 +1265,7 @@ struct MobileReviewView: View {
     let openSettings: () -> Void
     @Environment(\.studioPalette) private var palette
     @State private var selection: String?
+    @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     @State private var filter = "Drafts"
     @State private var platformFilter: String?
     @State private var projectFilter: String?
@@ -1180,17 +1273,11 @@ struct MobileReviewView: View {
     @State private var editItem: CompanionLibrary.Item?
     @State private var deleteItem: CompanionLibrary.Item?
     @State private var actionError: String?
-    @State private var creatingXDraft = false
-    @State private var mediaPlatform: MediaPlatform?
-    @State private var scriptError: String?
+    @State private var draftingIdea = false
+    @State private var quickXPost = false
     @State private var askingInkspring = false
 
     private static let filters = ["Drafts", "Ideas", "Trash"]
-
-    private enum MediaPlatform: String, Identifiable {
-        case instagram, tiktok
-        var id: Self { self }
-    }
 
     private enum DraftSort: String, CaseIterable {
         case lastUpdated = "Last updated"
@@ -1277,13 +1364,16 @@ struct MobileReviewView: View {
             }
         } else if askingInkspring { assistantView }
         else {
-            reviewBody.sheet(item: $mediaPlatform) { platform in
-                NavigationStack {
-                    MobileMediaDraftForm(platform: platform.rawValue, library: library,
-                                         initialProject: projectFilter ?? library.snapshot?.projects.first?.id ?? "")
-                        .toolbar { Button("Done") { mediaPlatform = nil } }
+            reviewBody
+                .sheet(isPresented: $draftingIdea, onDismiss: showCreatedIdea) {
+                    MobileIdeasView(library: library, isSelected: true, initialProject: projectFilter) { id in
+                        newIdeaID = id
+                        draftingIdea = false
+                    }
                 }
-            }
+                .sheet(isPresented: $quickXPost) {
+                    NavigationStack { MobileQuickXComposer(library: library, preferredProject: projectFilter) }
+                }
         }
     }
 
@@ -1303,7 +1393,7 @@ struct MobileReviewView: View {
     }
 
     private var reviewBody: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
             Group {
                 if let snapshot = library.snapshot {
                     List(selection: $selection) {
@@ -1316,6 +1406,12 @@ struct MobileReviewView: View {
                         }
                         Section {
                             if filter == "Drafts" {
+                                ForEach(library.pendingQuickXPosts) { request in
+                                    Label(request.error ?? "Quick X post queued for your Mac.",
+                                          systemImage: request.error == nil ? "clock" : "exclamationmark.icloud")
+                                        .font(.footnote)
+                                        .listRowBackground(palette.card)
+                                }
                                 ForEach(library.pendingMediaDrafts) { request in
                                     if let media = request.mediaDraft, (projectFilter == nil || request.itemID == projectFilter),
                                        (platformFilter == nil || media.platform == platformFilter) {
@@ -1351,6 +1447,7 @@ struct MobileReviewView: View {
             .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
             .refreshable { await library.refresh() }
             .toolbar {
+                ideaToolbarItem
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { askingInkspring = true } label: {
                         Label("Ask Inkspring", systemImage: "sparkles").labelStyle(.titleAndIcon)
@@ -1358,42 +1455,16 @@ struct MobileReviewView: View {
                     .accessibilityIdentifier("assistant.open")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Section("Long-form") {
-                            Button { createWriting("newsletter") } label: { Label { Text("New Substack newsletter") } icon: { platformMenuIcon("substack") } }
-                                .accessibilityIdentifier("newsletter.new")
-                            Button { createWriting("article") } label: { Label { Text("New X article") } icon: { platformMenuIcon("x") } }
-                                .accessibilityIdentifier("article.new")
-                            if library.snapshot?.supportsClaudeIdeaDrafts == true, library.snapshot?.supportsLinkedInArticles == true {
-                                Button { createWriting("linkedin-article") } label: { Label { Text("New LinkedIn article") } icon: { platformMenuIcon("linkedin") } }
-                            }
-                            Button { createWriting("script") } label: { Label { Text("New YouTube script") } icon: { platformMenuIcon("youtube") } }
-                                .accessibilityIdentifier("script.new")
-                        }
-                        Section("Social posts") {
-                            if library.canUseAgentFeatures, library.snapshot?.supportsXThreads == true {
-                                Button { creatingXDraft = true } label: { Label { Text("New X post or thread") } icon: { platformMenuIcon("x") } }
-                                    .accessibilityIdentifier("x.newDraft")
-                            }
-                            if library.snapshot?.supportsMediaDrafts == true {
-                                Button("New Instagram post", systemImage: "photo") {
-                                    mediaPlatform = .instagram
-                                }
-                                Button("New TikTok video", systemImage: "video") {
-                                    mediaPlatform = .tiktok
-                                }
-                            }
-                        }
-                    } label: { Text("New") }.accessibilityIdentifier("writing.new")
+                    Button { quickXPost = true } label: {
+                        PlatformMark(name: "x", fallback: "paperplane").frame(width: 18, height: 18)
+                    }
+                    .accessibilityLabel("Quick X post")
+                    .accessibilityIdentifier("quickX.open")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await library.refresh() } }
                         .disabled(library.busy)
                 }
-            }
-            .alert("Couldn’t create draft", isPresented: Binding(get: { scriptError != nil }, set: { if !$0 { scriptError = nil } })) { Button("OK") { scriptError = nil } } message: { Text(scriptError ?? "") }
-            .navigationDestination(isPresented: $creatingXDraft) {
-                MobileXGeneration(library: library)
             }
         } detail: {
             Group {
@@ -1530,14 +1601,23 @@ struct MobileReviewView: View {
         .contentShape(Rectangle())
     }
 
-    private func createWriting(_ kind: String) {
-        do {
-            guard let projectID = projectFilter ?? library.snapshot?.projects.first?.id else { return }
-            selection = try library.createScript(projectID: projectID, kind: kind)
-            filter = "Drafts"
-            let platform = mobileWritingPlatform(kind)
-            platformFilter = mobileWritingKind(kind) == .article ? platform + "-article" : platform
-        } catch { scriptError = error.localizedDescription }
+    @State private var newIdeaID: String?
+
+    @ToolbarContentBuilder private var ideaToolbarItem: some ToolbarContent {
+        if #available(iOS 26, *) {
+            ToolbarItem(placement: .topBarTrailing) { StudioNewIdeaButton { draftingIdea = true } }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarTrailing) { StudioNewIdeaButton { draftingIdea = true } }
+        }
+    }
+
+    private func showCreatedIdea() {
+        guard let id = newIdeaID else { return }
+        filter = "Ideas"
+        selection = id
+        compactColumn = .detail
+        newIdeaID = nil
     }
 
     @ViewBuilder private func reviewRow(_ item: CompanionLibrary.Item, in snapshot: CompanionLibrary) -> some View {
@@ -1922,11 +2002,168 @@ private struct MobileIdeaDraftPicker: View {
     }
 }
 
+private struct MobileQuickXComposer: View {
+    let library: MobileLibrary
+    let preferredProject: String?
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.studioPalette) private var palette
+    @State private var text = ""
+    @State private var projectID: String?
+    @State private var confirming = false
+    @State private var requestID: UUID?
+    @State private var error: String?
+    @State private var polishing = false
+    @State private var suggestedText: String?
+    @FocusState private var editingPost: Bool
+
+    private var projects: [CompanionLibrary.Project] { library.snapshot?.projects ?? [] }
+    private var project: String? { projectID ?? preferredProject ?? projects.first?.id }
+    private var account: String? { library.snapshot?.xArticleAccountKey }
+    private var accountName: String { library.snapshot?.xArticleAccountName ?? "your connected account" }
+    private var post: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var weight: Int { XThreadText.weight(post) }
+    private var canPost: Bool {
+        library.snapshot?.supportsQuickXPost == true && account != nil && project != nil && requestID == nil
+            && !post.isEmpty && weight <= 280 && !post.contains(XThreadText.separator)
+            && XReplyArticle(post).reference == nil
+    }
+
+    var body: some View {
+        Form {
+            if let requestID {
+                Section {
+                    if let result = library.snapshot?.results.first(where: { $0.id == requestID }) {
+                        if let error = result.error {
+                            Label(error, systemImage: "exclamationmark.circle")
+                        } else if let address = result.publicationURL, let url = CompanionPublication.postURL(address) {
+                            Link("View published post", destination: url)
+                                .accessibilityIdentifier("quickX.published")
+                        } else {
+                            Label("Published on X", systemImage: "checkmark.circle")
+                        }
+                    } else if let error = library.pendingQuickXPosts.first(where: { $0.id == requestID })?.error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                    } else {
+                        Label("Waiting for your Mac to publish.", systemImage: "clock")
+                    }
+                }
+                .listRowBackground(palette.card)
+            } else {
+                Section {
+                    if projects.count > 1 {
+                        Picker("Project", selection: Binding(get: { project ?? "" }, set: { projectID = $0 })) {
+                            ForEach(projects) { Text($0.name).tag($0.id) }
+                        }
+                    }
+                    TextField("Your post", text: $text,
+                              prompt: Text("Write the one thing you want to say."), axis: .vertical)
+                        .lineLimit(4...10)
+                        .focused($editingPost)
+                        .accessibilityIdentifier("quickX.text")
+                    Text("\(weight) / 280")
+                        .font(.caption)
+                        .foregroundStyle(weight > 280 ? palette.danger : palette.muted)
+                    StudioProofreadAction(document: .init(title: "", body: text),
+                                          unavailable: proofreadUnavailable, begin: { editingPost = false }, reviewInSheet: true,
+                                          check: proofread) { text = $0.body }
+                    if MobileProofreading.availabilityMessage == nil {
+                        Button("Polish with Apple Intelligence", systemImage: "sparkles") { Task { await polish() } }
+                            .disabled(polishing || post.isEmpty || weight > 1_000)
+                    }
+                    if polishing { ProgressView("Polishing…") }
+                    if let suggestedText {
+                        Text(suggestedText).textSelection(.enabled)
+                        Button("Use this version") { text = suggestedText; self.suggestedText = nil }
+                        Button("Dismiss") { self.suggestedText = nil }
+                    }
+                } footer: {
+                    Text("Your Mac publishes this as a single post to \(accountName).")
+                }
+                .listRowBackground(palette.card)
+                Section {
+                    Button("Post to X", systemImage: "paperplane") {
+                        editingPost = false
+                        confirming = true
+                    }
+                        .disabled(!canPost)
+                        .accessibilityIdentifier("quickX.review")
+                    if library.snapshot?.supportsQuickXPost != true {
+                        Text("Update and open Inkspring on your Mac to use Quick X.")
+                    } else if account == nil {
+                        Text("Connect your X account in Inkspring on your Mac.")
+                    }
+                    if let error { Label(error, systemImage: "exclamationmark.circle") }
+                }
+                .listRowBackground(palette.card)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .mobileCanvas()
+        .navigationTitle("Quick X post")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button(requestID == nil ? "Cancel" : "Done") { dismiss() } } }
+        .alert("Publish this post to \(accountName)?", isPresented: $confirming) {
+            Button("Cancel", role: .cancel) {}
+            Button("Publish to X", action: publish)
+        } message: {
+            Text(post)
+        }
+    }
+
+    private func publish() {
+        guard canPost, let account, let project else { return }
+        do { requestID = try library.queueQuickXPost(text: post, projectID: project, accountKey: account) }
+        catch { self.error = error.localizedDescription }
+    }
+
+    private var proofreadUnavailable: String? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--quick-x-fixture") { return nil }
+        #endif
+        return MobileProofreading.availabilityMessage
+    }
+
+    @MainActor private func proofread(_ document: ProofreadDocument) async throws -> ProofreadReview {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--quick-x-fixture") {
+            return try await ProofreadReview.check(document, chunkSize: 1_350) { _ in
+                [.init(original: "teh", replacement: "the", reason: "Fix a spelling error")]
+            }
+        }
+        #endif
+        return try await MobileProofreading.check(document)
+    }
+
+    private func polish() async {
+        guard #available(iOS 26, *), MobileProofreading.availabilityMessage == nil, !polishing else { return }
+        let original = text
+        polishing = true
+        error = nil
+        defer { polishing = false }
+        do {
+            let session = LanguageModelSession(instructions: """
+                Tighten the author's text into one short post for X, keeping the voice, meaning, and claims.
+                Use the author's language. Do not add hashtags, links, or facts. Return only the post text, within 280 characters.
+                """)
+            let response = try await session.respond(to: original)
+            let candidate = XThreadText.singlePost(response.content)
+            guard original == text else { return }
+            guard XThreadText.valid(candidate, format: "post"), !candidate.isEmpty else {
+                error = "Apple Intelligence didn’t suggest a version that fits in one X post."
+                return
+            }
+            suggestedText = candidate
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
 private struct MobileMediaDraftForm: View {
     @Environment(\.studioPalette) private var palette
+    @Environment(\.dismiss) private var dismiss
     let platform: String
     let library: MobileLibrary
     let initialProject: String
+    let ideaID: String?
     @State private var projectID = ""
     @State private var caption = ""
     @State private var importing = false
@@ -1937,8 +2174,10 @@ private struct MobileMediaDraftForm: View {
     var body: some View {
         Form {
             Section {
-                Picker("Project", selection: $projectID) {
-                    ForEach(library.snapshot?.projects ?? []) { Text($0.name).tag($0.id) }
+                if ideaID == nil {
+                    Picker("Project", selection: $projectID) {
+                        ForEach(library.snapshot?.projects ?? []) { Text($0.name).tag($0.id) }
+                    }
                 }
                 Button(selected?.lastPathComponent ?? (platform == "tiktok" ? "Choose a video" : "Choose a photo or video"),
                        systemImage: platform == "tiktok" ? "video" : "photo") { importing = true }
@@ -1953,7 +2192,8 @@ private struct MobileMediaDraftForm: View {
                 Button("Save draft on Mac", systemImage: "square.and.pencil") {
                     guard let selected else { return }
                     do {
-                        try library.queueMediaDraft(file: selected, platform: platform, caption: caption, projectID: projectID)
+                        try library.queueMediaDraft(file: selected, platform: platform, caption: caption,
+                                                    projectID: projectID, ideaID: ideaID)
                         queued = true
                         message = "Queued for your Mac. The draft will appear in Review."
                     } catch { message = error.localizedDescription }
@@ -1967,6 +2207,7 @@ private struct MobileMediaDraftForm: View {
         .background(palette.canvas)
         .navigationTitle(platform == "tiktok" ? "New TikTok video" : "New Instagram post")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
         .onAppear { if projectID.isEmpty { projectID = initialProject } }
         .fileImporter(isPresented: $importing, allowedContentTypes: platform == "tiktok" ? [.mpeg4Movie, .quickTimeMovie] : [.mpeg4Movie, .quickTimeMovie, .png, .jpeg]) { result in
             do { selected = try result.get(); message = nil }
@@ -2029,12 +2270,8 @@ private struct MobileItemEditor: View {
                 if !isX { Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }.accessibilityIdentifier("editor.find") }
                 if library.canUseAgentFeatures {
                     MobileWritingTools(title: $title, text: $text, presented: $showsWritingTools,
-                        agent: library.snapshot?.writingAgent ?? "agent", requests: item.notes.enumerated().map { index, text in
-                            StudioWritingRequest(id: "saved-\(index)", text: text,
-                                state: (item.noteStates ?? []).indices.contains(index) && item.noteStates?[index] == "applied" ? "Applied" : "Waiting for Mac")
-                        } + library.pendingChanges(for: item.id).filter { $0.requestsWritingHelp == true }.map {
-                            StudioWritingRequest(id: $0.id.uuidString, text: $0.text, state: "Waiting for Mac")
-                        }, reply: item.writingReply, error: item.writingError) { prompt in
+                        agent: library.snapshot?.writingAgent ?? "agent", requests: library.revisionRequests(for: item),
+                        reply: item.writingReply, error: item.writingError) { prompt in
                             guard save() else { throw CompanionLibraryError.invalid }
                             try library.saveChange(.init(action: .note, itemID: item.id, revision: item.revision,
                                 text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
@@ -2093,7 +2330,12 @@ private struct MobileAttachmentLabel: View {
     }
 }
 
-private struct MobileReviewDetail: View {
+enum IdeaMediaPlatform: String, Identifiable {
+    case tiktok, instagram
+    var id: String { rawValue }
+}
+
+struct MobileReviewDetail: View {
     let item: CompanionLibrary.Item
     let library: MobileLibrary
     let workspaceID: UUID
@@ -2102,10 +2344,12 @@ private struct MobileReviewDetail: View {
     @State private var note = ""
     @State private var message: String?
     @State private var savedNoteID: UUID?
+    @State private var composingRevisionRequest = false
     @State private var showsOutline = false
     @State private var editingDraft = false
     @State private var choosingSchedule = false
     @State private var draftingIdea = false
+    @State private var mediaPlatform: IdeaMediaPlatform?
     @State private var needsMacUpdate = false
     @State private var confirmDeletion = false
     @State private var editBodyFirst = false
@@ -2212,6 +2456,7 @@ private struct MobileReviewDetail: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Edit title")
+                    .accessibilityIdentifier(item.kind == .idea ? "idea.detail.title" : "draft.detail.title")
                 }
                 if !item.platform.isEmpty {
                     StudioPlatformLabel(name: item.reviewPlatform, title: reviewPlatformName(item.reviewPlatform))
@@ -2284,46 +2529,43 @@ private struct MobileReviewDetail: View {
                     .accessibilityIdentifier("outline.view")
                     .listRowBackground(palette.card)
             }
-            if !inTrash, canRequestRevision || !item.notes.isEmpty {
+            if !inTrash, canRequestRevision || !library.revisionRequests(for: item).isEmpty {
             Section {
-                ForEach(Array(item.notes.enumerated()), id: \.offset) { index, text in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(text)
-                        if let dates = item.noteDates, dates.indices.contains(index), let timestamp = date(dates[index]) {
-                            Text(timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                        let state = item.noteStates?.indices.contains(index) == true ? item.noteStates?[index] : nil
-                        let label = state == "applied" ? "Revision applied" :
-                            state == "waitingForDraft" ? "Waiting for an editable item on Mac" :
-                            state == "pending" ? "Waiting for your Mac to revise" : "Saved note"
-                        Text(label).font(.footnote).foregroundStyle(palette.muted)
-                    }
-                }
-                ForEach(library.pendingChanges(for: item.id).filter { $0.action == .note && $0.ideaDraftPlatforms == nil }) { entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(entry.text)
-                        if let error = entry.error {
-                            Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
-                        }
-                    }
-                }
                 if canRequestRevision && library.canUseAgentFeatures {
-                    TextField(StudioRevisionRequestCopy.field, text: $note,
-                              prompt: Text(item.kind == .idea ? StudioRevisionRequestCopy.ideaExample : StudioRevisionRequestCopy.draftExample),
-                              axis: .vertical)
-                        .lineLimit(2...5)
-                        .focused($editingNote)
-                        .accessibilityIdentifier("review.revisionRequest")
-                    if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button(StudioRevisionRequestCopy.send) {
-                            if saveNote() { editingNote = false }
+                    if composingRevisionRequest {
+                        TextField(StudioRevisionRequestCopy.field, text: $note,
+                                  prompt: Text(item.kind == .idea ? StudioRevisionRequestCopy.ideaExample : StudioRevisionRequestCopy.draftExample),
+                                  axis: .vertical)
+                            .lineLimit(2...5)
+                            .focused($editingNote)
+                            .accessibilityIdentifier("review.revisionRequest")
+                        HStack {
+                            Button("Cancel") {
+                                editingNote = false
+                                composingRevisionRequest = false
+                            }.buttonStyle(.borderless)
+                            Spacer()
+                            Button(StudioRevisionRequestCopy.send) {
+                                if saveNote() {
+                                    editingNote = false
+                                    composingRevisionRequest = false
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || note.utf16.count > 1000)
                         }
-                        .disabled(note.utf16.count > 1000)
+                        if note.utf16.count > 1000 {
+                            Text("Use up to 1,000 characters.").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Button(StudioRevisionRequestCopy.add, systemImage: "plus") {
+                            composingRevisionRequest = true
+                        }
+                        .accessibilityIdentifier("review.addRevisionRequest")
                     }
-                    if note.utf16.count > 1000 {
-                        Text("Use up to 1,000 characters.").font(.footnote).foregroundStyle(.secondary)
-                    }
+                }
+                ForEach(library.revisionRequests(for: item)) { request in
+                    StudioRevisionRequestRow(request: request)
                 }
                 if let savedNoteID {
                     let entry = library.pendingChanges(for: item.id).first { $0.id == savedNoteID }
@@ -2364,6 +2606,16 @@ private struct MobileReviewDetail: View {
                 .listRowBackground(palette.card)
             }
             if item.isTrashed != true, item.kind == .idea, ["draft", "skipped"].contains(item.status) {
+                if item.status == "draft", item.revision != "pending-add", library.snapshot?.supportsMediaDrafts == true {
+                    Section {
+                        Menu("Create media draft", systemImage: "photo.on.rectangle") {
+                            Button("TikTok video") { mediaPlatform = .tiktok }
+                            Button("Instagram post") { mediaPlatform = .instagram }
+                        }
+                        .accessibilityIdentifier("idea.media.open")
+                    }
+                    .listRowBackground(palette.card)
+                }
                 Section {
                     if item.status == "draft" {
                         Button { draftingIdea = true } label: {
@@ -2405,6 +2657,11 @@ private struct MobileReviewDetail: View {
             NavigationStack {
                 MobileIdeaDraftPicker(item: item, library: library, workspaceID: workspaceID)
                     .toolbar { Button("Done") { draftingIdea = false } }
+            }
+        }
+        .sheet(item: $mediaPlatform) { platform in
+            NavigationStack {
+                MobileMediaDraftForm(platform: platform.rawValue, library: library, initialProject: item.projectID, ideaID: item.id)
             }
         }
         .sheet(isPresented: $choosingSchedule) {

@@ -24,8 +24,11 @@ extension Workspace {
             guard let previous = try await cloud.loadLibrary(workspaceID: id, account: account), previous.enabled else {
                 throw CompanionLibraryError.disabled
             }
-            let ready = previous.pending.filter { $0.ideaDraftPlatforms == nil && $0.mediaDraft == nil && (!$0.usesMacAgent || agentConnected) }
+            let ready = previous.pending.filter { $0.ideaDraftPlatforms == nil && $0.mediaDraft == nil && $0.quickXAccountKey == nil && (!$0.usesMacAgent || agentConnected) }
             var completed = try ready.map(applyCompanionLibraryChange)
+            if let request = previous.pending.first(where: { $0.quickXAccountKey != nil }) {
+                completed.append(await publishMobileQuickX(request))
+            }
             var completedMedia: CompanionLibrary.Change?
             if let request = previous.pending.first(where: { $0.mediaDraft != nil }) {
                 do {
@@ -99,6 +102,7 @@ extension Workspace {
         snapshot.supportsXParagraphs = true
         snapshot.supportsRevisionHistory = true
         snapshot.supportsXArticlePublishing = true
+        snapshot.supportsQuickXPost = true
         snapshot.supportsLinkedInArticles = true
         if let account = try? socialAccounts.savedAccount(.x) {
             snapshot.xArticleAccountKey = account.connectionKey
@@ -168,6 +172,7 @@ extension Workspace {
                 item.writingReply = record["notesReply"].isEmpty ? nil : record["notesReply"]
                 item.writingError = record["writingRequestError"].isEmpty ? nil : record["writingRequestError"]
                 if comments.contains(where: { $0.state != nil }) { item.noteStates = comments.map(\.state) }
+                item.revisionRequests = record.revisionRequests
                 if record.fields["manualQuote"] as? Bool == true { item.requiresMacScheduling = true }
                 guard let encoded = try? encoder.encode(item.indexEntry), kindBytes + encoded.count <= 52_000,
                       bytes + encoded.count <= 208_000 else { return }
@@ -206,6 +211,7 @@ extension Workspace {
                 guard let id = comment["revisionRequestID"] as? String else { return nil }
                 return record.appliedRevisionCommentIDs.contains(id) ? "applied" : "pending"
             }
+            item.revisionRequests = record.revisionRequests
             item.writingError = record["writingRequestError"].isEmpty ? nil : record["writingRequestError"]
             item.writingReply = record["notesReply"].isEmpty ? nil : record["notesReply"]
             if record.kind == "article" {
@@ -244,6 +250,7 @@ extension Workspace {
               library.supportsXArticlePublishing != snapshot.supportsXArticlePublishing ||
               library.supportsLinkedInArticles != snapshot.supportsLinkedInArticles ||
               library.xArticleAccountKey != snapshot.xArticleAccountKey || library.xArticleAccountName != snapshot.xArticleAccountName ||
+              library.supportsQuickXPost != snapshot.supportsQuickXPost ||
               library.supportsWritingTools != snapshot.supportsWritingTools || library.writingAgent != snapshot.writingAgent ||
               library.supportsAgentFeatures != snapshot.supportsAgentFeatures ||
               library.postingWindows != snapshot.postingWindows || library.postingTimeZone != snapshot.postingTimeZone ||
@@ -265,6 +272,7 @@ extension Workspace {
         library.supportsLinkedInArticles = snapshot.supportsLinkedInArticles
         library.xArticleAccountKey = snapshot.xArticleAccountKey
         library.xArticleAccountName = snapshot.xArticleAccountName
+        library.supportsQuickXPost = snapshot.supportsQuickXPost
         library.supportsWritingTools = snapshot.supportsWritingTools
         library.supportsAgentFeatures = snapshot.supportsAgentFeatures
         library.writingAgent = snapshot.writingAgent
@@ -288,7 +296,7 @@ extension Workspace {
             let id = change.id.uuidString.lowercased()
             var newsletterRevisions = settings["companionNewsletterRevisions"] as? [String: String] ?? [:]
             if savedIDs.contains(id) { return .init(id: change.id, newsletterRevision: newsletterRevisions[id]) }
-            guard change.valid, change.ideaDraftPlatforms == nil, change.mediaDraft == nil else {
+            guard change.valid, change.ideaDraftPlatforms == nil, change.mediaDraft == nil, change.quickXAccountKey == nil else {
                 return .init(id: change.id, error: "Invalid mobile change.")
             }
             if let error = try applyLibraryAction(change, id: id) { return .init(id: change.id, error: error) }
@@ -509,10 +517,63 @@ extension Workspace {
             draft["platform"] = media.platform
             draft["format"] = media.isVideo ? "video" : "image"
             draft["content"] = change.text
+            if let ideaID = media.ideaID {
+                guard records.contains(where: { $0.id == ideaID && $0.kind == "idea" && $0.projectID == change.itemID }) else {
+                    throw WorkspaceError("Open the saved idea in this project before starting a media draft.")
+                }
+                draft["ideaId"] = ideaID
+            }
             if media.isVideo { draft.setDraftMedia(try await attachVideo(file), as: .video) }
             else { draft.setDraftMedia(try attachImage(file), as: .image) }
             try save(draft)
             return .init(id: change.id)
+        } catch {
+            return .init(id: change.id, error: error.localizedDescription)
+        }
+    }
+
+    func publishMobileQuickX(_ change: CompanionLibrary.Change, publisher: SocialPublisher? = nil) async -> CompanionLibrary.Result {
+        let id = change.id.uuidString.lowercased()
+        func success(_ receipt: WorkspaceRecord) -> CompanionLibrary.Result {
+            let url = (receipt.fields["steps"] as? [[String: Any]])?.first?["url"] as? String
+            return .init(id: change.id, publicationURL: url)
+        }
+        do {
+            try reload()
+            guard change.valid, let key = change.quickXAccountKey, projects.contains(where: { $0.id == change.itemID }) else {
+                throw WorkspaceError("Choose a project and write one X post of up to 280 characters.")
+            }
+            if let receipt = records.first(where: { $0.kind == "publication" && $0["draftId"] == id && $0["status"] == "published" }) {
+                return success(receipt)
+            }
+            let client = publisher ?? SocialPublisher(workspace: self)
+            let account = try await client.authorize(.x)
+            guard account.connectionKey == key else {
+                throw WorkspaceError("The X account changed. Open Quick X post and review the account again.")
+            }
+            let draft: WorkspaceRecord
+            if let existing = records.first(where: { $0.id == id }) {
+                guard existing.kind == "draft", existing["format"] == "post", existing["platform"] == "x",
+                      existing.projectID == change.itemID, existing.body == change.text else {
+                    throw WorkspaceError("The saved X post changed. Review the draft on your Mac.")
+                }
+                draft = existing
+            } else {
+                guard !trashedRecords.contains(where: { $0.id == id }),
+                      !(settings["libraryDeletedIDs"] as? [String] ?? []).contains(id) else {
+                    throw WorkspaceError("This X draft was removed. Check Published before trying again.")
+                }
+                var record = WorkspaceRecord.new("draft", projectID: change.itemID)
+                record["id"] = id
+                record["title"] = "Quick X post"
+                record["content"] = change.text
+                draft = try save(record)
+            }
+            let plan = try await client.review(draft)
+            guard plan.accountID == account.id, plan.posts == [change.text], plan.replyID == nil else {
+                throw WorkspaceError("The X account or post changed. Review the saved draft before publishing.")
+            }
+            return success(try await client.publish(plan))
         } catch {
             return .init(id: change.id, error: error.localizedDescription)
         }

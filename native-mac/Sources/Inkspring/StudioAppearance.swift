@@ -225,6 +225,7 @@ struct StudioPalette {
     // Match OpenTalon's action colors for native themes.
     var iconAccent: Color { shade(0xb9603a, 0x61d9e3, 0x056370) }
     var primaryAction: Color { shade(0xa94d28, 0x61d9e3, 0x056370) }
+    var ideaCreationTint: Color { shade(0x245a91, 0x61d9e3, 0x125ca2) }
     var accentText: Color { shade(0xfffdf9, 0x1e1f25, 0xffffff) }
     var danger: Color { shade(0xb44036, 0xf18d85, 0xba413a) }
     var success: Color { shade(0x356641, 0x87c697, 0x246b45) }
@@ -255,6 +256,33 @@ extension EnvironmentValues {
     var studioPalette: StudioPalette {
         get { self[StudioPaletteKey.self] }
         set { self[StudioPaletteKey.self] = newValue }
+    }
+}
+
+struct StudioNewIdeaButton: View {
+    @Environment(\.studioPalette) private var palette
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) { surface }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Draft a new idea")
+            .accessibilityIdentifier("idea.new")
+    }
+
+    @ViewBuilder private var surface: some View {
+        let icon = Image(systemName: "plus")
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(palette.ideaCreationTint)
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+        if #available(macOS 26, iOS 26, *), !reduceTransparency {
+            icon.glassEffect(.regular.tint(palette.ideaCreationTint.opacity(0.38)).interactive(), in: .circle)
+        } else {
+            icon.background(palette.ideaCreationTint.opacity(0.12), in: Circle())
+                .overlay { Circle().strokeBorder(palette.ideaCreationTint.opacity(0.35)).allowsHitTesting(false) }
+        }
     }
 }
 
@@ -1247,7 +1275,9 @@ private struct MacReplyWritingField: View {
 enum StudioRevisionRequestCopy {
     static let heading = "Revision requests"
     static let field = "Revision request"
+    static let add = "Add revision request"
     static let send = "Send revision request"
+    static let actedOn = "Acted on"
     static let ideaExample = "For example, focus this idea on one concrete claim."
     static let draftExample = "For example, tighten the opening and keep the source links."
 }
@@ -1256,6 +1286,51 @@ struct StudioWritingRequest: Identifiable {
     let id: String
     let text: String
     let state: String
+    var date: String?
+
+    init(id: String, text: String, state: String, date: String? = nil) {
+        self.id = id
+        self.text = text
+        self.state = state
+        self.date = date
+    }
+
+    init(_ request: CompanionLibrary.RevisionRequest) {
+        let state = switch request.state {
+        case .actedOn: StudioRevisionRequestCopy.actedOn
+        case .pending: "Waiting for your Mac to revise"
+        case .waitingForEditable: "Waiting for an editable item"
+        case .savedNote: "Saved note"
+        }
+        self.init(id: request.id, text: request.text, state: state, date: request.date)
+    }
+}
+
+struct StudioRevisionRequestRow: View {
+    @Environment(\.studioPalette) private var palette
+    let request: StudioWritingRequest
+
+    var body: some View {
+        let actedOn = request.state == StudioRevisionRequestCopy.actedOn
+        VStack(alignment: .leading, spacing: 5) {
+            Text(request.text).textSelection(.enabled)
+            HStack(spacing: 8) {
+                if actedOn {
+                    Label(request.state, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(palette.success)
+                } else {
+                    Text(request.state)
+                }
+                if let raw = request.date,
+                   let date = (try? Date(raw, strategy: .iso8601)) ??
+                    (try? Date(raw, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true))) {
+                    Text(date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(palette.muted)
+        }
+    }
 }
 
 struct StudioWritingAssistant: View {
@@ -1267,6 +1342,7 @@ struct StudioWritingAssistant: View {
     @Environment(\.studioPalette) private var palette
     @State private var prompt = ""
     @State private var message: String?
+    @State private var composing = false
     private var agentTitle: String {
         switch agent { case "claude", "anthropic": "Claude"; case "codex": "Codex"; case "openai": "OpenAI"; case "gemini": "Gemini"; default: "your agent" }
     }
@@ -1277,19 +1353,23 @@ struct StudioWritingAssistant: View {
                 .font(.headline)
             Text("Your Mac applies the request using its writing connection. Every change is kept in revision history.")
                 .font(.caption).foregroundStyle(palette.muted)
-            TextField(StudioRevisionRequestCopy.field, text: $prompt,
-                      prompt: Text(StudioRevisionRequestCopy.draftExample), axis: .vertical)
-                .lineLimit(3...6).textFieldStyle(.plain).padding(10)
-                .studioSurface(StudioRadius.control, fill: palette.well)
-                .accessibilityIdentifier("writing.prompt")
-            HStack {
-                Text("\(prompt.utf16.count)/1,000").font(.caption).foregroundStyle(palette.muted)
-                Spacer()
-                Button { send(prompt) } label: {
-                    StudioPlatformLabel(name: agentIcon, title: "Ask \(agentTitle)")
+            if composing {
+                TextField(StudioRevisionRequestCopy.field, text: $prompt,
+                          prompt: Text(StudioRevisionRequestCopy.draftExample), axis: .vertical)
+                    .lineLimit(3...6).textFieldStyle(.plain).padding(10)
+                    .studioSurface(StudioRadius.control, fill: palette.well)
+                    .accessibilityIdentifier("writing.prompt")
+                HStack {
+                    Text("\(prompt.utf16.count)/1,000").font(.caption).foregroundStyle(palette.muted)
+                    Spacer()
+                    Button("Cancel") { composing = false }
+                    Button(StudioRevisionRequestCopy.send) { send(prompt) }
+                        .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || prompt.utf16.count > 1_000)
+                        .accessibilityIdentifier("writing.send")
                 }
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || prompt.utf16.count > 1_000)
-                .accessibilityIdentifier("writing.send")
+            } else {
+                Button(StudioRevisionRequestCopy.add, systemImage: "plus") { composing = true }
+                    .accessibilityIdentifier("writing.addRevisionRequest")
             }
             HStack {
                 Button("Summarize this") { send("Summarize this draft into a concise brief, preserving the key facts and relevant links.") }
@@ -1300,11 +1380,9 @@ struct StudioWritingAssistant: View {
             if !requests.isEmpty {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(requests.suffix(4))) { request in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(request.text).font(.callout)
-                                Text(request.state).font(.caption).foregroundStyle(palette.muted)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10).studioSurface(fill: palette.well)
+                        ForEach(requests) { request in
+                            StudioRevisionRequestRow(request: request)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(10).studioSurface(fill: palette.well)
                         }
                     }
                 }.frame(maxHeight: 160)
@@ -1318,6 +1396,7 @@ struct StudioWritingAssistant: View {
         do {
             try submit(text.trimmingCharacters(in: .whitespacesAndNewlines))
             prompt = ""
+            composing = false
             message = "Request saved. Your Mac will apply it while Inkspring is open."
         } catch { message = error.localizedDescription }
     }

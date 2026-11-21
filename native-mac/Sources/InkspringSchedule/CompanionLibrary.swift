@@ -162,6 +162,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var supportsContentPlans: Bool?
     public var supportsClaudeIdeaDrafts: Bool?
     public var supportsMediaDrafts: Bool?
+    public var supportsQuickXPost: Bool?
     public var postingWindows: [String: CompanionPostingWindow]?
     public var postingTimeZone: String?
     public var updatedAt = Date.now
@@ -174,6 +175,24 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public let id: String
         public let name: String
         public init(id: String, name: String) { self.id = id; self.name = name }
+    }
+
+    public struct RevisionRequest: Codable, Equatable, Identifiable, Sendable {
+        public enum State: String, Codable, Sendable {
+            case pending, actedOn, waitingForEditable, savedNote
+        }
+
+        public let id: String
+        public let text: String
+        public let date: String?
+        public let state: State
+
+        public init(id: String, text: String, date: String?, state: State) {
+            self.id = id
+            self.text = text
+            self.date = date
+            self.state = state
+        }
     }
 
     public struct Item: Codable, Equatable, Identifiable, Sendable {
@@ -202,6 +221,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var format: String?
         public var generationStatus: String?
         public var noteStates: [String?]?
+        public var revisionRequests: [RevisionRequest]?
         public let attachment: Attachment?
         public var isTrashed: Bool?
         public var requiresMacScheduling: Bool?
@@ -229,6 +249,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var indexEntry: Item {
             var entry = self
             entry.history = nil
+            entry.revisionRequests = nil
             entry.planMarkdown = nil
             entry.previousPlanMarkdown = nil
             guard body.utf8.count > 512 else { return entry }
@@ -266,6 +287,10 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
                let data = try? JSONEncoder().encode(history) {
                 bodies["history:" + item.id] = String(decoding: data, as: UTF8.self)
             }
+            if let requests = item.revisionRequests, !requests.isEmpty,
+               let data = try? JSONEncoder().encode(requests) {
+                bodies["revisionRequests:" + item.id] = String(decoding: data, as: UTF8.self)
+            }
             return entry
         }
         items = items.map(separate)
@@ -293,6 +318,9 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
             if let history = bodies["history:" + item.id] {
                 item.history = try JSONDecoder().decode([ContentRevision].self, from: Data(history.utf8))
             }
+            if let requests = bodies["revisionRequests:" + item.id] {
+                item.revisionRequests = try JSONDecoder().decode([RevisionRequest].self, from: Data(requests.utf8))
+            }
             return item
         }
         let completedItems = try items.map(complete)
@@ -311,12 +339,14 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public let fileName: String
         public let byteCount: Int
         public let version: TextVersion
+        public let ideaID: String?
 
-        public init(platform: String, fileName: String, data: Data) {
+        public init(platform: String, fileName: String, data: Data, ideaID: String? = nil) {
             self.platform = platform
             self.fileName = fileName
             byteCount = data.count
             version = TextVersion(data: data)
+            self.ideaID = ideaID
         }
 
         public var isVideo: Bool { ["mp4", "mov"].contains(fileExtension) }
@@ -364,6 +394,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var initialPlan: String?
         public var ideaDraftPlatforms: [String]?
         public var mediaDraft: MediaDraft?
+        public var quickXAccountKey: String?
 
         public init(id: UUID = UUID(), action: Action, itemID: String, revision: String = "",
                     title: String = "", text: String = "", editsNewsletter: Bool? = nil,
@@ -393,6 +424,14 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         }
 
         public var valid: Bool {
+            if let account = quickXAccountKey {
+                return (1...500).contains(account.utf8.count) && !account.contains("\0")
+                    && action == .note && (1...200).contains(itemID.utf8.count) && revision.isEmpty && title.isEmpty
+                    && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !text.contains("\0")
+                    && !text.contains(XThreadText.separator) && XThreadText.valid(text, format: "post")
+                    && XReplyArticle(text).reference == nil && writesOnlyMedia && mediaDraft == nil && ideaDraftPlatforms == nil
+                    && !isLongFormEdit && createsScript != true && generatesXDraft != true
+            }
             if let mediaDraft {
                 return action == .note && mediaDraft.valid && title == mediaDraft.fileName
                     && (1...200).contains(itemID.utf8.count) && revision.isEmpty
@@ -515,11 +554,13 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public let id: UUID
         public let error: String?
         public let newsletterRevision: String?
+        public let publicationURL: String?
 
-        public init(id: UUID, error: String? = nil, newsletterRevision: String? = nil) {
+        public init(id: UUID, error: String? = nil, newsletterRevision: String? = nil, publicationURL: String? = nil) {
             self.id = id
             self.error = error
             self.newsletterRevision = newsletterRevision
+            self.publicationURL = publicationURL
         }
     }
 
@@ -527,6 +568,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         guard enabled else { throw CompanionLibraryError.disabled }
         guard change.ideaDraftPlatforms == nil || supportsClaudeIdeaDrafts == true else { throw CompanionLibraryError.disabled }
         guard change.mediaDraft == nil || supportsMediaDrafts == true else { throw CompanionLibraryError.disabled }
+        guard change.quickXAccountKey == nil || supportsQuickXPost == true else { throw CompanionLibraryError.disabled }
         guard (change.createsScript != true && change.editsScript != true) || supportsScripts == true else { throw CompanionLibraryError.disabled }
         guard change.publishesXArticle != true || supportsXArticlePublishing == true else { throw CompanionLibraryError.disabled }
         guard change.writingKind != "linkedin-article" || supportsLinkedInArticles == true else { throw CompanionLibraryError.disabled }
@@ -582,6 +624,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         supportsContentPlans = nil
         supportsClaudeIdeaDrafts = nil
         supportsMediaDrafts = nil
+        supportsQuickXPost = nil
         postingWindows = nil
         postingTimeZone = nil
     }
@@ -636,6 +679,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
         var initialPlan: String?
         var ideaDraftPlatforms: [String]?
         var mediaDraft: CompanionLibrary.MediaDraft?
+        var quickXAccountKey: String?
 
         var requestID: UUID { retryID ?? id }
         var movesToTrash: Bool { action == .trashItem || action == .skipIdea }
@@ -651,6 +695,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
             change.initialPlan = initialPlan
             change.ideaDraftPlatforms = ideaDraftPlatforms
             change.mediaDraft = mediaDraft
+            change.quickXAccountKey = quickXAccountKey
             // Keep the existing edit limit even when the original plus the edit exceed one record.
             if baseNewsletterText != nil, let size = try? JSONEncoder().encode(change).count, size > change.payloadLimit {
                 return .init(id: requestID, action: action, itemID: itemID, revision: revision, title: title, text: text,
@@ -792,6 +837,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
                (entry.action != .saveRevision || library.supportsRevisionHistory == true),
                (entry.ideaDraftPlatforms == nil || library.supportsClaudeIdeaDrafts == true),
                (entry.mediaDraft == nil || library.supportsMediaDrafts == true),
+               (entry.quickXAccountKey == nil || library.supportsQuickXPost == true),
                (entry.xFormat == nil || library.supportsXThreads == true),
                (entry.xFormat == nil || !entry.text.contains(XThreadText.separator) || library.supportsXParagraphs == true),
                (entry.editsNewsletter != true || library.supportsNewsletterEdits == true),
