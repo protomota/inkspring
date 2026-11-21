@@ -299,10 +299,7 @@ struct MacQuickXPage: View {
     @State private var text = ""
 
     private var post: String { XThreadText.singlePost(text) }
-    private var valid: Bool {
-        !post.isEmpty && XThreadText.valid(post, format: "post")
-            && !post.contains(XThreadText.separator) && XReplyArticle(post).reference == nil
-    }
+    private var valid: Bool { XThreadText.validSinglePost(post) }
 
     var body: some View {
         StudioEditorPage(title: "Quick X post") {

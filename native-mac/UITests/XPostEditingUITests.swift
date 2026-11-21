@@ -108,9 +108,11 @@ final class WalkthroughTests: XCTestCase {
         if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
         XCTAssertTrue(review.waitForExistence(timeout: 10))
         review.tap()
-        app.buttons["Ideas"].firstMatch.tap()
+        let filter = app.buttons["Ideas"].firstMatch
         let idea = app.staticTexts["Show the unfinished work"].firstMatch
-        XCTAssertTrue(idea.waitForExistence(timeout: 8))
+        if !idea.exists { filter.tap() }
+        if !idea.waitForExistence(timeout: 3), filter.isHittable { filter.tap() }
+        XCTAssertTrue(idea.waitForExistence(timeout: 8), app.debugDescription)
         idea.tap()
         return app
     }
@@ -244,8 +246,9 @@ final class WalkthroughTests: XCTestCase {
             XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
             title.tap()
             title.typeText("Make time for careful work")
-            let angle = app.descendants(matching: .any)["idea.new.angle"].firstMatch
-            angle.tap()
+            let angle = app.textFields["idea.new.angle"].firstMatch
+            title.typeText("\n")
+            if !angle.hasFocus { angle.tap() }
             angle.typeText("Share one detail worth someone’s time.")
             let save = app.buttons["Save idea"].firstMatch
             XCTAssertTrue(save.isEnabled, app.debugDescription)
@@ -270,7 +273,10 @@ final class WalkthroughTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("Share teh work.")
-        let proofread = app.staticTexts["Proofread"].firstMatch
+        let hide = app.keyboards.buttons["Hide keyboard"].firstMatch
+        if hide.isHittable { hide.tap() }
+        let proofread = app.buttons["proofread.start"].firstMatch
+        XCTAssertTrue(proofread.isHittable && proofread.isEnabled, app.debugDescription)
         proofread.tap()
         let apply = app.buttons["proofread.apply"].firstMatch
         XCTAssertTrue(apply.waitForExistence(timeout: 5), app.debugDescription)

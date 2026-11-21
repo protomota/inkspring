@@ -99,6 +99,12 @@ public enum XThreadText {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    public static func validSinglePost(_ text: String) -> Bool {
+        let post = singlePost(text)
+        return !post.isEmpty && !post.contains("\0") && !post.contains(marker)
+            && XReplyArticle(post).reference == nil && weight(post) <= 280
+    }
+
     public static func weight(_ text: String) -> Int {
         let link = XReplyArticle(text)
         let measured = link.reference == nil ? text : link.copy + (link.copy.isEmpty ? "" : "\n") + "https://x.com/article"
@@ -427,9 +433,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
             if let account = quickXAccountKey {
                 return (1...500).contains(account.utf8.count) && !account.contains("\0")
                     && action == .note && (1...200).contains(itemID.utf8.count) && revision.isEmpty && title.isEmpty
-                    && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !text.contains("\0")
-                    && !text.contains(XThreadText.separator) && XThreadText.valid(text, format: "post")
-                    && XReplyArticle(text).reference == nil && writesOnlyMedia && mediaDraft == nil && ideaDraftPlatforms == nil
+                    && XThreadText.validSinglePost(text) && writesOnlyMedia && mediaDraft == nil && ideaDraftPlatforms == nil
                     && !isLongFormEdit && createsScript != true && generatesXDraft != true
             }
             if let mediaDraft {

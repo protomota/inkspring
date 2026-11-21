@@ -49,7 +49,7 @@ func socialWritingRequestsApplyOnceAndRetainTheirComments(kind: String) async th
     let retained = try #require(workspace.records.first { $0.id == record.id })
     #expect(retained.body == "Original text." && retained.pendingRevisionComments.count == 1)
     #expect(!retained["writingRequestError"].contains("Internal provider"))
-    #expect(retained["writingRequestError"].contains("safe"))
+    #expect(retained["writingRequestError"].contains("The draft and requests are saved"))
     let success = ContentStudio.Model(provider: "fixture", name: "fixture", draft: { _, _ in [:] }, object: { _, _ in
         ["body": "Clearer text."]
     }, prompt: { _ in "" }, image: { _ in (Data(), "") }, imageProvider: "fixture")

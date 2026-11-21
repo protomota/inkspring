@@ -94,6 +94,7 @@ struct MobileIdeasView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .frame(maxWidth: 680)
             .mobileCanvas()
             .mobilePageTitle(onSaved == nil ? "New ideas" : "Draft a new idea", wide: wideLayout, background: palette.canvas)
@@ -187,6 +188,8 @@ struct MobileIdeasView: View {
             }
             TextField("Title", text: $title, prompt: Text("Give the idea a working title"))
                 .focused($focusedField, equals: .title)
+                .submitLabel(.next)
+                .onSubmit { focusedField = .angle }
                 .accessibilityIdentifier("idea.new.title")
             TextField("Angle or notes", text: $bodyText,
                       prompt: Text("What do you want to say, and why does it matter?"), axis: .vertical)

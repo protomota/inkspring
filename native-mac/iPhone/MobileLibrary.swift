@@ -2024,80 +2024,26 @@ private struct MobileQuickXComposer: View {
     private var weight: Int { XThreadText.weight(post) }
     private var canPost: Bool {
         library.snapshot?.supportsQuickXPost == true && account != nil && project != nil && requestID == nil
-            && !post.isEmpty && weight <= 280 && !post.contains(XThreadText.separator)
-            && XReplyArticle(post).reference == nil
+            && XThreadText.validSinglePost(post)
     }
 
     var body: some View {
-        Form {
-            if let requestID {
-                Section {
-                    if let result = library.snapshot?.results.first(where: { $0.id == requestID }) {
-                        if let error = result.error {
-                            Label(error, systemImage: "exclamationmark.circle")
-                        } else if let address = result.publicationURL, let url = CompanionPublication.postURL(address) {
-                            Link("View published post", destination: url)
-                                .accessibilityIdentifier("quickX.published")
-                        } else {
-                            Label("Published on X", systemImage: "checkmark.circle")
-                        }
-                    } else if let error = library.pendingQuickXPosts.first(where: { $0.id == requestID })?.error {
-                        Label(error, systemImage: "exclamationmark.circle")
-                    } else {
-                        Label("Waiting for your Mac to publish.", systemImage: "clock")
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if let requestID {
+                    publicationStatus(requestID)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .studioSurface()
+                } else {
+                    composer
                 }
-                .listRowBackground(palette.card)
-            } else {
-                Section {
-                    if projects.count > 1 {
-                        Picker("Project", selection: Binding(get: { project ?? "" }, set: { projectID = $0 })) {
-                            ForEach(projects) { Text($0.name).tag($0.id) }
-                        }
-                    }
-                    TextField("Your post", text: $text,
-                              prompt: Text("Write the one thing you want to say."), axis: .vertical)
-                        .lineLimit(4...10)
-                        .focused($editingPost)
-                        .accessibilityIdentifier("quickX.text")
-                    Text("\(weight) / 280")
-                        .font(.caption)
-                        .foregroundStyle(weight > 280 ? palette.danger : palette.muted)
-                    StudioProofreadAction(document: .init(title: "", body: text),
-                                          unavailable: proofreadUnavailable, begin: { editingPost = false }, reviewInSheet: true,
-                                          check: proofread) { text = $0.body }
-                    if MobileProofreading.availabilityMessage == nil {
-                        Button("Polish with Apple Intelligence", systemImage: "sparkles") { Task { await polish() } }
-                            .disabled(polishing || post.isEmpty || weight > 1_000)
-                    }
-                    if polishing { ProgressView("Polishing…") }
-                    if let suggestedText {
-                        Text(suggestedText).textSelection(.enabled)
-                        Button("Use this version") { text = suggestedText; self.suggestedText = nil }
-                        Button("Dismiss") { self.suggestedText = nil }
-                    }
-                } footer: {
-                    Text("Your Mac publishes this as a single post to \(accountName).")
-                }
-                .listRowBackground(palette.card)
-                Section {
-                    Button("Post to X", systemImage: "paperplane") {
-                        editingPost = false
-                        confirming = true
-                    }
-                        .disabled(!canPost)
-                        .accessibilityIdentifier("quickX.review")
-                    if library.snapshot?.supportsQuickXPost != true {
-                        Text("Update and open Inkspring on your Mac to use Quick X.")
-                    } else if account == nil {
-                        Text("Connect your X account in Inkspring on your Mac.")
-                    }
-                    if let error { Label(error, systemImage: "exclamationmark.circle") }
-                }
-                .listRowBackground(palette.card)
             }
+            .padding(20)
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity)
         }
-        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
         .mobileCanvas()
         .navigationTitle("Quick X post")
         .navigationBarTitleDisplayMode(.inline)
@@ -2107,6 +2053,80 @@ private struct MobileQuickXComposer: View {
             Button("Publish to X", action: publish)
         } message: {
             Text(post)
+        }
+    }
+
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if projects.count > 1 {
+                Picker("Project", selection: Binding(get: { project ?? "" }, set: { projectID = $0 })) {
+                    ForEach(projects) { Text($0.name).tag($0.id) }
+                }
+            }
+            TextField("Your post", text: $text,
+                      prompt: Text("Write the one thing you want to say."), axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(4...10)
+                .focused($editingPost)
+                .accessibilityIdentifier("quickX.text")
+                .padding(14)
+                .studioSurface()
+            Text("\(weight) / 280")
+                .font(.caption)
+                .foregroundStyle(weight > 280 ? palette.danger : palette.muted)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            StudioProofreadAction(document: .init(title: "", body: text),
+                                  unavailable: proofreadUnavailable, begin: { editingPost = false }, reviewInSheet: true,
+                                  check: proofread) { text = $0.body }
+            if MobileProofreading.availabilityMessage == nil {
+                Button("Polish with Apple Intelligence", systemImage: "sparkles") {
+                    editingPost = false
+                    Task { await polish() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(polishing || post.isEmpty || weight > 1_000)
+            }
+            if polishing { ProgressView("Polishing…") }
+            if let suggestedText {
+                Text(suggestedText).textSelection(.enabled)
+                HStack {
+                    Button("Use this version") { text = suggestedText; self.suggestedText = nil }
+                    Button("Dismiss") { self.suggestedText = nil }
+                }
+                .buttonStyle(.bordered)
+            }
+            Button("Post to X", systemImage: "paperplane") {
+                editingPost = false
+                confirming = true
+            }
+            .buttonStyle(MobileIdeaDraftActionStyle())
+            .disabled(!canPost)
+            .accessibilityIdentifier("quickX.review")
+            Text("Your Mac publishes this as a single post to \(accountName).")
+                .font(.footnote).foregroundStyle(palette.muted)
+            if library.snapshot?.supportsQuickXPost != true {
+                Text("Update and open Inkspring on your Mac to use Quick X.")
+            } else if account == nil {
+                Text("Connect your X account in Inkspring on your Mac.")
+            }
+            if let error { Label(error, systemImage: "exclamationmark.circle") }
+        }
+    }
+
+    @ViewBuilder private func publicationStatus(_ id: UUID) -> some View {
+        if let result = library.snapshot?.results.first(where: { $0.id == id }) {
+            if let error = result.error {
+                Label(error, systemImage: "exclamationmark.circle")
+            } else if let address = result.publicationURL, let url = CompanionPublication.postURL(address) {
+                Link("View published post", destination: url)
+                    .accessibilityIdentifier("quickX.published")
+            } else {
+                Label("Published on X", systemImage: "checkmark.circle")
+            }
+        } else if let error = library.pendingQuickXPosts.first(where: { $0.id == id })?.error {
+            Label(error, systemImage: "exclamationmark.circle")
+        } else {
+            Label("Waiting for your Mac to publish.", systemImage: "clock")
         }
     }
 
@@ -2148,7 +2168,7 @@ private struct MobileQuickXComposer: View {
             let response = try await session.respond(to: original)
             let candidate = XThreadText.singlePost(response.content)
             guard original == text else { return }
-            guard XThreadText.valid(candidate, format: "post"), !candidate.isEmpty else {
+            guard XThreadText.validSinglePost(candidate) else {
                 error = "Apple Intelligence didn’t suggest a version that fits in one X post."
                 return
             }

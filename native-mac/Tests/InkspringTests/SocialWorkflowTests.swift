@@ -90,11 +90,11 @@ import Testing
     }
 }
 
-@Test @MainActor func mobileQuickXPublishesOnePostToTheConfirmedAccount() async throws {
+@Test(arguments: ["One short post.", "First paragraph.\n\nStill the same post."])
+@MainActor func mobileQuickXPublishesOnePostToTheConfirmedAccount(text: String) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let workspace = Workspace(directory: root)
-    let text = "First paragraph.\n\nStill the same post."
     var change = CompanionLibrary.Change(action: .note, itemID: workspace.projectID, text: text)
     change.quickXAccountKey = "an-old-account"
     var sends = 0
