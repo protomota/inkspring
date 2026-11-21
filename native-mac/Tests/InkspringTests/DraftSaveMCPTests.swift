@@ -93,6 +93,67 @@ import InkspringSchedule
     #expect(AgentMCP.tools.first { $0.name == "write_post" }?.required == ["platform"])
 }
 
+@Test @MainActor func suppliedXReplyKeepsExactCopyAndParentForPublishing() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    try workspace.set("mcpEnabled", to: true)
+    let agent = AgentMCP(workspace: workspace, credentialEnvironment: [:])
+    let copy = "Join the community.\n\nhttps://example.com/cult"
+    let args = ["project_id": workspace.projectID, "platform": "x", "format": "reply", "content": copy,
+                "reply_to_url": "https://x.com/example/status/123456?s=20", "request_key": "reply-fixture"]
+    let saved = await draftTool(agent, "save_draft", args)
+    let id = try #require(saved["id"] as? String)
+    #expect(saved["content"] as? String == copy)
+    #expect(saved["format"] as? String == "reply")
+    #expect(saved["schedule"] == nil)
+
+    let reopened = Workspace(directory: folder)
+    let freshAgent = AgentMCP(workspace: reopened, credentialEnvironment: [:])
+    let retry = await draftTool(freshAgent, "save_draft", args)
+    #expect(retry["id"] as? String == id)
+    let read = await draftTool(freshAgent, "get_draft", ["draft_id": id])
+    #expect(read["content"] as? String == copy)
+    #expect((read["replyTo"] as? [String: String])?["url"] == "https://x.com/i/web/status/123456")
+
+    let draft = try #require(reopened.records.first { $0.id == id })
+    let account = ManagedSocialAccount(session: .init(accessToken: "fixture", refreshToken: nil, managedTicket: nil,
+        expiresAt: 2_000_000_000_000, scopes: "tweet.write"), id: "fixture", name: "Fixture", username: "fixture")
+    let plan = try SocialPublishPlan(draft: draft, account: account, imageURL: nil)
+    #expect(plan.replyID == "123456")
+    #expect(plan.posts == [copy])
+
+    var changed = args
+    changed["reply_to_url"] = "https://x.com/example/status/987654"
+    #expect(await draftTool(freshAgent, "save_draft", changed)["isError"] as? Bool == true)
+}
+
+@Test @MainActor func mcpPublishingReadsTheCurrentPermissionAndRejectsAStaleDraft() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let workspace = Workspace(directory: folder)
+    try workspace.set("mcpEnabled", to: true)
+    let agent = AgentMCP(workspace: workspace, credentialEnvironment: [:])
+    let saved = await draftTool(agent, "save_draft", ["project_id": workspace.projectID, "platform": "x", "content": "A local draft."])
+    let reference = try #require(saved["referenceId"] as? String)
+    let revision = try #require(saved["updatedAt"] as? String)
+    let args = ["draft_id": reference]
+    #expect(await draftTool(agent, "get_draft", args)["agentPostingEnabled"] as? Bool == false)
+    let blocked = await draftTool(agent, "post_now", args)
+    #expect(blocked["isError"] as? Bool == true)
+    #expect((blocked["content"] as? [[String: String]])?.first?["text"]?.contains("Open \(reference) in Inkspring") == true)
+
+    let anotherProcess = Workspace(directory: folder)
+    try anotherProcess.set("mcpAllowPosting", to: true)
+    #expect(await draftTool(agent, "get_draft", args)["agentPostingEnabled"] as? Bool == true)
+    let changed = await draftTool(agent, "edit_draft", ["draft_id": reference, "expected_updated_at": revision, "content": "Changed draft."])
+    #expect(changed["content"] as? String == "Changed draft.")
+    let stale = await draftTool(agent, "post_now", ["draft_id": reference, "expected_updated_at": revision])
+    #expect(stale["isError"] as? Bool == true)
+    #expect((stale["content"] as? [[String: String]])?.first?["text"]?.contains("draft changed") == true)
+    #expect(workspace.records.allSatisfy { $0.kind != "publication" })
+}
+
 @Test @MainActor func suppliedDraftRejectsInvalidCopyAndFormatsWithoutCreatingAnything() async throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
@@ -108,6 +169,9 @@ import InkspringSchedule
         ["platform": "linkedin", "content": "Text", "title": String(repeating: "x", count: 201)],
         ["platform": "linkedin", "content": "Text", "format": "followup"],
         ["platform": "x", "content": "Only one post", "format": "followup"],
+        ["platform": "x", "content": "Reply without parent", "format": "reply"],
+        ["platform": "x", "content": "Reply with invalid parent", "format": "reply", "reply_to_url": "https://example.com/user/status/123"],
+        ["platform": "x", "content": "Standalone post", "reply_to_url": "https://x.com/user/status/123"],
         ["platform": "x", "content": "Text", "format": "video"],
         ["platform": "linkedin", "content": "Text", "project_id": "missing-project"]
     ]

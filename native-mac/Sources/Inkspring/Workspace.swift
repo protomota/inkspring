@@ -517,10 +517,11 @@ final class Workspace {
             }
             if record["format"] == "reply" {
                 let reply = record.fields["replyTo"] as? [String: String]
-                guard record["platform"] == "x", !(reply?["text"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                let url = reply?["url"] ?? ""
+                let text = (reply?["text"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard record["platform"] == "x", !url.isEmpty || !text.isEmpty else {
                     throw WorkspaceError("Enter the X post you are replying to.")
                 }
-                let url = reply?["url"] ?? ""
                 guard url.isEmpty || url.range(of: #"^https://(?:www\.|mobile\.)?(?:x|twitter)\.com/(?:[A-Za-z0-9_]{1,15}|i(?:/web)?)/status(?:es)?/[0-9]{1,25}(?:[/?#]|$)"#,
                                                 options: .regularExpression) != nil else {
                     throw WorkspaceError("Enter a valid X post link.")

@@ -46,6 +46,8 @@ For a specific **Post idea**, use MCP **save_idea** with the chosen `project_id`
 
 For already-written social copy, use MCP **save_draft** with `project_id`, `platform`, `title`, and `content`. It saves the exact text locally without a model, API key, scheduling, or publication. Optional `request_key` prevents duplicate creation on identical retries. Use **edit_draft** with the last-read `expected_updated_at` for revisions. **write_post** also accepts `content` for local saving; use its `idea` argument only when requesting model generation through the configured writing connection. Keep LinkedIn URLs in the supplied body when desired.
 
+To save an authored X reply, use **save_draft** with `platform: "x"`, `format: "reply"`, and the original post link as `reply_to_url`. **get_draft** returns the saved reply target, exact copy and `agentPostingEnabled`. When the author requests publication and has enabled immediate agent posting, pass the draft's `updatedAt` as `expected_updated_at` to **post_now**. To publish a draft through the app, open it and use **Post now…** to review it.
+
 **Ask my agent** opens a chat in the Mac app. Select a locally installed, signed-in Codex or Claude Code. Chat can read drafts, ideas, and newsletters in the open project and suggest wording. It cannot change drafts, schedule, or publish. The selected agent handles the model request using its existing sign-in.
 
 Copy the ID shown on a post or newsletter, such as `PRO-001`, and give it to your agent. The Inkspring MCP tool `get_content` reads either kind by that ID. Posts and newsletters share a sequence within each project. IDs stay the same when you rename a project or edit an item. The iPhone companion shows the IDs after it syncs with an updated Mac.

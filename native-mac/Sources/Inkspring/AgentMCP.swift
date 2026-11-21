@@ -67,11 +67,11 @@ struct AgentMCP {
               fields: ["note_ids": "strings"], required: ["note_ids"]),
         .init(name: "suggest_vault_ideas", summary: "Use the selected writing connection to suggest public-safe ideas from previewed notes.",
               fields: ["project_id": "string", "notes": "notes"], required: ["notes"], writes: true, usesNetwork: true),
-        .init(name: "post_now", summary: "Publish a saved X or LinkedIn draft immediately. Requires the author’s separate posting permission.",
-              fields: ["draft_id": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
+        .init(name: "post_now", summary: "Publish a saved X or LinkedIn draft immediately with the author's permission. Read get_draft first to check agentPostingEnabled and pass its updatedAt as expected_updated_at.",
+              fields: ["draft_id": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
         .init(name: "list_projects", summary: "List projects with their voice, audience and research focus."),
-        .init(name: "save_draft", summary: "Save supplied post text exactly as an unpublished local draft. No model, API key or network call. Use this when you have already written the copy. Optional request_key makes creation retries idempotent; use edit_draft for existing drafts.",
-              fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string"],
+        .init(name: "save_draft", summary: "Save supplied text exactly as an unpublished local draft without a model, API key or network call. For an X reply, set format to reply and supply the parent X post link in reply_to_url. Optional request_key makes creation retries idempotent; use edit_draft for existing drafts.",
+              fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "reply_to_url": "string", "request_key": "string"],
               required: ["platform", "content"], writes: true),
         .init(name: "write_post", summary: "Supply content to save already-written copy locally without a model or API key. Supply idea instead only to request generation through the configured writing connection. Prefer save_draft for supplied copy.",
               fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string", "idea": "string", "tone": "string", "with_image": "boolean"],
@@ -95,7 +95,7 @@ struct AgentMCP {
               fields: ["project_id": "string", "title": "string", "summary": "string", "origin": "string"],
               required: ["title", "summary"], writes: true),
         .init(name: "list_drafts", summary: "List recent drafts in a project.", fields: ["project_id": "string", "platform": "string", "limit": "integer"]),
-        .init(name: "get_draft", summary: "Read a saved post in full by its UUID or copyable ID (e.g. PRO-001).", fields: ["draft_id": "string"], required: ["draft_id"]),
+        .init(name: "get_draft", summary: "Read a saved post by its UUID or copyable ID (e.g. PRO-001), including whether Inkspring allows immediate agent posting.", fields: ["draft_id": "string"], required: ["draft_id"]),
         .init(name: "get_content", summary: "Read a post or newsletter in full by its Inkspring ID (e.g. PRO-001) or UUID. Returns the item kind and content, including items in Trash.",
               fields: ["id": "string"], required: ["id"]),
         .init(name: "list_revisions", summary: "List saved versions of a post or newsletter, newest first. Read before restoring.",
@@ -314,10 +314,13 @@ struct AgentMCP {
             let plan = try await publisher.review(article)
             return view(try await publisher.publish(plan, fromAgent: true), full: true)
         case "post_now":
-            guard workspace.settings["mcpAllowPosting"] as? Bool == true else {
-                throw WorkspaceError("The author must enable immediate agent posting in Inkspring Settings.")
-            }
             let draft = try record("draft", "draft_id")
+            guard workspace.settings["mcpAllowPosting"] as? Bool == true else {
+                throw WorkspaceError("Immediate agent posting is off. Open \(draft.referenceID ?? draft.id) in Inkspring and choose Post now… to review it, or enable Let agents publish X and LinkedIn posts immediately under Settings → AI agents.")
+            }
+            if let expected = arguments["expected_updated_at"] as? String, draft["updatedAt"] != expected {
+                throw WorkspaceError("This draft changed after you read it. Read and review the current draft before publishing.")
+            }
             guard ["x", "linkedin"].contains(draft["platform"]) else { throw WorkspaceError("Review this platform in the Inkspring app.") }
             let publisher = SocialPublisher(workspace: workspace)
             let review = try await publisher.review(draft)
@@ -346,8 +349,8 @@ struct AgentMCP {
         }
         let format = arguments["format"] as? String ?? "post"
         let title = arguments["title"] as? String ?? ""
-        guard ["post", "image", "video", "followup", "thread"].contains(format),
-              !["followup", "thread"].contains(format) || platform == "x",
+        guard ["post", "image", "video", "followup", "thread", "reply"].contains(format),
+              !["followup", "thread", "reply"].contains(format) || platform == "x",
               format != "video" || ["instagram", "tiktok"].contains(platform),
               title.utf16.count <= 200, !title.contains("\0") else {
             throw WorkspaceError("Choose a supported draft format and a title up to 200 characters.")
@@ -360,7 +363,16 @@ struct AgentMCP {
               arguments["request_key"] == nil || !requestKey.isEmpty else {
             throw WorkspaceError("Use a nonempty request_key up to 128 characters, or omit it.")
         }
-        let fields = ["platform": platform, "format": format, "title": title, "content": content]
+        var fields = ["platform": platform, "format": format, "title": title, "content": content]
+        if format == "reply" {
+            guard let link = arguments["reply_to_url"] as? String, link.utf16.count <= 2048,
+                  let parent = XQuoteComposer.postURL(link.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                throw WorkspaceError("Supply the parent X post link in reply_to_url.")
+            }
+            fields["reply_to_url"] = parent.absoluteString
+        } else if arguments["reply_to_url"] != nil {
+            throw WorkspaceError("Use reply_to_url with an X reply.")
+        }
         let payload = try JSONSerialization.data(withJSONObject: fields, options: .sortedKeys)
         let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         if !requestKey.isEmpty,
@@ -380,6 +392,7 @@ struct AgentMCP {
         draft["format"] = format
         draft["title"] = title
         draft["content"] = content
+        if let parent = fields["reply_to_url"] { draft.fields["replyTo"] = ["url": parent] }
         if !requestKey.isEmpty {
             draft["mcpDraftRequestKey"] = requestKey
             draft["mcpDraftRequestDigest"] = digest
@@ -439,7 +452,10 @@ struct AgentMCP {
             let limit = min(100, max(1, arguments["limit"] as? Int ?? 20))
             let rows = argument("project_id").isEmpty ? workspace.records.filter { $0.kind == "draft" } : try items(["draft"])
             return list(Array(rows.filter { platform.isEmpty || $0["platform"] == platform }.prefix(limit)))
-        case "get_draft": return view(try record("draft", "draft_id"), full: true)
+        case "get_draft":
+            var draft = view(try record("draft", "draft_id"), full: true)
+            if chatProjectID == nil { draft["agentPostingEnabled"] = workspace.settings["mcpAllowPosting"] as? Bool == true }
+            return draft
         case "get_content":
             let id = argument("id")
             let available = chatProjectID == nil ? workspace.records + workspace.trashedRecords : workspace.records
