@@ -1181,12 +1181,16 @@ struct MobileReviewView: View {
     @State private var deleteItem: CompanionLibrary.Item?
     @State private var actionError: String?
     @State private var creatingXDraft = false
-    @State private var mediaPlatform: String?
-    @State private var creatingMediaDraft = false
+    @State private var mediaPlatform: MediaPlatform?
     @State private var scriptError: String?
     @State private var askingInkspring = false
 
     private static let filters = ["Drafts", "Ideas", "Trash"]
+
+    private enum MediaPlatform: String, Identifiable {
+        case instagram, tiktok
+        var id: Self { self }
+    }
 
     private enum DraftSort: String, CaseIterable {
         case lastUpdated = "Last updated"
@@ -1272,7 +1276,15 @@ struct MobileReviewView: View {
                     .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
             }
         } else if askingInkspring { assistantView }
-        else { reviewBody }
+        else {
+            reviewBody.sheet(item: $mediaPlatform) { platform in
+                NavigationStack {
+                    MobileMediaDraftForm(platform: platform.rawValue, library: library,
+                                         initialProject: projectFilter ?? library.snapshot?.projects.first?.id ?? "")
+                        .toolbar { Button("Done") { mediaPlatform = nil } }
+                }
+            }
+        }
     }
 
     private var assistantView: some View {
@@ -1365,10 +1377,10 @@ struct MobileReviewView: View {
                             }
                             if library.snapshot?.supportsMediaDrafts == true {
                                 Button("New Instagram post", systemImage: "photo") {
-                                    mediaPlatform = "instagram"; creatingMediaDraft = true
+                                    mediaPlatform = .instagram
                                 }
                                 Button("New TikTok video", systemImage: "video") {
-                                    mediaPlatform = "tiktok"; creatingMediaDraft = true
+                                    mediaPlatform = .tiktok
                                 }
                             }
                         }
@@ -1382,15 +1394,6 @@ struct MobileReviewView: View {
             .alert("Couldn’t create draft", isPresented: Binding(get: { scriptError != nil }, set: { if !$0 { scriptError = nil } })) { Button("OK") { scriptError = nil } } message: { Text(scriptError ?? "") }
             .navigationDestination(isPresented: $creatingXDraft) {
                 MobileXGeneration(library: library)
-            }
-            .sheet(isPresented: $creatingMediaDraft) {
-                if let mediaPlatform {
-                    NavigationStack {
-                        MobileMediaDraftForm(platform: mediaPlatform, library: library,
-                                             initialProject: projectFilter ?? library.snapshot?.projects.first?.id ?? "")
-                            .toolbar { Button("Done") { creatingMediaDraft = false } }
-                    }
-                }
             }
         } detail: {
             Group {
