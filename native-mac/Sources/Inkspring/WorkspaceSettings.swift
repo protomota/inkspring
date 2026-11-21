@@ -677,6 +677,10 @@ struct WorkspaceConnections: View {
                                     }
                                     .foregroundStyle(palette.success)
                                     Text(profile.displayName).foregroundStyle(palette.muted)
+                                    if platform == .tiktok {
+                                        Text(profile.usesDeveloperApp ? "Using your TikTok developer app" : "Using Inkspring’s shared TikTok app")
+                                            .font(.caption).foregroundStyle(palette.muted)
+                                    }
                                 }
                                 Spacer()
                                 if testing == platform || accounts.connecting == platform { ProgressView().controlSize(.small) }

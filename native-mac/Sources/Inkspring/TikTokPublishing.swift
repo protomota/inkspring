@@ -225,19 +225,46 @@ extension SocialPublisher {
     private func tikTokAPI(_ path: String, account: ManagedSocialAccount, fields: [String: Any],
                            publishes: Bool = false) async throws -> [String: Any] {
         let url = URL(string: "https://open.tiktokapis.com/v2/post/publish/" + path)!
-        let (result, _) = try await transport.request(url, token: account.session.accessToken, method: "POST",
+        let result: [String: Any]
+        do {
+            (result, _) = try await transport.request(url, token: account.session.accessToken, method: "POST",
                                                        json: fields, headers: ["Content-Type": "application/json; charset=UTF-8"],
                                                        publishes: publishes)
+        } catch let error as SocialRequestError {
+            guard let code = error.providerCode, code != "ok" else { throw error }
+            throw SocialRequestError(tikTokFailureMessage(code), uncertain: error.uncertain, statusCode: error.statusCode,
+                                     providerCode: code)
+        }
         if let error = result["error"] as? [String: Any], let code = error["code"] as? String, code != "ok" {
-            if code == "unaudited_client_can_only_post_to_private_accounts" {
-                throw WorkspaceError("TikTok limits this developer app to private posts until it completes review.")
-            }
-            throw WorkspaceError("TikTok declined the request. Check account permissions and posting options.")
+            throw SocialRequestError(tikTokFailureMessage(code), providerCode: code)
         }
         guard let data = result["data"] as? [String: Any] else {
             throw SocialRequestError("TikTok did not confirm the request.", uncertain: publishes)
         }
         return data
+    }
+
+    private func tikTokFailureMessage(_ code: String) -> String {
+        switch code {
+        case "unaudited_client_can_only_post_to_private_accounts":
+            "TikTok requires a Direct Post audit for this developer app before it can publish publicly."
+        case "access_token_invalid", "scope_not_authorized":
+            "Reconnect TikTok in Connections and allow video publishing."
+        case "privacy_level_option_mismatch":
+            "TikTok no longer offers the chosen audience. Open the review and choose an available audience."
+        case "spam_risk_too_many_posts":
+            "TikTok reports that this account reached its daily posting limit."
+        case "spam_risk_user_banned_from_posting":
+            "TikTok reports that this account is restricted from publishing."
+        case "reached_active_user_cap":
+            "TikTok reports that this developer app reached its daily limit for creators."
+        case "rate_limit_exceeded":
+            "TikTok reached its request limit. Wait before retrying."
+        case "url_ownership_unverified":
+            "TikTok requires this developer app to verify the media hosting domain."
+        default:
+            "TikTok declined the request. Check account permissions and posting options."
+        }
     }
 
     private func tikTokPublishID(_ data: [String: Any]) throws -> String {

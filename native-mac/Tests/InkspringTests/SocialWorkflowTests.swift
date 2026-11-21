@@ -255,7 +255,8 @@ private func response(_ request: URLRequest, status: Int, json: [String: Any]) t
     return (try JSONSerialization.data(withJSONObject: json), http)
 }
 
-@Test @MainActor func tiktokRequiresConsentAndRechecksPrivacyBeforePublishing() async throws {
+@Test(arguments: [false, true])
+@MainActor func tiktokRequiresConsentAndRechecksPrivacyBeforePublishing(auditRejection: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let workspace = Workspace(directory: root)
@@ -267,19 +268,24 @@ private func response(_ request: URLRequest, status: Int, json: [String: Any]) t
     draft = try workspace.save(draft)
     var profile = account
     profile.ownApp = true
+    let privacy = auditRejection ? "PUBLIC_TO_EVERYONE" : "SELF_ONLY"
     var paths: [String] = []
     let transport = SocialTransport { request in
         let path = request.url?.path ?? ""
         paths.append(path)
         var data: [String: Any] = [:]
         if path.hasSuffix("/creator_info/query") {
-            data = ["creator_username": "fixture", "privacy_level_options": ["SELF_ONLY"]]
+            data = ["creator_username": "fixture", "privacy_level_options": [privacy]]
         } else if path.hasSuffix("/content/init") {
             let body = try #require(request.httpBody)
             let payload = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
             let info = try #require(payload["post_info"] as? [String: Any])
             #expect(info["description"] as? String == "Reviewed caption")
-            #expect(info["privacy_level"] as? String == "SELF_ONLY")
+            #expect(info["privacy_level"] as? String == privacy)
+            if auditRejection {
+                return try response(request, status: 403,
+                                    json: ["error": ["code": "unaudited_client_can_only_post_to_private_accounts"]])
+            }
             data = ["publish_id": "fixture-post"]
         } else if path.hasSuffix("/status/fetch") {
             data = ["status": "PUBLISH_COMPLETE", "publicaly_available_post_id": ["123"]]
@@ -287,18 +293,27 @@ private func response(_ request: URLRequest, status: Int, json: [String: Any]) t
         return try response(request, status: 200, json: ["data": data, "error": ["code": "ok"]])
     }
     let publisher = SocialPublisher(workspace: workspace, transport: transport, authorize: { _ in profile })
-    var options = TikTokReviewOptions(privacy: "SELF_ONLY", title: "Fixture", caption: "Reviewed caption")
+    var options = TikTokReviewOptions(privacy: privacy, title: "Fixture", caption: "Reviewed caption")
     let image = "https://example.org/image.jpg"
     await #expect(throws: WorkspaceError.self) {
         _ = try await publisher.review(draft, options: .init(imageURL: image, tiktok: options))
     }
     options.consent = true
     let reviewed = try await publisher.review(draft, options: .init(imageURL: image, tiktok: options))
-    let receipt = try await publisher.publish(reviewed)
-    #expect(receipt["status"] == "published")
+    if auditRejection {
+        await #expect(throws: SocialRequestError.self) { _ = try await publisher.publish(reviewed) }
+        let failure = try #require(workspace.records.first { $0.kind == "publication" && $0["draftId"] == draft.id })
+        #expect(failure["status"] == "failed")
+        #expect(failure["containerId"].isEmpty)
+        #expect(failure["error"].contains("Direct Post audit"))
+        #expect(!paths.contains { $0.hasSuffix("/status/fetch") })
+    } else {
+        let receipt = try await publisher.publish(reviewed)
+        #expect(receipt["status"] == "published")
+        #expect((receipt.fields["steps"] as? [[String: String]])?.first?["url"] == "https://www.tiktok.com/@fixture/photo/123")
+    }
     #expect(paths.filter { $0.hasSuffix("/creator_info/query") }.count == 3)
     #expect(paths.filter { $0.hasSuffix("/content/init") }.count == 1)
-    #expect((receipt.fields["steps"] as? [[String: String]])?.first?["url"] == "https://www.tiktok.com/@fixture/photo/123")
 }
 
 @Test @MainActor func scheduleUsesSlotRulesAndPublishesOnlyEligibleDuePosts() async throws {
