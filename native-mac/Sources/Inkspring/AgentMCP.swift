@@ -71,7 +71,7 @@ struct AgentMCP {
               fields: ["draft_id": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
         .init(name: "list_projects", summary: "List projects with their voice, audience and research focus."),
         .init(name: "save_draft", summary: "Save supplied post text exactly as an unpublished local draft. No model, API key or network call. Use this when you have already written the copy. Optional request_key makes creation retries idempotent; use edit_draft for existing drafts.",
-              fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string", "linkedin_article_id": "string"],
+              fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string"],
               required: ["platform", "content"], writes: true),
         .init(name: "write_post", summary: "Supply content to save already-written copy locally without a model or API key. Supply idea instead only to request generation through the configured writing connection. Prefer save_draft for supplied copy.",
               fields: ["project_id": "string", "platform": "string", "format": "string", "title": "string", "content": "string", "request_key": "string", "idea": "string", "tone": "string", "with_image": "boolean"],
@@ -110,7 +110,7 @@ struct AgentMCP {
         .init(name: "save_x_thread", summary: "Save supplied X posts as one local thread draft for review.",
               fields: ["project_id": "string", "title": "string", "posts": "strings"], required: ["title", "posts"], writes: true),
         .init(name: "edit_draft", summary: "Edit a saved draft locally. For an X thread supply posts as separate strings, one per tweet, preserving paragraphs inside each. To link a same-project X article, append [[X article: PRA-001]] to its follow-up reply with the real article reference ID. Its published URL is inserted at posting time. Pass expected_updated_at to protect newer edits.",
-              fields: ["draft_id": "string", "title": "string", "content": "string", "posts": "strings", "format": "string", "expected_updated_at": "string", "linkedin_article_id": "string"], required: ["draft_id"], writes: true),
+              fields: ["draft_id": "string", "title": "string", "content": "string", "posts": "strings", "format": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
         .init(name: "list_ideas", summary: "Read saved ideas in a project.", fields: ["project_id": "string", "status": "string"]),
         .init(name: "edit_idea", summary: "Edit the text of an open idea.", fields: ["idea_id": "string", "text": "string"], required: ["idea_id", "text"], writes: true),
         .init(name: "skip_idea", summary: "Skip an open idea or undo a skip.", fields: ["idea_id": "string", "undo": "boolean"], required: ["idea_id"], writes: true),
@@ -121,11 +121,10 @@ struct AgentMCP {
         .init(name: "list_scripts", summary: "List writing-only YouTube scripts. These cannot be published or scheduled.", fields: ["project_id": "string"]),
         .init(name: "get_script", summary: "Read a full YouTube script by UUID or copyable ID.", fields: ["script_id": "string"], required: ["script_id"]),
         .init(name: "save_script", summary: "Save supplied YouTube narration locally, without a model or API key. Use expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "script_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer"], writes: true),
-        .init(name: "list_articles", summary: "List X and LinkedIn articles and their publishing state.", fields: ["project_id": "string", "platform": "string"]),
+        .init(name: "list_articles", summary: "List X articles and their publishing state.", fields: ["project_id": "string", "platform": "string"]),
         .init(name: "publish_article", summary: "Publish a reviewed X article with the connected X account. Requires immediate agent posting enabled and the current updatedAt. Never call without the author’s explicit publication request.", fields: ["article_id": "string", "expected_updated_at": "string"], required: ["article_id", "expected_updated_at"], writes: true, usesNetwork: true),
-        .init(name: "get_article", summary: "Read a full X or LinkedIn article by UUID or copyable ID.", fields: ["article_id": "string"], required: ["article_id"]),
-        .init(name: "save_article", summary: "Save supplied article text locally. Set platform to linkedin or x (default for new articles). Pass expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "article_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer", "platform": "string"], writes: true),
-        .init(name: "record_linkedin_article_url", summary: "Record the public URL of a LinkedIn article already published on LinkedIn. This saves locally and does not publish anything.", fields: ["article_id": "string", "expected_updated_at": "string", "url": "string"], required: ["article_id", "expected_updated_at", "url"], writes: true),
+        .init(name: "get_article", summary: "Read a full X article by UUID or copyable ID.", fields: ["article_id": "string"], required: ["article_id"]),
+        .init(name: "save_article", summary: "Save an X article draft locally. Pass expected_updated_at for edits and request_key for creation retries.", fields: ["project_id": "string", "article_id": "string", "expected_updated_at": "string", "title": "string", "body": "string", "request_key": "string", "source_content_id": "string", "source_revision": "integer", "platform": "string"], writes: true),
         .init(name: "list_newsletters", summary: "List local newsletters and their revisions.", fields: ["project_id": "string"]),
         .init(name: "get_newsletter", summary: "Read a newsletter in full by UUID or copyable ID, including its Markdown body and revision.", fields: ["newsletter_id": "string"], required: ["newsletter_id"]),
         .init(name: "save_newsletter", summary: "Save a local newsletter draft. Include the current revision when editing.", fields: [
@@ -356,9 +355,7 @@ struct AgentMCP {
               arguments["request_key"] == nil || !requestKey.isEmpty else {
             throw WorkspaceError("Use a nonempty request_key up to 128 characters, or omit it.")
         }
-        let articleID = try linkedInArticleID(arguments["linkedin_article_id"] as? String, platform: platform, projectID: projectID)
-        var fields = ["platform": platform, "format": format, "title": title, "content": content]
-        if let articleID, !articleID.isEmpty { fields["linkedinArticleID"] = articleID }
+        let fields = ["platform": platform, "format": format, "title": title, "content": content]
         let payload = try JSONSerialization.data(withJSONObject: fields, options: .sortedKeys)
         let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         if !requestKey.isEmpty,
@@ -378,24 +375,11 @@ struct AgentMCP {
         draft["format"] = format
         draft["title"] = title
         draft["content"] = content
-        if let articleID { draft["linkedinArticleID"] = articleID }
         if !requestKey.isEmpty {
             draft["mcpDraftRequestKey"] = requestKey
             draft["mcpDraftRequestDigest"] = digest
         }
         return try workspace.save(draft)
-    }
-
-    private func linkedInArticleID(_ value: String?, platform: String, projectID: String) throws -> String? {
-        guard let value else { return nil }
-        guard platform == "linkedin" else { throw WorkspaceError("Choose a LinkedIn post to link a LinkedIn article.") }
-        if value.isEmpty { return "" }
-        guard let article = workspace.records.first(where: {
-            $0.isLinkedInArticle && $0.projectID == projectID && $0.matchesID(value)
-        }) else {
-            throw WorkspaceError("Choose a LinkedIn article from the same project.")
-        }
-        return article.id
     }
 
     private func projectID(_ id: String) throws -> String {
@@ -504,9 +488,6 @@ struct AgentMCP {
             return view(try workspace.save(draft), full: true)
         case "edit_draft":
             var draft = try record("draft", "draft_id")
-            if arguments["linkedin_article_id"] != nil, argument("expected_updated_at").isEmpty {
-                throw WorkspaceError("Read the latest draft before changing its linked article.")
-            }
             if let expected = arguments["expected_updated_at"] as? String {
                 guard draft["updatedAt"] == expected, !["queued", "due"].contains(draft.scheduleStatus) else {
                     throw WorkspaceError("The draft changed or was scheduled. Reopen it before editing.")
@@ -514,10 +495,6 @@ struct AgentMCP {
             }
             if let title = arguments["title"] as? String { draft["title"] = title }
             if let content = arguments["content"] as? String { draft["content"] = content }
-            if let id = try linkedInArticleID(arguments["linkedin_article_id"] as? String,
-                                             platform: draft["platform"], projectID: draft.projectID) {
-                draft["linkedinArticleID"] = id
-            }
             if let posts = arguments["posts"] as? [String] {
                 guard draft["platform"] == "x", (2...XThreadText.limit).contains(posts.count),
                       posts.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -629,19 +606,12 @@ struct AgentMCP {
             return list(platform.isEmpty ? records : records.filter { $0["platform"] == platform })
         case "get_script": return view(try record("script", "script_id"), full: true)
         case "get_article": return view(try record("article", "article_id"), full: true)
-        case "record_linkedin_article_url":
-            let article = try record("article", "article_id")
-            guard article.isLinkedInArticle, article["updatedAt"] == argument("expected_updated_at") else {
-                throw WorkspaceError("Read the latest LinkedIn article before changing its link.")
-            }
-            guard let url = arguments["url"] as? String else { throw WorkspaceError("Enter the published LinkedIn article URL.") }
-            return view(try workspace.saveLinkedInArticleURL(url, article: article), full: true)
         case "save_script", "save_article":
             let writingKind = name == "save_article" ? "article" : "script"
             let idField = name == "save_article" ? "article_id" : "script_id"
             let platform = argument("platform")
-            guard platform.isEmpty || writingKind == "article" && ["x", "linkedin"].contains(platform) else {
-                throw WorkspaceError("Choose x or linkedin for the article platform.")
+            guard platform.isEmpty || writingKind == "article" && platform == "x" else {
+                throw WorkspaceError("Choose X for the article platform.")
             }
             var script: WorkspaceRecord
             if !argument(idField).isEmpty {
@@ -659,8 +629,7 @@ struct AgentMCP {
                 let projectID = try project()
                 let key = argument("request_key")
                 guard key.utf16.count <= 128, !key.contains("\0") else { throw WorkspaceError("Use a request_key up to 128 characters.") }
-                var fields = ["title": argument("title"), "body": argument("body")]
-                if platform == "linkedin" { fields["platform"] = platform }
+                let fields = ["title": argument("title"), "body": argument("body")]
                 let payload = try JSONSerialization.data(withJSONObject: fields, options: .sortedKeys)
                 let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
                 if !key.isEmpty, let previous = (workspace.records + workspace.trashedRecords).first(where: {
@@ -672,7 +641,6 @@ struct AgentMCP {
                     return view(previous, full: true)
                 }
                 script = .new(writingKind, projectID: projectID)
-                if platform == "linkedin" { script["platform"] = platform }
                 script["mcpScriptRequestKey"] = key
                 script["mcpScriptRequestDigest"] = digest
             }
@@ -680,8 +648,7 @@ struct AgentMCP {
             if let source = arguments["source_content_id"] as? String { script["sourceContentID"] = source }
             if let revision = arguments["source_revision"] as? Int { script.fields["sourceRevision"] = revision }
             if script["title"].isEmpty {
-                script["title"] = script.isLinkedInArticle ? "Untitled LinkedIn article" :
-                    writingKind == "article" ? "Untitled X article" : "Untitled YouTube script"
+                script["title"] = writingKind == "article" ? "Untitled X article" : "Untitled YouTube script"
             }
             return view(try workspace.save(script), full: true)
         case "list_newsletters":

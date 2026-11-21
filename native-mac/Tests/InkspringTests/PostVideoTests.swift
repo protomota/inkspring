@@ -36,12 +36,7 @@ import Testing
         draft["content"] = ["Here is the video.", XReplyArticle.attach(reference, to: "A follow-up.")]
             .joined(separator: XThreadText.separator)
     } else {
-        var article = WorkspaceRecord.new("article", projectID: workspace.projectID)
-        article["platform"] = "linkedin"
-        article["title"] = "Fixture article"
-        article["articleURL"] = "https://www.linkedin.com/pulse/fixture-article/"
-        article = try workspace.save(article)
-        draft["linkedinArticleID"] = article.id
+        draft["content"] += "\n\nhttps://newsletter.example.com/p/fixture"
     }
     draft.setDraftMedia(["id": media.id], as: .video)
     draft = try workspace.save(draft)
@@ -120,7 +115,7 @@ import Testing
             let content = json?["content"] as? [String: [String: String]]
             #expect(content?["media"]?["id"] == videoURN)
             #expect(content?["article"] == nil)
-            #expect((json?["commentary"] as? String)?.hasSuffix("https://www.linkedin.com/pulse/fixture-article/") == true)
+            #expect(json?["commentary"] as? String == "Here is the video.\n\nhttps://newsletter.example.com/p/fixture")
             posts += 1
             headers["x-restli-id"] = "urn:li:share:456"
         default: throw WorkspaceError("Unexpected video fixture request.")

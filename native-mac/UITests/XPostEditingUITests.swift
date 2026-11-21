@@ -106,40 +106,12 @@ final class WalkthroughTests: XCTestCase {
             let menu = app.buttons["writing.new"].firstMatch
             if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
             XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
-            for name in ["New Substack newsletter", "New X article", "New LinkedIn article", "New YouTube script", "New X post or thread"] {
+            for name in ["New Substack newsletter", "New X article", "New YouTube script", "New X post or thread"] {
                 XCTAssertTrue(app.buttons[name].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
             }
             capture("Grouped long-form menu \(theme)", app)
             app.terminate()
         }
-    }
-
-    func testLinkedInArticleKeepsLongFormCopyAndShowsPublishingHandoff() {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "--script-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let menu = app.buttons["writing.new"].firstMatch
-        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(menu.waitForExistence(timeout: 8)); menu.tap()
-        let create = app.buttons["New LinkedIn article"].firstMatch
-        XCTAssertTrue(create.waitForExistence(timeout: 5)); create.tap()
-        let more = app.buttons["newsletter.more"].firstMatch
-        XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
-        app.buttons["Edit Markdown"].firstMatch.tap()
-        let editor = app.textViews["newsletter.markdown"].firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 5)); editor.tap()
-        editor.typeText("# A new way to work\n\nWe help people find work and find new meaning in it.\n\nHere is where we begin.")
-        capture("LinkedIn article Markdown editor", app)
-        app.buttons["Done"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["A new way to work"].firstMatch.waitForExistence(timeout: 8))
-        let copy = app.buttons["Copy article Markdown"].firstMatch
-        for _ in 0..<3 where !copy.isHittable { app.swipeUp() }
-        XCTAssertTrue(copy.isEnabled)
-        XCTAssertTrue(app.staticTexts["Publish in LinkedIn’s desktop editor, then add the public link in Inkspring on your Mac."].firstMatch.exists)
-        XCTAssertFalse(app.buttons["article.reviewPublish"].exists)
-        capture("LinkedIn article preview and publishing handoff", app)
     }
 
     func testNewsletterCreationAndAskAIApplyBriefWithoutLeavingEditor() {

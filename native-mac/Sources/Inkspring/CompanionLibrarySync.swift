@@ -81,7 +81,7 @@ extension Workspace {
         snapshot.supportsXParagraphs = true
         snapshot.supportsRevisionHistory = true
         snapshot.supportsXArticlePublishing = true
-        snapshot.supportsLinkedInArticles = true
+        snapshot.supportsLinkedInArticles = false
         if let account = try? socialAccounts.savedAccount(.x) {
             snapshot.xArticleAccountKey = account.connectionKey
             snapshot.xArticleAccountName = account.username.isEmpty ? account.name : "@" + account.username
@@ -132,7 +132,6 @@ extension Workspace {
                     referenceID: record.referenceID
                 )
                 item.planMarkdown = record.fields["planMarkdown"] as? String
-                item.linkedInArticleID = record["linkedinArticleID"].isEmpty ? nil : record["linkedinArticleID"]
                 item.previousPlanMarkdown = record.fields["previousPlanMarkdown"] as? String
                 item.isTrashed = inTrash
                 item.history = try? revisionHistory(for: record)
@@ -353,11 +352,10 @@ extension Workspace {
         }
         if change.createsScript == true {
             guard projects.contains(where: { $0.id == change.itemID }) else { return "This project no longer exists on your Mac." }
-            let isLinkedIn = change.writingKind == "linkedin-article"
-            let recordKind = isLinkedIn ? "article" : change.writingKind ?? "script"
+            guard change.writingKind != "linkedin-article" else { return "This writing format is unavailable." }
+            let recordKind = change.writingKind ?? "script"
             if records.contains(where: { $0.id == id && $0.kind == recordKind }) { return nil }
             var script = WorkspaceRecord.new(recordKind, projectID: change.itemID)
-            if isLinkedIn { script["platform"] = "linkedin" }
             script["id"] = id
             script["title"] = change.title
             script["body"] = change.text

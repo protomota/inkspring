@@ -87,7 +87,6 @@ struct SocialPublishPlan {
     let image: URL?
     let imageHash: String?
     let linkedInDestination: LinkedInDestination?
-    let linkedInArticle: LinkedInArticleShare?
     var linkedInAuthor: String? { linkedInDestination?.urn }
     let publicImage: URL?
     let subreddit: String?
@@ -106,7 +105,6 @@ struct SocialPublishPlan {
         parts += posts + (tiktok?.fingerprintFields ?? []) + (r2?.identity ?? [])
         if let nativeVideo { parts.append(nativeVideo.hash) }
         if let instagramCoverHash { parts.append(instagramCoverHash) }
-        if let article = linkedInArticle { parts += [article.articleID, article.title, article.url.absoluteString] }
         let data = (try? JSONEncoder().encode(parts)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -125,7 +123,6 @@ struct SocialPublishPlan {
             throw WorkspaceError("Use an X follow-up reply for the linked article.")
         }
         self.platform = platform
-        linkedInArticle = platform == .linkedin ? try LinkedInArticleShare.resolve(post: draft, in: articles) : nil
         draftID = draft.id
         revision = draft["updatedAt"]
         title = draft.title
@@ -221,15 +218,11 @@ struct SocialPublishPlan {
                 throw WorkspaceError("Reconnect LinkedIn with company-page publishing access.")
             }
             linkedInDestination = destination
-            var commentary = text
-            if nativeVideo != nil, let article = linkedInArticle, !text.contains(article.url.absoluteString) {
-                commentary += "\n\n" + article.url.absoluteString
-            }
-            guard ["post", "video"].contains(draft["format"]), commentary.unicodeScalars.count <= 3000,
+            guard ["post", "video"].contains(draft["format"]), text.unicodeScalars.count <= 3000,
                   account.id.range(of: #"\A[A-Za-z0-9_-]{1,200}\z"#, options: .regularExpression) != nil else {
-                throw WorkspaceError("Keep the LinkedIn post and its article link within 3,000 characters.")
+                throw WorkspaceError("Keep the LinkedIn post within 3,000 characters.")
             }
-            posts = [commentary]
+            posts = [text]
             replyID = nil
             image = nil
             imageHash = nil
@@ -525,8 +518,6 @@ struct SocialPublisher {
                 ]
                 if let videoID {
                     payload["content"] = ["media": ["id": videoID]]
-                } else if let article = plan.linkedInArticle {
-                    payload["content"] = ["article": ["title": article.title, "source": article.url.absoluteString]]
                 }
                 let (_, response) = try await transport.request(URL(string: "https://api.linkedin.com/rest/posts")!,
                     token: account.session.accessToken, method: "POST", json: payload,

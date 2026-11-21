@@ -134,6 +134,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var scripts: [Item]?
     public var supportsScripts: Bool?
     public var supportsXArticlePublishing: Bool?
+    // Explicitly disable the retired writing format in older mobile releases.
     public var supportsLinkedInArticles: Bool?
     public var xArticleAccountKey: String?
     public var xArticleAccountName: String?
@@ -169,13 +170,11 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var publicationStatus: String?
         public var publicationURL: String?
         public var publicationError: String?
-        public var linkedInArticleID: String?
         public var writingError: String?
         public var writingReply: String?
         public var history: [ContentRevision]?
         public enum Kind: String, Codable, Sendable { case draft, idea, newsletter, script, article }
         public var isLongForm: Bool { kind == .newsletter || kind == .script || kind == .article }
-        public var isLinkedInArticle: Bool { kind == .article && platform == "linkedin" }
         public enum Attachment: String, Codable, Sendable { case image, video }
         public let id: String
         public let revision: String
@@ -460,7 +459,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         guard enabled else { throw CompanionLibraryError.disabled }
         guard (change.createsScript != true && change.editsScript != true) || supportsScripts == true else { throw CompanionLibraryError.disabled }
         guard change.publishesXArticle != true || supportsXArticlePublishing == true else { throw CompanionLibraryError.disabled }
-        guard change.writingKind != "linkedin-article" || supportsLinkedInArticles == true else { throw CompanionLibraryError.disabled }
+        guard change.writingKind != "linkedin-article" else { throw CompanionLibraryError.disabled }
         guard !change.needsWritingTools || supportsWritingTools == true else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.xFormat != nil, change.text.contains(XThreadText.separator), supportsXParagraphs != true {
@@ -708,7 +707,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
                entry.revision != "pending-add",
                (entry.action != .editDraft || library.supportsDraftEdits == true),
                (change.publishesXArticle != true || library.supportsXArticlePublishing == true),
-               (change.writingKind != "linkedin-article" || library.supportsLinkedInArticles == true),
+               change.writingKind != "linkedin-article",
                (!change.needsWritingTools || library.supportsWritingTools == true),
                (entry.action != .saveRevision || library.supportsRevisionHistory == true),
                (entry.xFormat == nil || library.supportsXThreads == true),

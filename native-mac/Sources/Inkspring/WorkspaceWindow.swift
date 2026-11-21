@@ -50,7 +50,7 @@ struct WorkspaceWindow: View {
     @State private var postBeingEdited: WorkspaceRecord?
     @State private var newsletterIdea: WorkspaceRecord?
     @State private var newsletterDraft: WorkspaceRecord?
-    @State private var linkedInArticlePostID: String?
+    @State private var openingXPostID: String?
     @State private var returnedDocumentID: String?
     @State private var newsletterBackPage: WorkspacePage?
     @State private var saveNewsletterBeforeLeaving: (() -> Bool)?
@@ -435,7 +435,7 @@ struct WorkspaceWindow: View {
         case .workspace, .library:
             ZStack {
                 PostBrowser(workspace: workspace, library: page == .library, edit: editPost, openInStudio: open,
-                            openArticle: openPostArticle,
+                            openArticle: openXPostArticle,
                             reviewPair: { reviewPublication($0, at: nil) { _ in } },
                             returnedDocumentID: returnedDocumentID, postBeingEdited: postBeingEdited, back: { navigate() }, finishedEditing: {
                                 postBeingEdited = nil
@@ -455,8 +455,7 @@ struct WorkspaceWindow: View {
                                  closeNewsletter: backFromNewsletter,
                                  newsletterDirtyChanged: { studioDirty = $0 },
                                  newsletterSaveBeforeLeaving: { saveNewsletterBeforeLeaving = $0 },
-                                 reviewNewsletter: reviewNewsletter, openRelatedPost: { post in navigate { open(post) } },
-                                 linkedInPostID: linkedInArticlePostID,
+                                 reviewNewsletter: reviewNewsletter,
                                  saved: { _ in })
                         .id(newsletterDraft.id)
                 }
@@ -484,7 +483,7 @@ struct WorkspaceWindow: View {
                                 studioDirty = false
                                 showSchedule(draft)
                             }, reviewPublication: reviewPublication, isActive: editor == nil,
-                            openArticle: openPostArticle)
+                            openArticle: openXPostArticle)
                     .id(studioDraft.id)
             }
         case .settings:
@@ -546,10 +545,6 @@ struct WorkspaceWindow: View {
 
     private func reviewPublication(_ draft: WorkspaceRecord, at date: Date?,
                                    completed: @escaping (WorkspaceRecord) -> Void) {
-        if date == nil, let article = workspace.pendingLinkedInArticle(for: draft) {
-            openPostArticle(article, from: draft)
-            return
-        }
         editor = .publication(draft, date, completed)
     }
 
@@ -560,11 +555,11 @@ struct WorkspaceWindow: View {
 
     private func backFromNewsletter() {
         let destination = newsletterBackPage ?? .workspace
-        let documentID = linkedInArticlePostID ?? newsletterDraft?.id
-        let parent = linkedInArticlePostID.flatMap { id in workspace.drafts.first { $0.id == id } }
+        let documentID = openingXPostID ?? newsletterDraft?.id
+        let openingPost = openingXPostID.flatMap { id in workspace.drafts.first { $0.id == id } }
         navigate {
             returnedDocumentID = documentID
-            if destination == .studio, let parent { studioDraft = parent }
+            if destination == .studio, let openingPost { studioDraft = openingPost }
             page = destination
         }
     }
@@ -592,25 +587,18 @@ struct WorkspaceWindow: View {
     private func createDraft(_ type: WorkspaceDraftType) {
         navigate {
             guard let project = workspace.project else { add("project"); return }
-            if type == .linkedInArticle {
-                var post = WorkspaceDraftType.post.makeRecord(projectID: project.id)
-                post["platform"] = "linkedin"
-                post["format"] = "post"
-                open(post)
-            } else {
-                open(type.makeRecord(projectID: project.id))
-            }
+            open(type.makeRecord(projectID: project.id))
         }
     }
 
-    private func openPostArticle(_ article: WorkspaceRecord, from post: WorkspaceRecord) {
+    private func openXPostArticle(_ article: WorkspaceRecord, from post: WorkspaceRecord) {
         if article.isPublishedContent {
             open(article)
             return
         }
         navigate {
             open(article)
-            linkedInArticlePostID = post.id
+            openingXPostID = post.id
         }
     }
 
@@ -681,7 +669,7 @@ struct WorkspaceWindow: View {
             postBeingEdited = nil
             if isEditingNewsletter {
                 newsletterDraft = nil
-                linkedInArticlePostID = nil
+                openingXPostID = nil
                 newsletterIdea = nil
                 newsletterBackPage = nil
             }
@@ -795,16 +783,14 @@ func platformName(_ value: String) -> String {
 }
 
 enum WorkspaceDraftType: String, CaseIterable {
-    case post = "draft", newsletter, article, linkedInArticle = "linkedin-article", script
+    case post = "draft", newsletter, article, script
 
     init?(record: WorkspaceRecord) {
-        self.init(rawValue: record.isLinkedInArticle ? "linkedin-article" : record.kind)
+        self.init(rawValue: record.kind)
     }
 
     func makeRecord(projectID: String) -> WorkspaceRecord {
-        var record = WorkspaceRecord.new(self == .linkedInArticle ? "article" : rawValue, projectID: projectID)
-        if self == .linkedInArticle { record["platform"] = "linkedin" }
-        return record
+        WorkspaceRecord.new(rawValue, projectID: projectID)
     }
 
     var name: String {
@@ -812,7 +798,6 @@ enum WorkspaceDraftType: String, CaseIterable {
         case .post: "Social post"
         case .newsletter: "Newsletter"
         case .article: "X article"
-        case .linkedInArticle: "LinkedIn article"
         case .script: "YouTube script"
         }
     }
@@ -821,7 +806,7 @@ enum WorkspaceDraftType: String, CaseIterable {
         switch self {
         case .post: "text.bubble"
         case .newsletter: "envelope"
-        case .article, .linkedInArticle: "doc.richtext"
+        case .article: "doc.richtext"
         case .script: "play.rectangle"
         }
     }
@@ -835,7 +820,7 @@ private struct WorkspaceDraftMenu: View {
         Menu {
             ForEach(WorkspaceDraftType.allCases, id: \.self) { type in
                 if type == .post {
-                    Button(type == .linkedInArticle ? "LinkedIn post with article" : type.name,
+                    Button(type.name,
                            systemImage: type.symbol) { create(type) }
                         .keyboardShortcut("n")
                 } else {
@@ -938,7 +923,7 @@ struct PostBrowser: View {
 
     private var statuses: [PostBrowserFilter] {
         if library { return type == nil || type == .post ? [.all, .working, .sharing] : [.all, .working] }
-        if type == .script || type == .article || type == .linkedInArticle { return [.all, .working] }
+        if type == .script || type == .article { return [.all, .working] }
         return [.all, .working, .scheduling]
     }
 
@@ -946,7 +931,7 @@ struct PostBrowser: View {
         let rows = (filter == .ideas ? workspace.ideas : workspace.workspaceDrafts).filter {
             (type == nil || WorkspaceDraftType(record: $0) == type) && filter.matches($0, platform: platform, search: query, library: library)
         }
-        return type == nil ? LinkedInArticleShare.groupedDrafts(rows) : rows
+        return rows
     }
 
     var body: some View {
@@ -999,7 +984,7 @@ struct PostBrowser: View {
                            label: { $0.map { $0.name + "s" } ?? "All drafts" },
                            count: { format in
                                if let format { return workspace.workspaceDrafts.filter { WorkspaceDraftType(record: $0) == format }.count }
-                               return LinkedInArticleShare.groupedDrafts(workspace.workspaceDrafts).count
+                               return workspace.workspaceDrafts.count
                            })
             }
             GeometryReader { geometry in
@@ -1370,25 +1355,21 @@ struct PostPreview: View {
     }
 
     @ViewBuilder private var postArticleControls: some View {
-        if record.kind == "draft", let platform = SocialPlatform(rawValue: record["platform"]),
-           [.linkedin, .x].contains(platform), record.fields["manualQuote"] as? Bool != true {
-            let key = platform == .x ? "xArticleID" : "linkedinArticleID"
+        if record.kind == "draft", record["platform"] == "x", record.fields["manualQuote"] as? Bool != true {
+            let key = "xArticleID"
             let allowsChanges = !["queued", "due", "posting", "posted", "uncertain"].contains(record.scheduleStatus)
             let replies = workspace.xReplyArticles(for: record, body: record.body)
             if allowsChanges || !record[key].isEmpty || !replies.isEmpty {
                 let canCreate = !record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && record["format"] != "reply"
                 let create: (() -> Void)? = canCreate ? { createLinkedArticle() } : nil
-                let hasUnpublishedArticle = workspace.pendingLinkedInArticle(for: record) != nil ||
-                    platform == .x && (replies.contains { $0["state"] != "published" } || workspace.records.contains {
-                        $0.isXArticle && $0.projectID == record.projectID && $0.id == record[key] && $0["state"] != "published"
-                    })
-                let canPublishTogether = platform == .x || !record.needsNativePostVideo
-                let publish: (() -> Void)? = canCreate && allowsChanges && hasUnpublishedArticle && canPublishTogether
+                let hasUnpublishedArticle = replies.contains { $0["state"] != "published" } || workspace.records.contains {
+                    $0.isXArticle && $0.projectID == record.projectID && $0.id == record[key] && $0["state"] != "published"
+                }
+                let publish: (() -> Void)? = canCreate && allowsChanges && hasUnpublishedArticle
                     ? { reviewPair(record) } : nil
-                PostArticlePicker(workspace: workspace, projectID: record.projectID, platform: platform,
+                PostArticlePicker(workspace: workspace, projectID: record.projectID,
                                   articleID: articleBinding(key), openArticle: { openArticle($0, record) }, createArticle: create,
-                                  xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish,
-                                  requiresVideo: record.needsNativePostVideo)
+                                  xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish)
             }
         }
     }

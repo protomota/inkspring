@@ -246,11 +246,11 @@ final class MobileLibrary {
     }
 
     var visibleScripts: [CompanionLibrary.Item] {
-        let remote = (snapshot?.scripts ?? []) + (snapshot?.articles ?? [])
+        let remote = (snapshot?.scripts ?? []) + (snapshot?.articles ?? []).filter { $0.platform != "linkedin" }
         let ids = Set((remote + (snapshot?.newsletters ?? [])).map(\.id))
         let local = outbox.entries.filter {
             $0.createsScript == true && $0.account == account && $0.workspaceID == snapshot?.workspaceID
-                && !ids.contains($0.id.uuidString.lowercased())
+                && $0.writingKind != "linkedin-article" && !ids.contains($0.id.uuidString.lowercased())
         }.map { entry in
             CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: mobileWritingKind(entry.writingKind),
                 projectID: entry.itemID ?? "", title: entry.title, body: entry.text, shortened: false,
@@ -641,7 +641,6 @@ final class MobileLibrary {
             value.supportsScripts = true
             value.supportsWritingTools = true
             value.supportsXArticlePublishing = true
-            value.supportsLinkedInArticles = true
             value.xArticleAccountKey = "fixture:connected"
             value.xArticleAccountName = "@fixture"
             value.writingAgent = "codex"
@@ -778,8 +777,7 @@ private struct MobileNewsletterDetail: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         metadataHeader
-                        if item.isLinkedInArticle { linkedInArticleHandoff }
-                        else if item.kind == .article { articlePublishing }
+                        if item.kind == .article { articlePublishing }
                         Divider()
                         if !hasFullText || (showsMacVersion && item.shortened) {
                             Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(palette.muted)
@@ -830,7 +828,7 @@ private struct MobileNewsletterDetail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(palette.iconAccent)
         .toolbar(editingRevision == nil ? .visible : .hidden, for: .tabBar)
-        .navigationTitle(item.isLinkedInArticle ? "LinkedIn article" : item.kind == .article ? "X article" : item.kind == .script ? "YouTube script" : "Newsletter")
+        .navigationTitle(item.kind == .article ? "X article" : item.kind == .script ? "YouTube script" : "Newsletter")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: markdown + "\0" + scriptTitle) {
             guard let editingRevision, let recoveryKey, markdown != editingBaseMarkdown || scriptTitle != baseScriptTitle else { return }
@@ -891,20 +889,6 @@ private struct MobileNewsletterDetail: View {
                 }
             }
         }
-    }
-
-    private var linkedInArticleHandoff: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let raw = item.publicationURL, let url = URL(string: raw), url.scheme == "https", url.host == "www.linkedin.com" {
-                Link("View published LinkedIn article", destination: url)
-            } else {
-                Text("Publish in LinkedIn’s desktop editor, then add the public link in Inkspring on your Mac.")
-                    .font(.footnote).foregroundStyle(palette.muted)
-            }
-            Button("Copy article Markdown", systemImage: "doc.on.doc") { UIPasteboard.general.string = previewMarkdown }
-                .disabled(!hasFullText || previewMarkdown.isEmpty)
-        }
-        .accessibilityIdentifier("linkedinArticle.handoff")
     }
 
     private var articlePublishing: some View {
@@ -1172,7 +1156,6 @@ struct MobileReviewView: View {
         platforms.insert("substack")
         platforms.insert("youtube")
         platforms.insert("x-article")
-        if library.snapshot?.supportsLinkedInArticles == true { platforms.insert("linkedin-article") }
         if let platformFilter { platforms.insert(platformFilter) }
         return platforms.sorted { reviewPlatformName($0).localizedStandardCompare(reviewPlatformName($1)) == .orderedAscending }
     }
@@ -1294,10 +1277,6 @@ struct MobileReviewView: View {
                                 .accessibilityIdentifier("newsletter.new")
                             Button { createWriting("article") } label: { Label { Text("New X article") } icon: { platformMenuIcon("x") } }
                                 .accessibilityIdentifier("article.new")
-                            if library.snapshot?.supportsLinkedInArticles == true {
-                                Button { createWriting("linkedin-article") } label: { Label { Text("New LinkedIn article") } icon: { platformMenuIcon("linkedin") } }
-                                    .accessibilityIdentifier("linkedinArticle.new")
-                            }
                             Button { createWriting("script") } label: { Label { Text("New YouTube script") } icon: { platformMenuIcon("youtube") } }
                                 .accessibilityIdentifier("script.new")
                         }
@@ -1633,11 +1612,10 @@ struct MobileReviewView: View {
 }
 
 private extension CompanionLibrary.Item {
-    var reviewPlatform: String { kind == .article ? (isLinkedInArticle ? "linkedin-article" : "x-article") : platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    var reviewPlatform: String { kind == .article ? "x-article" : platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 }
 
 private func mobileWritingKind(_ kind: String?) -> CompanionLibrary.Item.Kind {
-    if kind == "linkedin-article" { return .article }
     return kind.flatMap(CompanionLibrary.Item.Kind.init(rawValue:)) ?? .script
 }
 
@@ -1645,7 +1623,6 @@ private func mobileWritingPlatform(_ kind: String?) -> String {
     switch kind {
     case "newsletter": "substack"
     case "article": "x"
-    case "linkedin-article": "linkedin"
     default: "youtube"
     }
 }
@@ -1657,7 +1634,6 @@ private func reviewPlatformName(_ platform: String) -> String {
     case "tiktok": "TikTok"
     case "youtube": "YouTube"
     case "x-article": "X article"
-    case "linkedin-article": "LinkedIn article"
     default: platform.capitalized
     }
 }
@@ -1754,7 +1730,7 @@ private struct MobileItemEditor: View {
                 .accessibilityIdentifier("mobile.edit.title").padding(.horizontal, 12)
             if isX {
                 StudioXPostEditor(text: $text, format: $format, articles: library.snapshot?.supportsXReplyArticles == true ? (library.snapshot?.articles ?? []).compactMap { article in
-                    guard !article.isLinkedInArticle, article.projectID == item.projectID, let ref = article.referenceID else { return nil }
+                    guard article.platform != "linkedin", article.projectID == item.projectID, let ref = article.referenceID else { return nil }
                     return XArticleChoice(id: ref, title: article.title)
                 } : []).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1980,7 +1956,7 @@ private struct MobileReviewDetail: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("x.reply.\(index)")
                         if let ref = XReplyArticle(posts[index]).reference {
-                            if let article = library.snapshot?.articles?.first(where: { !$0.isLinkedInArticle && $0.projectID == item.projectID && $0.referenceID == ref }) {
+                            if let article = library.snapshot?.articles?.first(where: { $0.platform != "linkedin" && $0.projectID == item.projectID && $0.referenceID == ref }) {
                                 NavigationLink {
                                     MobileNewsletterDetail(item: article, metadata: article.referenceID ?? "", library: library, workspaceID: workspaceID)
                                 } label: { Label("X article · " + article.title, systemImage: "doc.text") }
@@ -1997,19 +1973,6 @@ private struct MobileReviewDetail: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Edit text")
-                }
-                if let articleID = item.linkedInArticleID {
-                    if let article = library.snapshot?.articles?.first(where: { $0.isLinkedInArticle && $0.id == articleID && $0.projectID == item.projectID }) {
-                        NavigationLink {
-                            MobileNewsletterDetail(item: article, metadata: article.referenceID ?? "", library: library, workspaceID: workspaceID)
-                        } label: { Label(article.title, systemImage: "doc.richtext") }
-                        if article.publicationURL?.isEmpty != false {
-                            Text("Add the public article link on your Mac before sharing.")
-                                .font(.footnote).foregroundStyle(palette.muted)
-                        }
-                    } else {
-                        Text("LinkedIn article unavailable").font(.footnote).foregroundStyle(palette.muted)
-                    }
                 }
                 if let error = pendingEdit?.error {
                     Label(error, systemImage: "exclamationmark.icloud").font(.footnote)

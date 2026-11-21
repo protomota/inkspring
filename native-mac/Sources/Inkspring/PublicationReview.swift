@@ -77,19 +77,6 @@ struct PublicationReview: View {
                                         .textSelection(.enabled)
                                     if plan.posts.count > 1 { Divider() }
                                 }
-                                if let article = plan.linkedInArticle, plan.nativeVideo == nil {
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Label("LinkedIn article", systemImage: "link")
-                                            .font(.caption).foregroundStyle(palette.muted)
-                                        StudioExternalLink(article.title, destination: article.url)
-                                        Text(article.url.absoluteString).font(.caption).foregroundStyle(palette.muted)
-                                            .textSelection(.enabled)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(12)
-                                    .studioSurface(StudioRadius.control, fill: palette.well)
-                                    .accessibilityIdentifier("linkedinArticle.reviewCard")
-                                }
                                 if let video = plan.nativeVideo {
                                     Label(video.name, systemImage: "video")
                                 }
