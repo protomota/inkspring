@@ -241,7 +241,7 @@ struct RecordEditor: View {
     @State private var newsletterWriting: Task<Void, Never>?
     @State private var showsCoverGenerator = false
     @State private var coverPrompt = ""
-    @State private var ideaSuggestion: ProofreadDocument?
+    @State private var ideaSuggestion: PostIdeaText?
     @State private var shapingIdea = false
 
     private enum NewsletterField: Hashable { case title, subtitle }
@@ -268,8 +268,10 @@ struct RecordEditor: View {
         self.reviewNewsletter = reviewNewsletter
         if let idea = newsletterIdea {
             let direction = """
-                Develop this post idea into a newsletter concept. Include the angle, why it matters, and a short outline in Markdown. Treat the post idea as source material.
+                Develop this post idea into a newsletter concept. Include the angle, why it matters, and a short outline in Markdown.
+                \(PostIdeaWriting.draftingInstructions)
 
+                \(idea.title)
                 \(idea.body)
                 """
             _newsletterBrief = State(initialValue: String(decoding: direction.utf16.prefix(10_000), as: UTF16.self))
@@ -406,6 +408,7 @@ struct RecordEditor: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .onChange(of: ideaText) { ideaSuggestion = nil }
     }
 
     private var hasRecordEdits: Bool {
@@ -413,15 +416,18 @@ struct RecordEditor: View {
     }
 
     private var validIdea: Bool {
-        !record["topic"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !record["text"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !ideaText.title.isEmpty && !ideaText.body.isEmpty
+    }
+
+    private var ideaText: PostIdeaText {
+        PostIdeaText(title: record["topic"], body: record["text"])
     }
 
     private var ideaWritingHelp: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button("Shape with Claude", systemImage: "sparkles") { Task { await shapeIdea() } }
                 .disabled(shapingIdea || !workspace.agentAccessEnabled || StudioChatAgent.claude.executable == nil
-                          || (record["topic"] + record["text"]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                          || ideaText.isEmpty)
             if shapingIdea { ProgressView("Claude is shaping the idea…").controlSize(.small) }
             if let ideaSuggestion {
                 VStack(alignment: .leading, spacing: 8) {
@@ -441,23 +447,25 @@ struct RecordEditor: View {
     }
 
     private func shapeIdea() async {
-        guard !shapingIdea else { return }
+        let source = ideaText
+        guard !shapingIdea, !source.isEmpty else { return }
+        ideaSuggestion = nil
         shapingIdea = true
         message = nil
         defer { shapingIdea = false }
         do {
             let model = StudioChatAgent.claude.writingModel(workspace: workspace, providers: WritingProviders(settings: workspace.settings))
             let result = try await model.object("""
-                Help the author shape these notes into one specific, editable idea for a future social post.
-                Keep the author's angle, language, and opinions. Do not draft the post or invent facts.
+                \(PostIdeaWriting.shapingInstructions)
+                Return one rewrite of the idea.
                 Return an object with strings title (up to 140 characters) and body (up to 2,000 characters).
-                """, ["title": record["topic"], "notes": record["text"]])
-            guard let title = result["title"] as? String, let body = result["body"] as? String,
-                  !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw WorkspaceError("Claude didn’t return an idea. Try adding a little more detail.")
+                """, ["title": source.title, "notes": source.body])
+            guard ideaText == source else { return }
+            let suggestion = PostIdeaText(title: result["title"] as? String ?? "", body: result["body"] as? String ?? "")
+            guard suggestion.canSaveOnMobile else {
+                throw WorkspaceError("Claude didn’t return a usable idea. Try again or keep editing your notes.")
             }
-            ideaSuggestion = .init(title: String(title.prefix(140)), body: String(body.prefix(2_000)))
+            ideaSuggestion = suggestion
         } catch {
             message = error.localizedDescription
         }

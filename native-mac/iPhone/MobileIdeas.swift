@@ -1,30 +1,9 @@
 import FoundationModels
 import SwiftUI
 
-@available(iOS 26, *)
-@Generable
-private struct OnDeviceIdeas {
-    @Guide(description: "Three distinct, practical post ideas.")
-    var ideas: [Idea]
-
-    @Generable
-    struct Idea {
-        @Guide(description: "Short title, under 100 characters.")
-        var title: String
-        @Guide(description: "A specific angle in one or two sentences. Avoid inventing facts, sources, or statistics.")
-        var angle: String
-    }
-}
-
-private struct SuggestedIdea: Identifiable {
-    let id = UUID()
-    let title: String
-    let angle: String
-}
-
 struct MobileIdeasView: View {
     @Environment(\.mobileWideLayout) private var wideLayout
-    private enum Field { case topic, title, angle }
+    private enum Field { case title, angle }
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.studioPalette) private var palette
@@ -33,8 +12,7 @@ struct MobileIdeasView: View {
     @State private var title = ""
     @State private var includesPlan = false
     @State private var bodyText = ""
-    @State private var topic = ""
-    @State private var suggestions: [SuggestedIdea] = []
+    @State private var suggestions: [PostIdeaText] = []
     @State private var availabilityMessage: String?
     @State private var generating = false
     @State private var message: String?
@@ -53,51 +31,11 @@ struct MobileIdeasView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if onSaved != nil || library.snapshot == nil {
-                    captureForm
-                    if onSaved == nil { recentlySaved }
-                }
-
-                Section {
-                    TextField("Topic to explore", text: $topic,
-                              prompt: Text("For example, what have you learned about building in public?"), axis: .vertical)
-                        .lineLimit(2...4)
-                        .focused($focusedField, equals: .topic)
-                    Button("Generate ideas", systemImage: "sparkles") { Task { await generate() } }
-                        .disabled(generating || availabilityMessage != nil || topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if generating { ProgressView("Thinking on this device…") }
-                    ForEach(suggestions) { idea in
-                        Button {
-                            title = String(idea.title.prefix(100))
-                            bodyText = idea.angle
-                        } label: {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(idea.title).font(.headline)
-                                Text(idea.angle).foregroundStyle(.secondary)
-                                Text("Use this idea").font(.footnote).foregroundStyle(.tint)
-                            }
-                            .padding(.vertical, 5)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } header: {
-                    Text("Apple Intelligence")
-                } footer: {
-                    Text(availabilityMessage ?? "Ideas are generated on this device. Review and edit them before saving.")
-                }
-                .listRowBackground(palette.card)
-
-                if library.snapshot != nil && onSaved == nil {
-                    captureForm
-                    recentlySaved
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .scrollDismissesKeyboard(.interactively)
+            ideaForm
             .frame(maxWidth: 680)
             .mobileCanvas()
-            .mobilePageTitle(onSaved == nil ? "New ideas" : "Draft a new idea", wide: wideLayout, background: palette.canvas)
+            .mobilePageTitle(onSaved == nil ? "New ideas" : "Draft a new idea",
+                             wide: wideLayout && onSaved == nil, background: palette.canvas)
             .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
             .toolbar {
                 if onSaved != nil {
@@ -133,10 +71,48 @@ struct MobileIdeasView: View {
             }
         }
         .onAppear(perform: checkAvailability)
+        .onChange(of: editorText) { suggestions = [] }
         .modifier(InkspringRatingPrompt(isIdle: isSelected && focusedField == nil && !generating
                                          && message == nil && !library.busy))
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { checkAvailability() }
+        }
+    }
+
+    private var ideaForm: some View {
+        ScrollViewReader { scroll in
+            Form {
+                captureForm
+                if !suggestions.isEmpty {
+                    Section("Suggested ideas") {
+                        ForEach(suggestions, id: \.self) { idea in
+                            Button {
+                                title = idea.title
+                                bodyText = idea.body
+                                focusedField = nil
+                                suggestions = []
+                                withAnimation { scroll.scrollTo(Field.title, anchor: .top) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(idea.title).font(.headline)
+                                    Text(idea.body).foregroundStyle(.secondary)
+                                    Label("Use this idea", systemImage: "arrow.up.left")
+                                        .font(.footnote).foregroundStyle(.tint)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("idea.suggestion")
+                        }
+                    }
+                    .listRowBackground(palette.card)
+                }
+                if onSaved == nil { recentlySaved }
+            }
+            .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 
@@ -177,7 +153,7 @@ struct MobileIdeasView: View {
     }
 
     private var captureForm: some View {
-        Section("Save an idea") {
+        Section {
             if let projects = library.snapshot?.projects, projects.count > 1 {
                 Picker("Project", selection: $projectID) {
                     Text("Default project").tag(String?.none)
@@ -191,11 +167,23 @@ struct MobileIdeasView: View {
                 .submitLabel(.next)
                 .onSubmit { focusedField = .angle }
                 .accessibilityIdentifier("idea.new.title")
+                .id(Field.title)
             TextField("Angle or notes", text: $bodyText,
                       prompt: Text("What do you want to say, and why does it matter?"), axis: .vertical)
                 .lineLimit(3...8)
                 .focused($focusedField, equals: .angle)
                 .accessibilityIdentifier("idea.new.angle")
+            Button {
+                focusedField = nil
+                Task { await generate() }
+            } label: {
+                Label("Generate ideas", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(generating || availabilityMessage != nil || editorText.isEmpty)
+            if generating { ProgressView("Thinking on this device…") }
             StudioProofreadAction(document: .init(title: title, body: bodyText),
                                   unavailable: MobileProofreading.availabilityMessage,
                                   begin: { focusedField = nil }, reviewInSheet: true,
@@ -204,20 +192,34 @@ struct MobileIdeasView: View {
                 Toggle("Include a plan", isOn: $includesPlan)
             }
             Button("Save idea", systemImage: "plus") { saveIdea() }
-                .disabled(!canSave)
+                .disabled(!editorText.canSaveOnMobile)
+        } header: {
+            Text("Save an idea")
+        } footer: {
+            Text(availabilityMessage ?? "Apple Intelligence rewrites your notes on this device. Review and edit your selection before saving.")
         }
         .listRowBackground(palette.card)
     }
 
-    private var canSave: Bool {
-        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanText = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (1...140).contains(cleanTitle.utf16.count) && (1...2000).contains(cleanText.utf16.count)
+    private var editorText: PostIdeaText {
+        PostIdeaText(title: title, body: bodyText)
     }
 
     private func checkAvailability() {
+#if DEBUG
+        if Self.usesSuggestionFixture {
+            availabilityMessage = nil
+            return
+        }
+#endif
         availabilityMessage = Self.generationAvailabilityMessage
     }
+
+#if DEBUG
+    private static var usesSuggestionFixture: Bool {
+        ProcessInfo.processInfo.arguments.contains("--idea-suggestions-fixture")
+    }
+#endif
 
     static var generationAvailabilityMessage: String? {
         if #available(iOS 26, *) {
@@ -236,36 +238,43 @@ struct MobileIdeasView: View {
     private func generate() async {
         checkAvailability()
         guard #available(iOS 26, *), availabilityMessage == nil, !generating else { return }
-        let subject = String(topic.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1000))
-        guard !subject.isEmpty else { return }
-        focusedField = nil
+        let source = editorText
+        guard !source.isEmpty else { return }
+        suggestions = []
         generating = true
         defer { generating = false }
         do {
-            let session = LanguageModelSession(model: SystemLanguageModel.default, instructions: """
-                Brainstorm three distinct social post ideas about the user's topic. Write in the user's language.
-                Suggest practical angles that the writer could develop. Do not make factual claims or invent citations.
-                """)
-            let response = try await session.respond(to: subject, generating: OnDeviceIdeas.self)
-            suggestions = response.content.ideas.prefix(3).compactMap { idea in
-                let title = idea.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                let angle = idea.angle.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !title.isEmpty, !angle.isEmpty else { return nil }
-                return SuggestedIdea(title: String(title.prefix(100)), angle: String(angle.prefix(500)))
+            let generated = try await generateSuggestions(for: source)
+            guard editorText == source else { return }
+            suggestions = generated
+            if generated.isEmpty {
+                message = "No usable ideas came back. Try again or keep editing your notes."
             }
-            if suggestions.isEmpty { message = "No ideas came back. Try a more specific topic." }
         } catch {
             checkAvailability()
-            message = "Apple Intelligence couldn’t generate ideas for this topic. Try rephrasing it, or write an idea below."
+            message = "Apple Intelligence couldn’t generate ideas from these notes. Try again or keep editing."
         }
     }
 
+    @available(iOS 26, *)
+    private func generateSuggestions(for source: PostIdeaText) async throws -> [PostIdeaText] {
+#if DEBUG
+        if Self.usesSuggestionFixture {
+            return [
+                PostIdeaText(title: "Private chats sent to the wrong people", body: source.body),
+                PostIdeaText(title: "Classic Facebook", body: "Classic Facebook. " + source.body)
+            ]
+        }
+#endif
+        return try await PostIdeaWriting.onDeviceSuggestions(for: source)
+    }
+
     private func saveIdea() {
-        guard canSave else { return }
+        let idea = editorText
+        guard idea.canSaveOnMobile else { return }
         do {
-            let id = try library.saveIdea(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                                 text: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
-                                 projectID: projectID, plan: includesPlan ? ContentPlan.starter(title) : nil)
+            let id = try library.saveIdea(title: idea.title, text: idea.body,
+                                 projectID: projectID, plan: includesPlan ? ContentPlan.starter(idea.title) : nil)
             focusedField = nil
             title = ""
             bodyText = ""

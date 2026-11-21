@@ -1364,16 +1364,25 @@ struct MobileReviewView: View {
             }
         } else if askingInkspring { assistantView }
         else {
-            reviewBody
-                .sheet(isPresented: $draftingIdea, onDismiss: showCreatedIdea) {
-                    MobileIdeasView(library: library, isSelected: true, initialProject: projectFilter) { id in
-                        newIdeaID = id
-                        draftingIdea = false
-                    }
-                }
+            reviewWithIdeaComposer
                 .sheet(isPresented: $quickXPost) {
                     NavigationStack { MobileQuickXComposer(library: library, preferredProject: projectFilter) }
                 }
+        }
+    }
+
+    @ViewBuilder private var reviewWithIdeaComposer: some View {
+        if wideLayout {
+            reviewBody.fullScreenCover(isPresented: $draftingIdea, onDismiss: showCreatedIdea) { newIdeaComposer }
+        } else {
+            reviewBody.sheet(isPresented: $draftingIdea, onDismiss: showCreatedIdea) { newIdeaComposer }
+        }
+    }
+
+    private var newIdeaComposer: some View {
+        MobileIdeasView(library: library, isSelected: true, initialProject: projectFilter) { id in
+            newIdeaID = id
+            draftingIdea = false
         }
     }
 

@@ -254,9 +254,8 @@ final class WalkthroughTests: XCTestCase {
             title.typeText("\n")
             if !angle.hasFocus { angle.tap() }
             angle.typeText("Share one detail worth someone’s time.")
-            let hide = app.keyboards.buttons["Hide keyboard"].firstMatch
-            if hide.isHittable { hide.tap() }
             let save = app.buttons["Save idea"].firstMatch
+            for _ in 0..<3 where !save.isHittable { app.swipeUp() }
             XCTAssertTrue(save.isEnabled, app.debugDescription)
             save.tap()
             let draft = app.buttons["idea.draft.open"].firstMatch
@@ -265,6 +264,61 @@ final class WalkthroughTests: XCTestCase {
             XCTAssertTrue(savedTitle.exists, app.debugDescription)
             XCTAssertEqual(savedTitle.label, "Make time for careful work")
             capture("Saved idea opens – " + theme, app)
+            app.terminate()
+        }
+    }
+
+    func testGenerateSelectAndSaveIdeaFromBothEntryPoints() {
+        continueAfterFailure = false
+        let notes = "Private Facebook chats went to the wrong users. Classic Facebook."
+        let suggestionTitle = "Private chats sent to the wrong people"
+
+        for fromReview in [false, true] {
+            let arguments = ["--idea-first-fixture", "--idea-suggestions-fixture"]
+            let app: XCUIApplication
+            if fromReview {
+                app = openReview(theme: "graphite", arguments: arguments)
+                app.buttons["idea.new"].firstMatch.tap()
+            } else {
+                app = XCUIApplication()
+                app.launchArguments = ["--library-fixture", "--ideas-fixture", "-inkspring.mobile.theme", "graphite"] + arguments
+                app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+                app.launch()
+            }
+
+            let title = app.textFields["idea.new.title"].firstMatch
+            let angle = app.textFields["idea.new.angle"].firstMatch
+            XCTAssertTrue(angle.waitForExistence(timeout: 8), app.debugDescription)
+            angle.tap()
+            angle.typeText(notes)
+            XCTAssertEqual(angle.value as? String, notes, app.debugDescription)
+            let generate = app.buttons["Generate ideas"].firstMatch
+            for _ in 0..<3 where !generate.isHittable { app.swipeUp() }
+            XCTAssertTrue(generate.isEnabled && generate.isHittable, app.debugDescription)
+            generate.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.5)).tap()
+
+            let result = app.buttons.matching(identifier: "idea.suggestion")
+                .matching(NSPredicate(format: "label CONTAINS %@", suggestionTitle)).firstMatch
+            for _ in 0..<3 where !result.isHittable { app.swipeUp() }
+            XCTAssertTrue(result.waitForExistence(timeout: 5) && result.isHittable, app.debugDescription)
+            XCTAssertTrue(result.label.contains(notes))
+            capture("Generated suggestions – " + (fromReview ? "composer" : "New ideas"), app)
+            result.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+
+            XCTAssertTrue(title.isHittable, app.debugDescription)
+            XCTAssertEqual(title.value as? String, suggestionTitle)
+            XCTAssertEqual(angle.value as? String, notes)
+            XCTAssertFalse(result.exists)
+            capture("Selected idea is ready to edit – " + (fromReview ? "composer" : "New ideas"), app)
+            let save = app.buttons["Save idea"].firstMatch
+            XCTAssertTrue(save.isEnabled && save.isHittable, app.debugDescription)
+            save.tap()
+
+            let savedTitle = app.buttons["idea.detail.title"].firstMatch
+            XCTAssertTrue(savedTitle.waitForExistence(timeout: 10), app.debugDescription)
+            XCTAssertEqual(savedTitle.label, suggestionTitle)
+            XCTAssertTrue(app.buttons[notes].firstMatch.exists, app.debugDescription)
+            capture("Saved idea keeps the original point – " + (fromReview ? "composer" : "New ideas"), app)
             app.terminate()
         }
     }
