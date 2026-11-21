@@ -42,6 +42,8 @@ The migration command snapshots the source database with SQLite, copies and chec
 
 Open **Settings → AI agents** and turn on **Let AI agents use Inkspring**. Claude Code can save a project connection from this screen. For Codex, use the command and argument shown in the Codex tab. The Swift executable speaks STDIO MCP and reads and writes the same SQLite database as the app. Vault reading and immediate X or LinkedIn posting each require their own permission. Suggestions wait for review in Settings.
 
+For a specific **Post idea**, use MCP **save_idea** with the chosen `project_id`, `title`, and `text`. It saves one item to **Post ideas → Open** with the supplied text and links. Use an optional `request_key` to retry an identical save safely, then **get_idea** with the returned ID to verify the complete idea. The local MCP server can save while the Mac display is locked.
+
 For already-written social copy, use MCP **save_draft** with `project_id`, `platform`, `title`, and `content`. It saves the exact text locally without a model, API key, scheduling, or publication. Optional `request_key` prevents duplicate creation on identical retries. Use **edit_draft** with the last-read `expected_updated_at` for revisions. **write_post** also accepts `content` for local saving; use its `idea` argument only when requesting model generation through the configured writing connection. Keep LinkedIn URLs in the supplied body when desired.
 
 **Ask my agent** opens a chat in the Mac app. Select a locally installed, signed-in Codex or Claude Code. Chat can read drafts, ideas, and newsletters in the open project and suggest wording. It cannot change drafts, schedule, or publish. The selected agent handles the model request using its existing sign-in.

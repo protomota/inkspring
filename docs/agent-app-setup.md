@@ -41,6 +41,8 @@ Source: [OpenAI's app-based MCP setup](https://learn.chatgpt.com/docs/extend/mcp
 
 ## Verify reading and writing
 
+For an authored post idea, ask the agent to use `save_idea` with the project ID, title, and text, then verify the returned ID with `get_idea`. The idea appears in **Post ideas → Open**. Local idea saving works while the Mac display is locked and does not require AI generation.
+
 In either agent app, send:
 
 > Use Inkspring's MCP tools to list my projects. In the project I choose, save an unpublished newsletter titled “Agent connection test” with the body “Created from my agent app.” Read it back, then change its body to “Read and write verified.” Do not generate through Inkspring's model provider, schedule, sync to Substack or publish anything.

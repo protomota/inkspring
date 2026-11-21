@@ -17,7 +17,7 @@ struct AgentMCP {
             return [.init(name: "get_writing_request", summary: "Read the current one-time Inkspring writing request and its selected context.")]
         }
         guard chatProjectID != nil else { return Self.tools }
-        let names = ["list_drafts", "get_draft", "list_ideas", "list_newsletters", "get_newsletter", "list_scripts", "get_script", "list_articles", "get_article", "get_content", "get_plan"]
+        let names = ["list_drafts", "get_draft", "list_ideas", "get_idea", "list_newsletters", "get_newsletter", "list_scripts", "get_script", "list_articles", "get_article", "get_content", "get_plan"]
         return Self.tools.filter { names.contains($0.name) }
     }
 
@@ -112,6 +112,11 @@ struct AgentMCP {
         .init(name: "edit_draft", summary: "Edit a saved draft locally. For an X thread supply posts as separate strings, one per tweet, preserving paragraphs inside each. To link a same-project X article, append [[X article: PRA-001]] to its follow-up reply with the real article reference ID. Its published URL is inserted at posting time. Pass expected_updated_at to protect newer edits.",
               fields: ["draft_id": "string", "title": "string", "content": "string", "posts": "strings", "format": "string", "expected_updated_at": "string"], required: ["draft_id"], writes: true),
         .init(name: "list_ideas", summary: "Read saved ideas in a project.", fields: ["project_id": "string", "status": "string"]),
+        .init(name: "get_idea", summary: "Read a saved idea in full by ID.",
+              fields: ["idea_id": "string"], required: ["idea_id"]),
+        .init(name: "save_idea", summary: "Save a supplied title and text as one open post idea. No model, API key, or network call. Optional request_key makes identical creation retries idempotent.",
+              fields: ["project_id": "string", "title": "string", "text": "string", "request_key": "string"],
+              required: ["title", "text"], writes: true),
         .init(name: "edit_idea", summary: "Edit the text of an open idea.", fields: ["idea_id": "string", "text": "string"], required: ["idea_id", "text"], writes: true),
         .init(name: "skip_idea", summary: "Skip an open idea or undo a skip.", fields: ["idea_id": "string", "undo": "boolean"], required: ["idea_id"], writes: true),
         .init(name: "list_schedule", summary: "Read local draft schedules and publishing receipts."),
@@ -195,7 +200,7 @@ struct AgentMCP {
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": "inkspring", "title": "Inkspring",
                                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"],
-                "instructions": "Use save_draft to save text you have written locally without a model or API key. Use edit_draft for existing posts. Request generation only when the author wants it. Read before editing. Keep drafts unpublished until the author reviews them."
+                "instructions": "Use save_idea for an open post idea and save_draft for a post draft. Both save supplied copy locally without a model or API key. Read before editing. Request generation only when the author wants it. Keep drafts unpublished until the author reviews them."
             ])
         case "ping":
             return success(id, [:])
@@ -521,6 +526,48 @@ struct AgentMCP {
                 return list(workspace.trashedRecords.filter { $0.kind == "idea" && $0.projectID == projectID })
             }
             return list(try items(["idea"]).filter { status == "all" || $0["status"] == status })
+        case "get_idea":
+            let idea = try record("idea", "idea_id")
+            guard chatProjectID == nil || idea.projectID == chatProjectID else {
+                throw WorkspaceError("No idea has that ID in the open project.")
+            }
+            return view(idea, full: true)
+        case "save_idea":
+            let projectID = try project()
+            let title = argument("title")
+            let text = argument("text")
+            guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  title.utf16.count <= 140, text.utf16.count <= 2_000,
+                  !title.contains("\0"), !text.contains("\0") else {
+                throw WorkspaceError("Supply an idea title up to 140 characters and text up to 2,000 characters.")
+            }
+            let requestKey = argument("request_key")
+            guard requestKey.utf16.count <= 128, !requestKey.contains("\0"),
+                  arguments["request_key"] == nil || !requestKey.isEmpty else {
+                throw WorkspaceError("Use a nonempty request_key up to 128 characters, or omit it.")
+            }
+            var idea = WorkspaceRecord.new("idea", projectID: projectID)
+            idea["topic"] = title
+            idea["text"] = text
+            if !requestKey.isEmpty {
+                let payload = try JSONSerialization.data(withJSONObject: ["title": title, "text": text], options: .sortedKeys)
+                let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+                if let previous = (workspace.records + workspace.trashedRecords).first(where: {
+                    $0.kind == "idea" && $0.projectID == projectID && $0["mcpIdeaRequestKey"] == requestKey
+                }) {
+                    guard workspace.records.contains(where: { $0.id == previous.id }) else {
+                        throw WorkspaceError("The idea created with this request_key is in Trash. Restore it before editing.")
+                    }
+                    guard previous["mcpIdeaRequestDigest"] == digest else {
+                        throw WorkspaceError("This request_key was used for different copy. Use edit_idea for that idea or a new request_key for a new idea.")
+                    }
+                    return view(previous, full: true)
+                }
+                idea["mcpIdeaRequestKey"] = requestKey
+                idea["mcpIdeaRequestDigest"] = digest
+            }
+            return view(try workspace.save(idea), full: true)
         case "edit_idea":
             var idea = try record("idea", "idea_id")
             guard idea["status"] == "draft" else { throw WorkspaceError("Only open ideas can be edited.") }
