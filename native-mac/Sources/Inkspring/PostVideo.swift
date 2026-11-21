@@ -194,12 +194,20 @@ struct PostVideoUpload {
                 throw WorkspaceError("LinkedIn couldn’t confirm the uploaded video and its owner.")
             }
             switch status["status"] as? String {
-            case "AVAILABLE": return urn
+            case "AVAILABLE":
+                if thumbnail == nil { return urn }
+                // For an upload that requested a thumbnail, LinkedIn only reports it after processing.
+                if let address = status["thumbnail"] as? String, let image = URL(string: address),
+                   image.scheme == "https", image.host != nil { return urn }
+                try await Task.sleep(for: .seconds(3))
             case "PROCESSING_FAILED": throw WorkspaceError("LinkedIn rejected the video during processing.")
             case "PROCESSING", "WAITING_UPLOAD": try await Task.sleep(for: .seconds(3))
             default: throw WorkspaceError("LinkedIn returned an unknown video status.")
             }
         } while Date.now < deadline
+        if thumbnail != nil {
+            throw WorkspaceError("LinkedIn hasn’t confirmed the video and custom thumbnail. Review the draft again before posting.")
+        }
         throw WorkspaceError("LinkedIn is still processing the video. Review the post and try again.")
     }
 }

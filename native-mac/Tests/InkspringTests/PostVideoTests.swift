@@ -55,6 +55,7 @@ import Testing
     var articleRequests = 0
     var statusChecked = false
     var thumbnailUploaded = false
+    var thumbnailConfirmed = false
     let videoURN = "urn:li:video:fixture"
     let owner = "urn:li:person:test"
     let transport = SocialTransport { request in
@@ -110,8 +111,13 @@ import Testing
             let finalize = try #require(json?["finalizeUploadRequest"] as? [String: Any])
             #expect(finalize["uploadedPartIds"] as? [String] == ["part-1", "part-2"])
         case ("/rest/videos/urn:li:video:fixture", "GET", _):
+            let wasChecked = statusChecked
             statusChecked = true
             payload = ["id": videoURN, "owner": owner, "status": succeeds ? "AVAILABLE" : "PROCESSING_FAILED"]
+            if succeeds, wasChecked {
+                payload["thumbnail"] = "https://media.licdn.com/fixture/customthumbnail"
+                thumbnailConfirmed = true
+            }
         case ("/2/tweets", "POST", _):
             #expect(succeeds && statusChecked)
             if posts == 0 {
@@ -125,7 +131,7 @@ import Testing
             posts += 1
             payload = ["data": ["id": posts == 1 ? "456" : "457"]]
         case ("/rest/posts", "POST", _):
-            #expect(succeeds && statusChecked && thumbnailUploaded)
+            #expect(succeeds && statusChecked && thumbnailUploaded && thumbnailConfirmed)
             let content = json?["content"] as? [String: [String: String]]
             #expect(content?["media"]?["id"] == videoURN)
             #expect(content?["article"] == nil)
