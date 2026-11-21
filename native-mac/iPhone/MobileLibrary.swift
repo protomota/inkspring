@@ -1844,7 +1844,11 @@ private struct MobileIdeaDraftPicker: View {
             .disabled(queued)
             .listRowBackground(palette.card)
 
-            Section {
+        }
+        .scrollContentBackground(.hidden)
+        .background(palette.canvas)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 8) {
                 Button {
                     queueDrafts()
                 } label: {
@@ -1854,16 +1858,17 @@ private struct MobileIdeaDraftPicker: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(queued || chosen.isEmpty || !compatibleMac)
                 .accessibilityIdentifier("idea.draft.send")
-                if let message { Text(message).font(.callout) }
-            } footer: {
-                Text(compatibleMac
+                Text(message ?? (compatibleMac
                      ? "Claude Code on your Mac creates one draft per selection. Find them in Review."
-                     : "Update and open Inkspring on your Mac, then refresh here to send post ideas to Claude.")
+                     : "Update and open Inkspring on your Mac, then refresh here to send post ideas to Claude."))
+                    .font(.footnote)
+                    .foregroundStyle(palette.muted)
+                    .multilineTextAlignment(.center)
             }
-            .listRowBackground(palette.card)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(palette.canvas)
         }
-        .scrollContentBackground(.hidden)
-        .background(palette.canvas)
         .navigationTitle("Draft from post idea").navigationBarTitleDisplayMode(.inline)
     }
 

@@ -36,8 +36,11 @@ final class WalkthroughTests: XCTestCase {
         let send = app.buttons["idea.draft.send"].firstMatch
         for _ in 0..<5 where !send.isHittable { app.swipeUp() }
         XCTAssertTrue(send.isHittable && send.isEnabled, app.debugDescription)
-        send.tap()
+        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
         let queued = app.staticTexts["Queued for Claude on your Mac."].firstMatch
+        if !queued.waitForExistence(timeout: 2), send.exists, send.isEnabled {
+            send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        }
         for _ in 0..<3 where !queued.isHittable { app.swipeUp() }
         XCTAssertTrue(queued.waitForExistence(timeout: 5), app.debugDescription)
         capture("Request queued for Claude on Mac", app)
