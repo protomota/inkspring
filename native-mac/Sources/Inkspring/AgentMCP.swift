@@ -85,7 +85,7 @@ struct AgentMCP {
               fields: ["draft_id": "string", "prompt": "string"], required: ["draft_id"], writes: true, usesNetwork: true),
         .init(name: "refresh_ideas", summary: "Fill the open ideas queue using project evidence and the selected writing connection.",
               fields: ["project_id": "string", "research": "boolean"], writes: true, usesNetwork: true),
-        .init(name: "pick_idea", summary: "Turn one open idea into local drafts. For X, x_format may be post, followup, or thread.",
+        .init(name: "pick_idea", summary: "Turn one open idea into local drafts. For X, create one opening post. Add follow-ups in the saved draft. The legacy x_format field is ignored.",
               fields: ["idea_id": "string", "platforms": "strings", "x_format": "string"], required: ["idea_id", "platforms"], writes: true, usesNetwork: true),
         .init(name: "list_linkedin_destinations", summary: "List the saved LinkedIn profile and company-page destinations."),
         .init(name: "suggest_personal_profile", summary: "Propose changes to the author’s profile for human review.",
@@ -332,8 +332,7 @@ struct AgentMCP {
             }
             return try await ResearchDiscovery(studio: studio).discover(platform, projectID: project()).fields
         case "pick_idea":
-            let (idea, posts) = try await studio.pick(record("idea", "idea_id"), platforms: arguments["platforms"] as? [String] ?? [],
-                                                    xFormat: value("x_format").isEmpty ? "post" : value("x_format"))
+            let (idea, posts) = try await studio.pick(record("idea", "idea_id"), platforms: arguments["platforms"] as? [String] ?? [])
             return ["idea": view(idea, full: true), "versions": posts.map { view($0, full: true) }]
         default: throw WorkspaceError("Unknown tool: \(name)")
         }

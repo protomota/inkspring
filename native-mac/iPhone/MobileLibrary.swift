@@ -525,6 +525,21 @@ final class MobileLibrary {
                     fixture.acknowledge(fixture.pending.filter { $0.quickXAccountKey != nil }
                         .map { .init(id: $0.id, publicationURL: "https://x.com/i/web/status/789") })
                 }
+                if ProcessInfo.processInfo.arguments.contains("--idea-draft-result-fixture") {
+                    let requests = fixture.pending.filter { $0.ideaDraftPlatforms == ["x"] && $0.xFormat == "post" }
+                    for change in requests {
+                        guard let index = fixture.items.firstIndex(where: { $0.id == change.itemID }) else { continue }
+                        let id = change.id.uuidString.lowercased()
+                        fixture.items[index].draftedIdeaPlatforms = ["x"]
+                        fixture.items[index].draftedIdeaIDs = ["x": id]
+                        var draft = CompanionLibrary.Item(id: id, revision: "2026-11-21T12:00:00.000Z", kind: .draft,
+                            projectID: fixture.items[index].projectID, title: "Show the unfinished work",
+                            body: "Show one trade-off from your work in progress.", shortened: false, platform: "x", status: "ready", notes: [])
+                        draft.format = "post"
+                        fixture.items.append(draft)
+                    }
+                    fixture.acknowledge(requests.map { .init(id: $0.id) })
+                }
                 if ProcessInfo.processInfo.arguments.contains("--idea-first-fixture") {
                     let additions = fixture.pending.filter { $0.action == .addIdea && $0.createsScript != true }
                     for change in additions {
@@ -1917,10 +1932,9 @@ private struct MobileIdeaDraftPicker: View {
     let item: CompanionLibrary.Item
     let library: MobileLibrary
     let workspaceID: UUID
+    let onQueued: ([String]) -> Void
     @State private var chosen: Set<String> = []
-    @State private var format = XPostStyle.post
     @State private var message: String?
-    @State private var queued = false
 
     private var compatibleMac: Bool { library.snapshot?.supportsClaudeIdeaDrafts == true }
 
@@ -1951,14 +1965,7 @@ private struct MobileIdeaDraftPicker: View {
                         .accessibilityIdentifier("idea.draft.platform.\(platform)")
                     }
                 }
-                if chosen.contains("x") {
-                    Picker("X post type", selection: $format) {
-                        ForEach(XPostStyle.allCases) { Text($0.title).tag($0) }
-                    }
-                    .accessibilityIdentifier("idea.draft.xFormat")
-                }
             }
-            .disabled(queued)
             .listRowBackground(palette.card)
 
         }
@@ -1969,16 +1976,16 @@ private struct MobileIdeaDraftPicker: View {
                 Button {
                     queueDrafts()
                 } label: {
-                    Label("Send to Claude on Mac", systemImage: "paperplane")
+                    Label("Send to Claude", systemImage: "paperplane")
                 }
                 .buttonStyle(MobileIdeaDraftActionStyle())
-                .disabled(queued || chosen.isEmpty || !compatibleMac)
+                .disabled(chosen.isEmpty || !compatibleMac)
                 .accessibilityIdentifier("idea.draft.send")
                 Text(message ?? (compatibleMac
                      ? "Claude Code on your Mac creates one draft per selection. Find them in Review."
                      : "Update and open Inkspring on your Mac, then refresh here to send post ideas to Claude."))
                     .font(.footnote)
-                    .foregroundStyle(palette.muted)
+                    .foregroundStyle(message == nil ? palette.muted : palette.danger)
                     .multilineTextAlignment(.center)
             }
             .padding(.horizontal, 20)
@@ -1989,19 +1996,21 @@ private struct MobileIdeaDraftPicker: View {
     }
 
     private func queueDrafts() {
+        let platforms = CompanionLibrary.ideaDraftPlatforms.filter(chosen.contains)
+        guard !platforms.isEmpty else { return }
         var change = CompanionLibrary.Change(action: .note, itemID: item.id, revision: item.revision,
-                                             xFormat: chosen.contains("x") ? format.rawValue : nil)
-        change.ideaDraftPlatforms = CompanionLibrary.ideaDraftPlatforms.filter(chosen.contains)
+                                             xFormat: chosen.contains("x") ? XPostStyle.post.rawValue : nil)
+        change.ideaDraftPlatforms = platforms
         do {
             try library.saveChange(change, workspaceID: workspaceID)
-            queued = true
-            message = "Queued for Claude on your Mac."
+            chosen.removeAll()
+            onQueued(platforms)
         } catch { message = error.localizedDescription }
     }
 
     private func ideaDraftLabel(_ platform: String) -> String {
         switch platform {
-        case "x": "X post or thread"
+        case "x": "X post"
         case "linkedin": "LinkedIn post"
         case "reddit": "Reddit post"
         case "substack": "Substack article or newsletter"
@@ -2370,6 +2379,7 @@ struct MobileReviewDetail: View {
     let workspaceID: UUID
     @Environment(\.studioPalette) private var palette
     @Environment(\.mobileWideLayout) private var wideLayout
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var note = ""
     @State private var message: String?
     @State private var savedNoteID: UUID?
@@ -2378,6 +2388,8 @@ struct MobileReviewDetail: View {
     @State private var editingDraft = false
     @State private var choosingSchedule = false
     @State private var draftingIdea = false
+    @State private var queuedDraftPlatforms: [String] = []
+    @State private var viewingIdeaDraftID: String?
     @State private var mediaPlatform: IdeaMediaPlatform?
     @State private var needsMacUpdate = false
     @State private var confirmDeletion = false
@@ -2401,6 +2413,15 @@ struct MobileReviewDetail: View {
     private var hasPendingIdeaDraft: Bool {
         (ideaDraftRequest.map { $0.error == nil } ?? false)
             || library.snapshot?.pending.contains { $0.itemID == item.id && $0.ideaDraftPlatforms != nil } == true
+    }
+
+    private var linkedIdeaDrafts: [CompanionLibrary.Item] {
+        guard item.kind == .idea, let links = item.draftedIdeaIDs else { return [] }
+        let drafts = library.visibleItems + (library.snapshot?.newsletters ?? []) + library.visibleScripts
+        return CompanionLibrary.ideaDraftPlatforms.compactMap { platform in
+            drafts.first { $0.id == links[platform] && $0.isTrashed != true && !["published", "posted", "posting"].contains($0.status)
+                && ($0.publicationURL ?? "").isEmpty }
+        }
     }
 
     private var inTrash: Bool { item.isTrashed == true }
@@ -2444,10 +2465,62 @@ struct MobileReviewDetail: View {
 
     private var document: some View {
         Group {
-            if editingDraft {
+            if let draft = linkedIdeaDrafts.first(where: { $0.id == viewingIdeaDraftID }) {
+                if draft.isLongForm {
+                    MobileNewsletterDetail(item: draft, metadata: reviewPlatformName(draft.reviewPlatform),
+                                           library: library, workspaceID: workspaceID)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button("Back to idea", systemImage: "chevron.left") { viewingIdeaDraftID = nil }
+                            }
+                        }
+                } else {
+                    MobileItemEditor(item: draft, library: library, workspaceID: workspaceID,
+                                     close: { viewingIdeaDraftID = nil })
+                        .id(draft.id)
+                }
+            } else if editingDraft {
                 MobileItemEditor(item: item, library: library, workspaceID: workspaceID, bodyFirst: editBodyFirst, close: { editingDraft = false })
-            } else { preview }
+            } else {
+                ScrollViewReader { scroll in
+                    preview.safeAreaInset(edge: .top, spacing: 0) {
+                        if !queuedDraftPlatforms.isEmpty && !draftingIdea {
+                            ideaDraftConfirmation {
+                                if let draft = linkedIdeaDrafts.first(where: { queuedDraftPlatforms.contains($0.reviewPlatform) }) {
+                                    viewingIdeaDraftID = draft.id
+                                } else {
+                                    withAnimation { scroll.scrollTo("idea.draft.source", anchor: .top) }
+                                }
+                                queuedDraftPlatforms = []
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    private func ideaDraftConfirmation(view: @escaping () -> Void) -> some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
+            Label("Sent to Claude", systemImage: "checkmark.circle.fill")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 12) {
+                Button("View Post", action: view).fixedSize()
+                    .accessibilityIdentifier("idea.draft.viewPost")
+                Button("Dismiss", systemImage: "xmark") { queuedDraftPlatforms = [] }
+                    .labelStyle(.iconOnly)
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .studioSurface()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(palette.canvas)
     }
 
     private var preview: some View {
@@ -2486,6 +2559,20 @@ struct MobileReviewDetail: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("Edit title")
                     .accessibilityIdentifier(item.kind == .idea ? "idea.detail.title" : "draft.detail.title")
+                    .id("idea.draft.source")
+                }
+                if !inTrash && item.kind == .idea {
+                    if let error = ideaDraftRequest?.error {
+                        Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
+                    } else if hasPendingIdeaDraft {
+                        Label("Queued for Claude on your Mac.", systemImage: "clock").font(.footnote)
+                    }
+                    ForEach(linkedIdeaDrafts) { draft in
+                        Button("View \(reviewPlatformName(draft.reviewPlatform)) draft", systemImage: "arrow.up.right") {
+                            viewingIdeaDraftID = draft.id
+                        }
+                        .accessibilityIdentifier("idea.draft.link.\(draft.reviewPlatform)")
+                    }
                 }
                 if !item.platform.isEmpty {
                     StudioPlatformLabel(name: item.reviewPlatform, title: reviewPlatformName(item.reviewPlatform))
@@ -2647,18 +2734,16 @@ struct MobileReviewDetail: View {
                 }
                 Section {
                     if item.status == "draft" {
-                        Button { draftingIdea = true } label: {
+                        Button {
+                            queuedDraftPlatforms = []
+                            draftingIdea = true
+                        } label: {
                             Label("Draft from post idea", systemImage: "square.and.pencil")
                         }
                         .buttonStyle(MobileIdeaDraftActionStyle())
                         .disabled(hasPendingChange || hasPendingIdeaDraft || item.revision == "pending-add"
                                   || CompanionLibrary.ideaDraftPlatforms.allSatisfy { item.draftedIdeaPlatforms?.contains($0) == true })
                         .accessibilityIdentifier("idea.draft.open")
-                        if let error = ideaDraftRequest?.error {
-                            Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
-                        } else if hasPendingIdeaDraft {
-                            Label("Queued for Claude on your Mac.", systemImage: "clock").font(.footnote)
-                        }
                     }
                     Button(item.status == "draft" ? "Skip idea" : "Restore idea") {
                         save(.init(action: item.status == "draft" ? .skipIdea : .restoreIdea,
@@ -2682,10 +2767,15 @@ struct MobileReviewDetail: View {
                 moreActions
             }
         }
-        .sheet(isPresented: $draftingIdea) {
+        .sheet(isPresented: $draftingIdea, onDismiss: {
+            if !queuedDraftPlatforms.isEmpty { AccessibilityNotification.Announcement("Sent to Claude").post() }
+        }) {
             NavigationStack {
-                MobileIdeaDraftPicker(item: item, library: library, workspaceID: workspaceID)
-                    .toolbar { Button("Done") { draftingIdea = false } }
+                MobileIdeaDraftPicker(item: item, library: library, workspaceID: workspaceID) { platforms in
+                    queuedDraftPlatforms = platforms
+                    draftingIdea = false
+                }
+                .toolbar { Button("Done") { draftingIdea = false } }
             }
         }
         .sheet(item: $mediaPlatform) { platform in

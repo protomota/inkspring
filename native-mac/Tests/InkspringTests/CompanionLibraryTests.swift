@@ -12,7 +12,7 @@ import Testing
     idea["topic"] = "Signal and noise"
     idea["text"] = "Write about deliberate publishing."
     idea = try mac.save(idea)
-    var request = CompanionLibrary.Change(action: .note, itemID: idea.id, revision: idea["updatedAt"], xFormat: "post")
+    var request = CompanionLibrary.Change(action: .note, itemID: idea.id, revision: idea["updatedAt"], xFormat: "thread")
     request.ideaDraftPlatforms = ["x", "linkedin", "reddit", "x-article", "linkedin-article", "substack", "youtube"]
     #expect(request.valid)
     let workspaceID = UUID()
@@ -39,11 +39,14 @@ import Testing
     #expect(generated.count == 7)
     #expect(generated.allSatisfy { $0["model"] == "Claude" && !$0.isPublishedContent })
     #expect(generated.filter { $0.kind == "draft" }.map { $0["platform"] }.sorted() == ["linkedin", "reddit", "x"])
+    #expect(generated.first { $0["platform"] == "x" && $0.kind == "draft" }?["format"] == "post")
     #expect(generated.contains { $0.isLinkedInWritingArticle })
     #expect(generated.contains { $0.kind == "newsletter" && $0.fields["sendEmail"] as? Bool == false })
     let updated = try #require(mac.records.first { $0.id == idea.id })
     let writing = try #require(updated.fields["mobileWritingVersions"] as? [String: String])
     #expect(Set(updated.draftVersions.keys).union(writing.keys) == Set(request.ideaDraftPlatforms ?? []))
+    let syncedIdea = try #require(mac.makeCompanionLibrary(workspaceID: workspaceID).items.first { $0.id == idea.id })
+    #expect(syncedIdea.draftedIdeaIDs == updated.draftVersions.merging(writing) { current, _ in current })
     #expect(generated.contains { $0.kind == "newsletter" && $0.body == "## Signal\n\nBring value." })
 }
 

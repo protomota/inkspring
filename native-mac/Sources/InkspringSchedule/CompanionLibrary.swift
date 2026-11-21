@@ -203,6 +203,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
 
     public struct Item: Codable, Equatable, Identifiable, Sendable {
         public var draftedIdeaPlatforms: [String]?
+        public var draftedIdeaIDs: [String: String]?
         public var publicationStatus: String?
         public var publicationURL: String?
         public var publicationError: String?

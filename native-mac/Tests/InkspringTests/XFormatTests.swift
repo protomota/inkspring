@@ -103,7 +103,7 @@ import Testing
     #expect(workspace.drafts.first { $0.id == draft.id }?.body == draft.body)
 }
 
-@Test @MainActor func xIdeaGenerationKeepsTheIdeaAndSelectedFormat() async throws {
+@Test @MainActor func xIdeaGenerationKeepsTheIdeaAndCreatesOneOpeningPost() async throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     let workspace = Workspace(directory: folder)
@@ -115,14 +115,14 @@ import Testing
     let output = "We build tools we use.\n\nRead the manifesto: https://example.com/manifesto"
     let model = ContentStudio.Model(provider: "fixture", name: "fixture", draft: { _, _ in [:] },
         object: { instructions, _ in
-            #expect(instructions.contains("exactly two"))
+            #expect(instructions.contains("Write one opening post only"))
             #expect(instructions.contains("supplied URLs"))
             return ["text": output]
         }, prompt: { _ in "" }, image: { _ in (Data(), "") }, imageProvider: "fixture")
-    let (kept, posts) = try await ContentStudio(workspace: workspace, model: model).pick(idea, platforms: ["x"], xFormat: "followup")
+    let (kept, posts) = try await ContentStudio(workspace: workspace, model: model).pick(idea, platforms: ["x"])
     #expect(kept.body == originalText)
     #expect(kept["status"] == "draft")
-    #expect(posts.first?["format"] == "followup")
+    #expect(posts.first?["format"] == "post")
     #expect(posts.first?.body == output)
     #expect(kept.draftVersions["x"] == posts.first?.id)
 }

@@ -167,7 +167,9 @@ extension Workspace {
                     }
                 } else {
                     let writing = record.fields["mobileWritingVersions"] as? [String: String] ?? [:]
-                    item.draftedIdeaPlatforms = Set(record.draftVersions.keys).union(writing.keys).sorted()
+                    let links = record.draftVersions.merging(writing) { draftID, _ in draftID }
+                    item.draftedIdeaPlatforms = links.keys.sorted()
+                    item.draftedIdeaIDs = links.isEmpty ? nil : links
                 }
                 item.writingReply = record["notesReply"].isEmpty ? nil : record["notesReply"]
                 item.writingError = record["writingRequestError"].isEmpty ? nil : record["writingRequestError"]
@@ -601,7 +603,7 @@ extension Workspace {
             }
             let claude = model ?? StudioChatAgent.claude.writingModel(workspace: self, providers: WritingProviders(settings: settings))
             _ = try await ContentStudio(workspace: self, model: claude)
-                .pick(idea, platforms: platforms, xFormat: change.xFormat ?? "post", mobileRequestID: requestID)
+                .pick(idea, platforms: platforms, mobileRequestID: requestID)
             return .init(id: change.id)
         } catch {
             return .init(id: change.id, error: error.localizedDescription)

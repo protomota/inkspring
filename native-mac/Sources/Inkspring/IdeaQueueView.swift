@@ -335,7 +335,6 @@ struct IdeaActionPage: View {
 
     @Environment(\.studioPalette) private var palette
     @State private var chosen: Set<String> = []
-    @State private var xFormat = "post"
     @State private var notes = ""
     @State private var progress: String?
     @State private var failure: Error?
@@ -425,13 +424,6 @@ struct IdeaActionPage: View {
                 }
             }
             .padding(.vertical, 4)
-            if chosen.contains("x"), linked["x"] == nil {
-                Picker("X post type", selection: $xFormat) {
-                    ForEach(XPostStyle.allCases) { Text($0.title).tag($0.rawValue) }
-                }
-                .disabled(busy)
-                .accessibilityIdentifier("idea.xPostType")
-            }
             if XQuoteComposer.source(in: idea) != nil, linked["x"] == nil {
                 Button { write(["x"], manualQuote: true) } label: {
                     StudioPlatformLabel(name: "x", title: "Create X quote draft")
@@ -511,7 +503,7 @@ struct IdeaActionPage: View {
         Task {
             await run(platforms.count == 1 ? "Writing your draft…" : "Writing your drafts…") {
                 let (_, drafts) = try await ContentStudio(workspace: workspace)
-                    .pick(idea, platforms: platforms, manualQuote: manualQuote, xFormat: xFormat)
+                    .pick(idea, platforms: platforms, manualQuote: manualQuote)
                 completed(drafts)
                 close()
             }

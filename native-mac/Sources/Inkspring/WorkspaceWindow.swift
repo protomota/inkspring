@@ -51,6 +51,7 @@ struct WorkspaceWindow: View {
     @State private var page: WorkspacePage = .workspace
     @State private var editor: EditorRoute?
     @State private var postBeingEdited: WorkspaceRecord?
+    @State private var ideaDraftNotice: (message: String, draftID: String)?
     @State private var newsletterIdea: WorkspaceRecord?
     @State private var newsletterDraft: WorkspaceRecord?
     @State private var openingXPostID: String?
@@ -215,6 +216,24 @@ struct WorkspaceWindow: View {
                     }
                     .accessibilityIdentifier("post-result.view")
                     Button("Dismiss", systemImage: "xmark") { workspace.postResultNotice = nil }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(StudioIconButtonStyle())
+                }
+                .padding(12)
+                .modifier(StatusGlass())
+                .padding(18)
+            } else if let result = ideaDraftNotice {
+                HStack(spacing: 12) {
+                    Label(result.message, systemImage: "checkmark.circle.fill")
+                        .accessibilityAddTraits(.updatesFrequently)
+                    Button("View Post") {
+                        ideaDraftNotice = nil
+                        if let draft = workspace.records.first(where: { $0.id == result.draftID }) {
+                            navigate { open(draft) }
+                        }
+                    }
+                    .accessibilityIdentifier("idea.draft.viewPost")
+                    Button("Dismiss", systemImage: "xmark") { ideaDraftNotice = nil }
                         .labelStyle(.iconOnly)
                         .buttonStyle(StudioIconButtonStyle())
                 }
@@ -559,8 +578,10 @@ struct WorkspaceWindow: View {
             }
         case .ideaAction(let idea, let action):
             IdeaActionPage(idea: idea, action: action, workspace: workspace, close: closeEditor) { drafts in
-                let noun = drafts.count == 1 ? "draft" : "drafts"
-                workspace.notice = "Created \(drafts.count) \(noun)"
+                if let draft = drafts.first(where: { $0.kind == "draft" && $0["platform"] == "x" }) ?? drafts.first {
+                    let noun = drafts.count == 1 ? "draft" : "drafts"
+                    ideaDraftNotice = ("Created \(drafts.count) \(noun)", draft.id)
+                }
             }
             .id(idea.id)
         case .scheduledRevision(let draft, let saved):

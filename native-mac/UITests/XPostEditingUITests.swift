@@ -1,7 +1,7 @@
 import XCTest
 
 final class WalkthroughTests: XCTestCase {
-    func testIdeaDraftButtonSelectsTextFormatsAndQueuesForClaude() {
+    func testIdeaDraftButtonSelectsPlatformsAndClosesAfterSendingToClaude() {
         continueAfterFailure = false
         let app = openIdea(theme: "warm-paper")
         let draft = app.buttons["idea.draft.open"].firstMatch
@@ -13,6 +13,8 @@ final class WalkthroughTests: XCTestCase {
         let x = app.buttons["idea.draft.platform.x"].firstMatch
         XCTAssertTrue(x.waitForExistence(timeout: 5), app.debugDescription)
         x.tap()
+        XCTAssertEqual(x.label, "X post")
+        XCTAssertFalse(app.descendants(matching: .any)["idea.draft.xFormat"].exists)
         for platform in ["linkedin-article", "substack"] {
             let option = app.buttons["idea.draft.platform.\(platform)"].firstMatch
             for _ in 0..<4 where !option.isHittable { app.swipeUp() }
@@ -21,18 +23,47 @@ final class WalkthroughTests: XCTestCase {
         }
         XCTAssertFalse(app.buttons["idea.draft.platform.instagram"].exists)
         XCTAssertFalse(app.buttons["idea.draft.platform.tiktok"].exists)
-        capture("Text formats selected for Claude", app)
+        capture("Platforms selected for Claude", app)
         let send = app.buttons["idea.draft.send"].firstMatch
         for _ in 0..<5 where !send.isHittable { app.swipeUp() }
         XCTAssertTrue(send.isHittable && send.isEnabled, app.debugDescription)
-        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        send.tap()
+        let viewPost = app.buttons["idea.draft.viewPost"].firstMatch
+        XCTAssertTrue(viewPost.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Sent to Claude"].exists)
+        XCTAssertFalse(send.exists)
+        capture("Sent to Claude with View Post", app)
+        viewPost.tap()
         let queued = app.staticTexts["Queued for Claude on your Mac."].firstMatch
-        if !queued.waitForExistence(timeout: 2), send.exists, send.isEnabled {
-            send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
-        }
-        for _ in 0..<3 where !queued.isHittable { app.swipeUp() }
-        XCTAssertTrue(queued.waitForExistence(timeout: 5), app.debugDescription)
-        capture("Request queued for Claude on Mac", app)
+        XCTAssertTrue(queued.waitForExistence(timeout: 5) && queued.isHittable, app.debugDescription)
+        XCTAssertTrue(app.buttons["idea.detail.title"].firstMatch.isHittable)
+        capture("View Post returns to the queued idea", app)
+    }
+
+    func testViewPostOpensTheSyncedDraftForManualFollowUps() {
+        continueAfterFailure = false
+        let app = openIdea(theme: "graphite", extraArguments: ["--idea-draft-result-fixture"])
+        let draft = app.buttons["idea.draft.open"].firstMatch
+        for _ in 0..<4 where !draft.isHittable { app.swipeUp() }
+        draft.tap()
+        app.buttons["idea.draft.platform.x"].firstMatch.tap()
+        let send = app.buttons["idea.draft.send"].firstMatch
+        XCTAssertTrue(send.isHittable && send.isEnabled)
+        send.tap()
+        let viewPost = app.buttons["idea.draft.viewPost"].firstMatch
+        XCTAssertTrue(viewPost.waitForExistence(timeout: 5))
+        for _ in 0..<4 where !app.buttons["idea.draft.link.x"].firstMatch.isHittable { app.swipeDown() }
+        XCTAssertTrue(app.buttons["idea.draft.link.x"].firstMatch.waitForExistence(timeout: 5))
+        viewPost.tap()
+        let openingPost = app.buttons["x.editPost.0"].firstMatch
+        XCTAssertTrue(openingPost.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(openingPost.label.contains("Show one trade-off"))
+        XCTAssertFalse(app.buttons["x.editPost.1"].exists)
+        capture("View Post opens the generated X draft", app)
+        app.buttons["x.addReply"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["x.editPost.1"].firstMatch.exists)
+        XCTAssertFalse(app.buttons["x.editPost.2"].exists)
+        capture("First follow-up added manually in the draft", app)
     }
 
     func testIdeaDraftActionsInAllThemes() {

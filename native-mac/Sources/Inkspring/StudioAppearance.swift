@@ -86,14 +86,13 @@ struct StudioXPostEditor: View {
                     Button("Remove reply", role: .destructive) { remove(index) }
                 }
             }
-            if format != "post" {
-                Button("Add follow-up reply", systemImage: "plus") {
-                    format = "thread"
-                    text = (posts + [""]).joined(separator: XThreadText.separator)
-                }
-                .disabled(posts.count >= XThreadText.limit || posts.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true)
-                .accessibilityIdentifier("x.addReply")
+            Button("Add follow-up reply", systemImage: "plus") {
+                let parts = posts + [""]
+                text = parts.joined(separator: XThreadText.separator)
+                format = parts.count == 2 ? "followup" : "thread"
             }
+            .disabled(posts.count >= XThreadText.limit || posts.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true)
+            .accessibilityIdentifier("x.addReply")
     }
 
     private func counter(_ post: String) -> some View {
