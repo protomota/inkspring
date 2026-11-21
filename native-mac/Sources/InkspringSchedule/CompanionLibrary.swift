@@ -76,10 +76,15 @@ public enum XThreadText {
     // Reply boundaries must not share the same representation as paragraphs.
     public static let separator = "\n\n<!-- inkspring:x-reply -->\n\n"
     public static let limit = 25
+    private static let marker = "<!-- inkspring:x-reply -->"
+    private static let markerBoundary = #"(?m)(?:\r?\n){0,2}^[ \t]*<!-- inkspring:x-reply -->[ \t]*(?=\r?$)(?:\r?\n){0,2}"#
     private static let boundary = #"\r?\n\s*\r?\n"#
 
     public static func parts(in text: String) -> [String] {
-        if text.contains(separator) { return text.components(separatedBy: separator) }
+        if text.contains(marker) {
+            let separated = text.replacingOccurrences(of: markerBoundary, with: "\u{0}", options: .regularExpression)
+            if separated != text { return separated.components(separatedBy: "\u{0}") }
+        }
         // Read existing drafts without rewriting or losing empty editor fields.
         return text.replacingOccurrences(of: boundary, with: "\u{0}", options: .regularExpression)
             .components(separatedBy: "\u{0}")

@@ -195,6 +195,38 @@ import Testing
     }
 }
 
+@Test @MainActor func xPairWithSelectedVideoCoverStopsBeforeCreatingArticle() async throws {
+    let (workspace, article, folder) = try articleWorkspace()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let path = folder.appending(path: "fixture.mp4")
+    let bytes = Data([0, 1, 2, 3])
+    try bytes.write(to: path)
+    var video = WorkspaceRecord.new("local-video")
+    video["name"] = path.lastPathComponent
+    video["path"] = path.path
+    video["type"] = "video/mp4"
+    video["hash"] = try fileDigest(path).hash
+    video.fields["size"] = bytes.count
+    video.fields["duration"] = 21.0
+    video = try workspace.save(video)
+    var draft = WorkspaceRecord.new("draft", projectID: article.projectID)
+    draft["platform"] = "x"
+    draft["format"] = "video"
+    draft["content"] = "Watch the video."
+    draft["xArticleID"] = article.id
+    draft.setDraftMedia(["id": video.id], as: .video)
+    draft.fields["videoThumbnail"] = ["file": "cover.png"]
+    draft = try workspace.save(draft)
+    var requests = 0
+    let publisher = SocialPublisher(workspace: workspace, transport: .init { _ in
+        requests += 1
+        throw WorkspaceError("Unexpected network request.")
+    }, authorize: { _ in articleAccount() })
+    await #expect(throws: WorkspaceError.self) { _ = try await publisher.reviewXArticlePost(draft) }
+    #expect(requests == 0)
+    #expect(workspace.records.first { $0.id == article.id }?["state"] == "draft")
+}
+
 @Test(arguments: [true, false], [true, false])
 @MainActor func xPostPublishesWithItsArticleAndRetriesWithoutRepublishingArticle(opening: Bool, failsFirstPost: Bool) async throws {
     let (workspace, article, folder) = try articleWorkspace()

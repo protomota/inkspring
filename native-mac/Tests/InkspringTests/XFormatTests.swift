@@ -34,6 +34,10 @@ import Testing
     #expect(XThreadText.singlePost(posts[1]) == posts[1])
     #expect(XThreadText.parts(in: encoded + XThreadText.separator).last == "")
     #expect(XThreadText.posts(in: "Legacy opening.\n\nLegacy reply.") == ["Legacy opening.", "Legacy reply."])
+    let adjacentMarkers = "<!-- inkspring:x-reply -->\n\n<!-- inkspring:x-reply -->"
+    let malformed = [posts[0], adjacentMarkers, posts[1], "", posts[2]].joined(separator: XThreadText.separator)
+    #expect(XThreadText.parts(in: malformed) == [posts[0], "", "", "", posts[1], "", posts[2]])
+    #expect(XThreadText.posts(in: malformed) == posts.map(XThreadText.singlePost))
 }
 
 @Test @MainActor func xParagraphsSurviveMobileSaveReloadAndPublishPlanning() throws {

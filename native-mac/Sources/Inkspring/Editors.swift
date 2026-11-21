@@ -1428,6 +1428,7 @@ struct DraftStudio: View {
                     let cover = switch initial["platform"] {
                     case "instagram": "Reel cover"
                     case "linkedin": "video thumbnail"
+                    case "x": "Media Studio cover"
                     default: "preview thumbnail"
                     }
                     Button("\(thumbnail == nil ? "Choose" : "Replace") \(cover)…", systemImage: "photo") {
