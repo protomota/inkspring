@@ -1425,10 +1425,12 @@ struct DraftStudio: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             StudioMoreMenu(title: "\(kind.title) actions") {
                 if kind == .video {
-                    let publishedCover = initial["platform"] == "instagram"
-                    Button(publishedCover
-                           ? (thumbnail == nil ? "Choose Reel cover…" : "Replace Reel cover…")
-                           : (thumbnail == nil ? "Choose preview thumbnail…" : "Replace preview thumbnail…"), systemImage: "photo") {
+                    let cover = switch initial["platform"] {
+                    case "instagram": "Reel cover"
+                    case "linkedin": "video thumbnail"
+                    default: "preview thumbnail"
+                    }
+                    Button("\(thumbnail == nil ? "Choose" : "Replace") \(cover)…", systemImage: "photo") {
                         guard let url = workspace.chooseMedia([.png, .jpeg, .webP]) else { return }
                         workspace.perform {
                             initial.fields["videoThumbnail"] = try workspace.attachImage(url)
@@ -1440,6 +1442,9 @@ struct DraftStudio: View {
                             initial.fields["videoThumbnail"] = nil
                             markDirty()
                         }
+                    }
+                    if initial["platform"] == "x" {
+                        StudioExternalLink("Set an X thumbnail in Media Studio", destination: URL(string: "https://studio.x.com/")!)
                     }
                     Divider()
                 } else if let available {

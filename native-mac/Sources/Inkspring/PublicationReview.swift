@@ -84,6 +84,10 @@ struct PublicationReview: View {
                                     Label("Reel cover", systemImage: "photo")
                                     AttachedMedia(url: cover)
                                 }
+                                if let thumbnail = plan.linkedInThumbnail {
+                                    Label("LinkedIn video thumbnail", systemImage: "photo")
+                                    AttachedMedia(url: thumbnail.url)
+                                }
                                 if let time = plan.tiktok?.coverTimestampMS {
                                     Label("Cover frame at \(Double(time) / 1000, specifier: "%.3f") seconds", systemImage: "photo")
                                 }

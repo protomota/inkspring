@@ -1,5 +1,7 @@
 import CryptoKit
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 extension WorkspaceRecord {
     var needsNativePostVideo: Bool {
@@ -42,6 +44,38 @@ struct PostVideo: Equatable {
             }
         }
         return Self(url: url, name: file["name"], size: Int64(size), hash: file["hash"])
+    }
+}
+
+struct LinkedInVideoThumbnail {
+    let url: URL
+    let hash: String
+    let jpeg: Data
+
+    init(url: URL) throws {
+        let attributes = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard attributes?.isRegularFile == true, attributes?.isSymbolicLink != true,
+              (1...30_000_000).contains(attributes?.fileSize ?? 0),
+              let original = try? Data(contentsOf: url), (1...30_000_000).contains(original.count),
+              let source = CGImageSourceCreateWithData(original as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 1920
+              ] as CFDictionary) else {
+            throw WorkspaceError("The LinkedIn video thumbnail couldn’t be read. Attach it again before publishing.")
+        }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else {
+            throw WorkspaceError("Couldn’t prepare the LinkedIn video thumbnail.")
+        }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw WorkspaceError("Couldn’t prepare the LinkedIn video thumbnail.")
+        }
+        self.url = url
+        hash = SHA256.hash(data: original).map { String(format: "%02x", $0) }.joined()
+        jpeg = output as Data
     }
 }
 
@@ -91,18 +125,30 @@ struct PostVideoUpload {
         throw WorkspaceError("X is still processing the video. Review the post and try again.")
     }
 
-    func toLinkedIn(_ video: PostVideo, owner: String, token: String) async throws -> String {
+    func toLinkedIn(_ video: PostVideo, thumbnail: LinkedInVideoThumbnail?, owner: String, token: String) async throws -> String {
         let base = URL(string: "https://api.linkedin.com/rest/videos")!
         let headers = LinkedInPages.headers
         let initialize = base.appending(queryItems: [URLQueryItem(name: "action", value: "initializeUpload")])
         let (document, _) = try await transport.request(initialize, token: token, method: "POST",
             json: ["initializeUploadRequest": ["owner": owner, "fileSizeBytes": video.size,
-                                               "uploadCaptions": false, "uploadThumbnail": false]], headers: headers)
+                                               "uploadCaptions": false, "uploadThumbnail": thumbnail != nil]], headers: headers)
         guard let value = document["value"] as? [String: Any], let urn = value["video"] as? String,
               urn.range(of: #"\Aurn:li:video:[A-Za-z0-9_-]{1,200}\z"#, options: .regularExpression) != nil,
               let uploadToken = value["uploadToken"] as? String,
               let instructions = value["uploadInstructions"] as? [[String: Any]], !instructions.isEmpty else {
             throw WorkspaceError("LinkedIn didn’t confirm the video upload instructions.")
+        }
+        let thumbnailURL: URL?
+        if thumbnail != nil {
+            guard let address = value["thumbnailUploadUrl"] as? String, let url = URL(string: address),
+                  url.scheme == "https", url.user == nil, url.password == nil, url.port == nil,
+                  ["www.linkedin.com", "www.linkedin-ei.com"].contains(url.host ?? ""),
+                  url.path.hasPrefix("/dms-uploads/") || url.path.hasPrefix("/dms-mpf-uploads/") else {
+                throw WorkspaceError("LinkedIn didn’t return an upload URL for the selected thumbnail.")
+            }
+            thumbnailURL = url
+        } else {
+            thumbnailURL = nil
         }
         let reader = try VideoReader(video)
         var offset: Int64 = 0
@@ -127,6 +173,15 @@ struct PostVideoUpload {
             offset = end + 1
         }
         try reader.verify()
+        if let thumbnail, let thumbnailURL {
+            do {
+                _ = try await transport.request(thumbnailURL, method: "PUT", body: thumbnail.jpeg,
+                    headers: ["Content-Type": "application/octet-stream", "media-type-family": "STILLIMAGE"],
+                    expectsJSON: false, timeout: 120)
+            } catch {
+                throw WorkspaceError("Couldn’t upload the LinkedIn video thumbnail. \(error.localizedDescription)")
+            }
+        }
         let finalize = base.appending(queryItems: [URLQueryItem(name: "action", value: "finalizeUpload")])
         _ = try await transport.request(finalize, token: token, method: "POST",
             json: ["finalizeUploadRequest": ["video": urn, "uploadToken": uploadToken, "uploadedPartIds": parts]], headers: headers)

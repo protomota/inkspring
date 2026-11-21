@@ -39,6 +39,12 @@ import Testing
         draft["content"] += "\n\nhttps://newsletter.example.com/p/fixture"
     }
     draft.setDraftMedia(["id": media.id], as: .video)
+    if platform == .linkedin {
+        let image = root.appending(path: "thumbnail.png")
+        let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII="))
+        try png.write(to: image)
+        draft.fields["videoThumbnail"] = try workspace.attachImage(image)
+    }
     draft = try workspace.save(draft)
     let slot = PostScheduling.fiveMinutesFromNow()
     draft = try workspace.scheduleDraft(draft, at: slot, linkedInAccount: account, customTime: true)
@@ -48,6 +54,7 @@ import Testing
     var posts = 0
     var articleRequests = 0
     var statusChecked = false
+    var thumbnailUploaded = false
     let videoURN = "urn:li:video:fixture"
     let owner = "urn:li:person:test"
     let transport = SocialTransport { request in
@@ -83,15 +90,22 @@ import Testing
             let initRequest = try #require(json?["initializeUploadRequest"] as? [String: Any])
             #expect(initRequest["owner"] as? String == owner)
             #expect(initRequest["fileSizeBytes"] as? Int == bytes.count)
+            #expect(initRequest["uploadThumbnail"] as? Bool == true)
             payload = ["value": ["video": videoURN, "uploadToken": "", "uploadInstructions": [
                 ["firstByte": 0, "lastByte": 7, "uploadUrl": "https://www.linkedin.com/dms-uploads/one"],
                 ["firstByte": 8, "lastByte": 31, "uploadUrl": "https://www.linkedin.com/dms-uploads/two"]
-            ]]]
+            ], "thumbnailUploadUrl": "https://www.linkedin.com/dms-uploads/fixture-thumbnail"]]
+        case ("/dms-uploads/fixture-thumbnail", "PUT", _):
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            #expect(request.value(forHTTPHeaderField: "media-type-family") == "STILLIMAGE")
+            #expect(request.httpBody?.starts(with: [0xFF, 0xD8]) == true)
+            thumbnailUploaded = true
         case ("/dms-uploads/one", "PUT", _), ("/dms-uploads/two", "PUT", _):
             #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
             chunks.append(try #require(request.httpBody))
             headers["ETag"] = "\"part-\(chunks.count)\""
         case ("/rest/videos", "POST", "action=finalizeUpload"):
+            #expect(thumbnailUploaded)
             #expect(chunks.reduce(into: Data()) { $0.append($1) } == bytes)
             let finalize = try #require(json?["finalizeUploadRequest"] as? [String: Any])
             #expect(finalize["uploadedPartIds"] as? [String] == ["part-1", "part-2"])
@@ -111,7 +125,7 @@ import Testing
             posts += 1
             payload = ["data": ["id": posts == 1 ? "456" : "457"]]
         case ("/rest/posts", "POST", _):
-            #expect(succeeds && statusChecked)
+            #expect(succeeds && statusChecked && thumbnailUploaded)
             let content = json?["content"] as? [String: [String: String]]
             #expect(content?["media"]?["id"] == videoURN)
             #expect(content?["article"] == nil)

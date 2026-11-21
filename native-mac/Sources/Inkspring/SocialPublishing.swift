@@ -12,6 +12,7 @@ struct SocialPublishOptions {
     var video: TikTokVideo?
     var nativeVideo: PostVideo?
     var instagramCover: URL?
+    var linkedInThumbnailURL: URL?
     var linkedInDestination: LinkedInDestination?
     var useR2 = false
     var r2: R2Configuration?
@@ -97,6 +98,7 @@ struct SocialPublishPlan {
     let nativeVideo: PostVideo?
     let instagramCover: URL?
     let instagramCoverHash: String?
+    let linkedInThumbnail: LinkedInVideoThumbnail?
     let r2: R2Configuration?
 
     var fingerprint: String {
@@ -105,6 +107,7 @@ struct SocialPublishPlan {
         parts += posts + (tiktok?.fingerprintFields ?? []) + (r2?.identity ?? [])
         if let nativeVideo { parts.append(nativeVideo.hash) }
         if let instagramCoverHash { parts.append(instagramCoverHash) }
+        if let linkedInThumbnail { parts.append(linkedInThumbnail.hash) }
         let data = (try? JSONEncoder().encode(parts)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -147,6 +150,14 @@ struct SocialPublishPlan {
         } else {
             instagramCover = nil
             instagramCoverHash = nil
+        }
+        if platform == .linkedin, nativeVideo != nil, draft.fields["videoThumbnail"] != nil {
+            guard let url = options.linkedInThumbnailURL else {
+                throw WorkspaceError("The LinkedIn video thumbnail is unavailable. Attach it again before publishing.")
+            }
+            linkedInThumbnail = try LinkedInVideoThumbnail(url: url)
+        } else {
+            linkedInThumbnail = nil
         }
         r2 = platform == .instagram && options.useR2 ? options.r2 : nil
         publicImage = (platform == .instagram && nativeVideo == nil && !options.useR2) || (platform == .tiktok && !options.imageURL.isEmpty)
@@ -399,6 +410,8 @@ struct SocialPublisher {
         options.nativeVideo = try PostVideo.forDraft(draft, in: workspace.records)
         if draft["platform"] == "instagram", options.nativeVideo != nil {
             options.instagramCover = workspace.videoThumbnailURL(draft)
+        } else if draft["platform"] == "linkedin", options.nativeVideo != nil {
+            options.linkedInThumbnailURL = workspace.videoThumbnailURL(draft)
         }
         let url = draft["format"] == "video" ? workspace.videoURL(draft) : workspace.imageURL(draft)
         if draft["platform"] == "instagram", options.useR2 || options.nativeVideo != nil {
@@ -472,7 +485,8 @@ struct SocialPublisher {
                     }
                 } else {
                     guard let owner = plan.linkedInAuthor else { throw WorkspaceError("Choose a LinkedIn destination.") }
-                    videoID = try await uploader.toLinkedIn(video, owner: owner, token: account.session.accessToken)
+                    videoID = try await uploader.toLinkedIn(video, thumbnail: plan.linkedInThumbnail,
+                                                            owner: owner, token: account.session.accessToken)
                 }
                 if automatic {
                     try workspace.reload()
@@ -528,6 +542,7 @@ struct SocialPublisher {
                 }
                 var step = ["id": id, "url": "https://www.linkedin.com/feed/update/" + id + "/", "at": WorkspaceRecord.timestamp]
                 if let videoID { step["videoId"] = videoID }
+                if let thumbnail = plan.linkedInThumbnail { step["thumbnailHash"] = thumbnail.hash }
                 steps.append(step)
                 receipt.fields["steps"] = steps
             case .instagram:
