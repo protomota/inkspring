@@ -160,7 +160,7 @@ struct PublicationReview: View {
             StudioLabeledChoice(title: "Who can see this post?", selection: $tiktok.privacy,
                                 options: [""] + creator.privacy,
                                 label: { $0.isEmpty ? "Choose privacy" : TikTokCreator.privacyLabels[$0] ?? $0 })
-            Toggle("Allow comments", isOn: $tiktok.comment).disabled(creator.commentDisabled)
+            Toggle("Allow viewer replies", isOn: $tiktok.comment).disabled(creator.commentDisabled)
             if isTikTokVideo {
                 Toggle("Allow Duet", isOn: $tiktok.duet).disabled(creator.duetDisabled)
                 Toggle("Allow Stitch", isOn: $tiktok.stitch).disabled(creator.stitchDisabled)

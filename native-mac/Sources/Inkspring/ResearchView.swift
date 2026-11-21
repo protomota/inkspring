@@ -160,7 +160,7 @@ struct ResearchView: View {
                 if let likes = source["likes"] as? Int { Text("\(likes.formatted()) likes") }
                 if let reposts = source["reposts"] as? Int { Text("\(reposts.formatted()) reposts") }
                 if let replies = source["replies"] as? Int {
-                    Text("\(replies.formatted()) \(platform == .x ? "replies" : "comments")")
+                    Text("\(replies.formatted()) replies")
                 }
             }
         }

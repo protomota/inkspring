@@ -3,18 +3,7 @@ import XCTest
 final class WalkthroughTests: XCTestCase {
     func testIdeaDraftButtonSelectsTextFormatsAndQueuesForClaude() {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", "warm-paper"]
-        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
-        app.launch()
-        let review = app.buttons["Review"].firstMatch
-        if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
-        XCTAssertTrue(review.waitForExistence(timeout: 10))
-        review.tap()
-        app.buttons["Ideas"].firstMatch.tap()
-        let idea = app.staticTexts["Show the unfinished work"].firstMatch
-        XCTAssertTrue(idea.waitForExistence(timeout: 8))
-        idea.tap()
+        let app = openIdea(theme: "warm-paper")
         let draft = app.buttons["idea.draft.open"].firstMatch
         for _ in 0..<4 where !draft.isHittable { app.swipeUp() }
         XCTAssertTrue(draft.isHittable, app.debugDescription)
@@ -44,6 +33,77 @@ final class WalkthroughTests: XCTestCase {
         for _ in 0..<3 where !queued.isHittable { app.swipeUp() }
         XCTAssertTrue(queued.waitForExistence(timeout: 5), app.debugDescription)
         capture("Request queued for Claude on Mac", app)
+    }
+
+    func testIdeaDraftActionsInAllThemes() {
+        continueAfterFailure = false
+        for theme in ["graphite", "warm-paper", "native-light"] {
+            verifyIdeaDraftActions(theme: theme)
+        }
+    }
+
+    func testIdeaDraftActionsMatchSystem() {
+        continueAfterFailure = false
+        verifyIdeaDraftActions(theme: "system")
+    }
+
+    func testIdeaRevisionRequestUsesTheMacWritingConnection() {
+        continueAfterFailure = false
+        let app = openIdea(theme: "graphite", extraArguments: ["--script-fixture"])
+        let input = app.descendants(matching: .any).matching(identifier: "review.revisionRequest").firstMatch
+        for _ in 0..<4 where !input.isHittable { app.swipeUp() }
+        XCTAssertTrue(input.isHittable)
+        XCTAssertFalse(app.staticTexts["Comments"].exists)
+        capture("Idea revision request and example", app)
+        input.tap()
+        input.typeText("Focus on one practical example.")
+        let send = app.buttons["Send revision request"].firstMatch
+        for _ in 0..<4 where !send.isHittable { app.swipeUp() }
+        XCTAssertTrue(send.isHittable)
+        send.tap()
+        XCTAssertTrue(app.staticTexts["Focus on one practical example."].firstMatch.waitForExistence(timeout: 8))
+        capture("Idea revision request sent to the Mac queue", app)
+    }
+
+    private func verifyIdeaDraftActions(theme: String) {
+        let app = openIdea(theme: theme)
+        defer { app.terminate() }
+        let draft = app.buttons["idea.draft.open"].firstMatch
+        let skip = app.buttons["Skip idea"].firstMatch
+        for _ in 0..<4 where !draft.isHittable || !skip.isHittable { app.swipeUp() }
+        XCTAssertTrue(draft.isHittable && draft.isEnabled)
+        XCTAssertTrue(skip.isHittable)
+        XCTAssertGreaterThanOrEqual(draft.frame.height, 44)
+        XCTAssertLessThan(draft.frame.midY, skip.frame.midY)
+        capture("Idea detail - \(theme)", app)
+        draft.tap()
+
+        let send = app.buttons["idea.draft.send"].firstMatch
+        let x = app.buttons["idea.draft.platform.x"].firstMatch
+        XCTAssertTrue(x.waitForExistence(timeout: 5))
+        XCTAssertTrue(send.isHittable)
+        XCTAssertFalse(send.isEnabled)
+        capture("Chooser without selection - \(theme)", app)
+        x.tap()
+        XCTAssertTrue(send.isHittable && send.isEnabled)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        capture("Chooser with selection - \(theme)", app)
+    }
+
+    private func openIdea(theme: String, extraArguments: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", theme] + extraArguments
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let review = app.buttons["Review"].firstMatch
+        if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        review.tap()
+        app.buttons["Ideas"].firstMatch.tap()
+        let idea = app.staticTexts["Show the unfinished work"].firstMatch
+        XCTAssertTrue(idea.waitForExistence(timeout: 8))
+        idea.tap()
+        return app
     }
 
     func testMediaDraftsStartWithMediaAndCaption() {

@@ -1248,7 +1248,7 @@ struct PostPreview: View {
     let showSchedule: (WorkspaceRecord) -> Void
     let expanded: Bool
     let togglePreview: () -> Void
-    @State private var comment = ""
+    @State private var revisionRequest = ""
     @State private var outlineID: String?
 
     var body: some View {
@@ -1351,38 +1351,60 @@ struct PostPreview: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .studioSurface()
-                Text("Comments").font(InkspringTypography.editorial(19, relativeTo: .headline))
-                ForEach(Array(record.comments.enumerated()), id: \.offset) { _, item in
-                    VStack(alignment: .leading, spacing: 3) {
-                        if let date = (item["at"] as? String).flatMap(scheduleDate) {
-                            Text(date, format: .dateTime.month().day().year().hour().minute())
+                revisionRequests
+            }
+            .padding(.vertical, expanded ? 34 : 22)
+            .padding(.horizontal, expanded ? 34 : 24)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var revisionRequests: some View {
+        let current = workspace.records.first { $0.id == record.id && $0.kind == record.kind } ?? record
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(StudioRevisionRequestCopy.heading).font(InkspringTypography.editorial(19, relativeTo: .headline))
+            ForEach(Array(current.comments.enumerated()), id: \.offset) { _, item in
+                VStack(alignment: .leading, spacing: 3) {
+                    if let date = (item["at"] as? String).flatMap(scheduleDate) {
+                        Text(date, format: .dateTime.month().day().year().hour().minute())
                                 .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(item["text"] as? String ?? "").textSelection(.enabled)
                     }
+                    Text(item["text"] as? String ?? "").textSelection(.enabled)
+                    let label = (item["revisionRequestID"] as? String).map { id in
+                        current.appliedRevisionCommentIDs.contains(id) ? "Revision applied" : "Waiting for revision"
+                    } ?? "Saved note"
+                    Text(label).font(.caption).foregroundStyle(palette.muted)
                 }
-                HStack {
-                    TextField("Add a comment", text: $comment, axis: .vertical)
+            }
+            if current.acceptsRevisionComments {
+                HStack(alignment: .firstTextBaseline) {
+                    TextField(StudioRevisionRequestCopy.field, text: $revisionRequest,
+                              prompt: Text(current.kind == "idea" ? StudioRevisionRequestCopy.ideaExample : StudioRevisionRequestCopy.draftExample),
+                              axis: .vertical)
                         .font(InkspringTypography.interface(13))
                         .lineLimit(1...4)
                         .textFieldStyle(.plain)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .studioSurface(StudioRadius.control)
-                    Button("Save comment") {
+                    Button(StudioRevisionRequestCopy.send) {
+                        let text = revisionRequest.trimmingCharacters(in: .whitespacesAndNewlines)
                         workspace.perform {
-                            try workspace.addComment(to: record, text: comment)
-                            comment = ""
+                            try workspace.addComment(to: current, text: text, revisionRequestID: UUID().uuidString.lowercased())
+                            revisionRequest = ""
                             InkspringReview.recordActivity()
+                            Task { await workspace.runDraftRevisionComments() }
                         }
                     }
-                    .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!workspace.writingToolsAvailable || revisionRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || revisionRequest.utf16.count > 4_000)
+                }
+                .disabled(!workspace.writingToolsAvailable)
+                if !workspace.writingToolsAvailable {
+                    Text("Connect a writing agent to send a revision request.").font(.caption).foregroundStyle(palette.muted)
                 }
             }
-            .padding(.vertical, expanded ? 34 : 22)
-            .padding(.horizontal, expanded ? 34 : 24)
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity)
         }
     }
 

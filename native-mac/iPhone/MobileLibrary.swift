@@ -1795,6 +1795,34 @@ private struct MobileXGeneration: View {
     }
 }
 
+private struct MobileIdeaDraftActionStyle: ButtonStyle {
+    @Environment(\.studioPalette) private var palette
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: StudioRadius.card)
+        let foreground = isEnabled ? palette.accentText : palette.disabledText
+        return configuration.label
+            .labelStyle(.titleAndIcon)
+            .font(.body.weight(.semibold))
+            .multilineTextAlignment(.center)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(isEnabled ? palette.primaryAction : palette.well, in: shape)
+            .overlay {
+                if isEnabled && configuration.isPressed {
+                    shape.strokeBorder(foreground.opacity(0.45), lineWidth: 2)
+                        .allowsHitTesting(false)
+                } else if !isEnabled {
+                    shape.strokeBorder(palette.line).allowsHitTesting(false)
+                }
+            }
+            .contentShape(shape)
+    }
+}
+
 private struct MobileIdeaDraftPicker: View {
     @Environment(\.studioPalette) private var palette
     let item: CompanionLibrary.Item
@@ -1853,9 +1881,8 @@ private struct MobileIdeaDraftPicker: View {
                     queueDrafts()
                 } label: {
                     Label("Send to Claude on Mac", systemImage: "paperplane")
-                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(MobileIdeaDraftActionStyle())
                 .disabled(queued || chosen.isEmpty || !compatibleMac)
                 .accessibilityIdentifier("idea.draft.send")
                 Text(message ?? (compatibleMac
@@ -2105,6 +2132,11 @@ private struct MobileReviewDetail: View {
 
     private var inTrash: Bool { item.isTrashed == true }
 
+    private var canRequestRevision: Bool {
+        guard !inTrash, !item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return item.kind == .idea ? item.status == "draft" : ["", "draft", "ready"].contains(item.status)
+    }
+
     private var canChooseSchedule: Bool {
         item.kind == .draft && !inTrash && !["queued", "due", "posting", "posted", "uncertain"].contains(item.status)
             && !item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2252,7 +2284,7 @@ private struct MobileReviewDetail: View {
                     .accessibilityIdentifier("outline.view")
                     .listRowBackground(palette.card)
             }
-            if item.isTrashed != true, item.kind != .draft || library.canUseAgentFeatures || !item.notes.isEmpty {
+            if !inTrash, canRequestRevision || !item.notes.isEmpty {
             Section {
                 ForEach(Array(item.notes.enumerated()), id: \.offset) { index, text in
                     VStack(alignment: .leading, spacing: 4) {
@@ -2261,12 +2293,11 @@ private struct MobileReviewDetail: View {
                             Text(timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
-                        if let states = item.noteStates, states.indices.contains(index), let state = states[index] {
-                            let label = state == "applied" ? "Revision applied" :
-                                state == "waitingForDraft" ? "Waiting for an editable draft on Mac" : "Waiting for your Mac to revise"
-                            Label(label, systemImage: state == "applied" ? "checkmark" : "clock")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
+                        let state = item.noteStates?.indices.contains(index) == true ? item.noteStates?[index] : nil
+                        let label = state == "applied" ? "Revision applied" :
+                            state == "waitingForDraft" ? "Waiting for an editable item on Mac" :
+                            state == "pending" ? "Waiting for your Mac to revise" : "Saved note"
+                        Text(label).font(.footnote).foregroundStyle(palette.muted)
                     }
                 }
                 ForEach(library.pendingChanges(for: item.id).filter { $0.action == .note && $0.ideaDraftPlatforms == nil }) { entry in
@@ -2277,12 +2308,15 @@ private struct MobileReviewDetail: View {
                         }
                     }
                 }
-                if item.kind != .draft || library.canUseAgentFeatures {
-                    TextField(item.kind == .draft ? "What should change?" : "Write a comment", text: $note, axis: .vertical)
+                if canRequestRevision && library.canUseAgentFeatures {
+                    TextField(StudioRevisionRequestCopy.field, text: $note,
+                              prompt: Text(item.kind == .idea ? StudioRevisionRequestCopy.ideaExample : StudioRevisionRequestCopy.draftExample),
+                              axis: .vertical)
                         .lineLimit(2...5)
                         .focused($editingNote)
+                        .accessibilityIdentifier("review.revisionRequest")
                     if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button(item.kind == .draft ? "Add revision comment" : "Add comment") {
+                        Button(StudioRevisionRequestCopy.send) {
                             if saveNote() { editingNote = false }
                         }
                         .disabled(note.utf16.count > 1000)
@@ -2295,15 +2329,21 @@ private struct MobileReviewDetail: View {
                     let entry = library.pendingChanges(for: item.id).first { $0.id == savedNoteID }
                     let uploaded = entry == nil || library.snapshot?.pending.contains { $0.id == savedNoteID } == true
                     if entry?.error == nil {
-                        Label(uploaded ? "Comment synced" : "Comment saved · iCloud sync pending", systemImage: "checkmark")
+                        Label(uploaded ? "Revision request synced" : "Revision request saved · iCloud sync pending",
+                              systemImage: "checkmark")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                if let error = item.writingError {
+                    Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
+                }
             } header: {
-                Text(item.kind == .draft ? "Revision comments" : "Comments")
+                Text(StudioRevisionRequestCopy.heading)
             } footer: {
-                if item.kind == .draft, library.canUseAgentFeatures {
-                    Text("Inkspring on your Mac checks for new comments every five minutes and applies them to editable, unscheduled drafts using your writing connection.")
+                if canRequestRevision {
+                    Text(library.canUseAgentFeatures
+                         ? "Inkspring on your Mac applies the request using its writing connection. The earlier version stays in revision history."
+                         : "Connect a writing agent in Inkspring on your Mac to send a revision request.")
                 }
             }
             .listRowBackground(palette.card)
@@ -2328,9 +2368,8 @@ private struct MobileReviewDetail: View {
                     if item.status == "draft" {
                         Button { draftingIdea = true } label: {
                             Label("Draft from post idea", systemImage: "square.and.pencil")
-                                .frame(maxWidth: .infinity, minHeight: 44)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(MobileIdeaDraftActionStyle())
                         .disabled(hasPendingChange || hasPendingIdeaDraft || item.revision == "pending-add"
                                   || CompanionLibrary.ideaDraftPlatforms.allSatisfy { item.draftedIdeaPlatforms?.contains($0) == true })
                         .accessibilityIdentifier("idea.draft.open")
@@ -2421,7 +2460,8 @@ private struct MobileReviewDetail: View {
     private func saveNote() -> Bool {
         let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.utf16.count <= 1000 else { return false }
-        let change = CompanionLibrary.Change(action: .note, itemID: item.id, revision: item.revision, text: text)
+        let change = CompanionLibrary.Change(action: .note, itemID: item.id, revision: item.revision,
+                                             text: text, requestsWritingHelp: true)
         if save(change) {
             note = ""
             savedNoteID = change.id

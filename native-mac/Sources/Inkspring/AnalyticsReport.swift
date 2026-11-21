@@ -10,7 +10,7 @@ struct AnalyticsReport {
             switch self {
             case .engagement: "Interactions"
             case .likes: "Likes"
-            case .replies: platform == .x ? "Replies" : "Comments"
+            case .replies: "Replies"
             case .shares: "Shares"
             case .views: "Views"
             case .score: "Net score"

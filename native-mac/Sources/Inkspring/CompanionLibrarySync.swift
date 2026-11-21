@@ -321,7 +321,7 @@ extension Workspace {
         }
         if change.requestsWritingHelp == true {
             guard let record = records.first(where: { $0.id == change.itemID }), record.acceptsRevisionComments else {
-                return "Choose an editable, unscheduled draft for this request."
+                return "Choose an editable idea or unscheduled draft for this revision request."
             }
             try addComment(to: record, text: change.text, revisionRequestID: id)
             return nil
@@ -455,7 +455,7 @@ extension Workspace {
             try save(record)
         case .note:
             if record.comments.contains(where: { $0["revisionRequestID"] as? String == id }) { return nil }
-            guard record.comments.count < 100 else { return "This item already has 100 comments." }
+            guard record.comments.count < 100 else { return "This item has reached its limit of 100 requests." }
             try addComment(to: record, text: change.text, revisionRequestID: record.kind == "draft" ? id : nil)
         case .skipIdea, .restoreIdea:
             let skipping = change.action == .skipIdea

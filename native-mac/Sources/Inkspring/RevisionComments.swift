@@ -3,7 +3,7 @@ import OSLog
 
 extension WorkspaceRecord {
     var acceptsRevisionComments: Bool {
-        (kind == "idea" && self["status"] == "draft") ||
+        (kind == "idea" && self["status"] == "draft" && !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
         (kind == "draft" && (scheduleStatus.isEmpty || scheduleStatus == "ready")
             && !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
             (isLongForm && ["draft", "synced"].contains(self["state"]))

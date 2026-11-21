@@ -365,7 +365,7 @@ final class Workspace {
                current.comments.contains(where: { $0["revisionRequestID"] as? String == revisionRequestID }) { return }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   text.utf16.count <= 4000, current.comments.count < 100 else {
-                throw WorkspaceError("Enter a comment of up to 4,000 characters. Each item can hold 100 comments.")
+                throw WorkspaceError("Enter a revision request of up to 4,000 characters. Each item can hold 100 requests.")
             }
             var comment = ["text": text, "at": WorkspaceRecord.timestamp]
             if ["draft", "idea"].contains(current.kind) || current.isLongForm { comment["revisionRequestID"] = revisionRequestID }

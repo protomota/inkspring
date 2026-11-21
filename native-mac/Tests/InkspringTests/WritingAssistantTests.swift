@@ -11,22 +11,24 @@ func socialWritingRequestsApplyOnceAndRetainTheirComments(kind: String) async th
     try workspace.set("mcpEnabled", to: true)
     var record = WorkspaceRecord.new(kind, projectID: workspace.projectID)
     record[kind == "idea" ? "topic" : "title"] = "Useful tools"
-    record[kind == "idea" ? "text" : "content"] = "We build useful tools."
+    let longIdea = String(repeating: "Preserve this context about our tools and the people who use them. ", count: 10)
+    record[kind == "idea" ? "text" : "content"] = kind == "idea" ? longIdea : "We build useful tools."
     record["platform"] = "x"
     record = try workspace.save(record)
     let request = CompanionLibrary.Change(action: .note, itemID: record.id, revision: record["updatedAt"],
         text: "Make this clearer.", requestsWritingHelp: true)
     #expect(try workspace.applyCompanionLibraryChange(request).error == nil)
     var calls = 0
+    let expected = kind == "idea" ? String(longIdea.dropLast()) : "We build tools that save people time."
     let model = ContentStudio.Model(provider: "fixture", name: "fixture", draft: { _, _ in [:] }, object: { _, _ in
         calls += 1
-        return ["text": "We build tools that save people time.", "reply": "Clarified the goal."]
+        return ["text": expected, "reply": "Clarified the goal."]
     }, prompt: { _ in "" }, image: { _ in (Data(), "") }, imageProvider: "fixture")
     await workspace.runDraftRevisionComments(model: model)
     await workspace.runDraftRevisionComments(model: model)
     let revised = try #require(workspace.records.first { $0.id == record.id })
     #expect(calls == 1)
-    #expect(revised.body == "We build tools that save people time.")
+    #expect(revised.body == expected)
     #expect(revised.comments.count == 1)
     #expect(revised.appliedRevisionCommentIDs == [request.id.uuidString.lowercased()])
 }

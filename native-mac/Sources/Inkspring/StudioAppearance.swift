@@ -1244,6 +1244,14 @@ private struct MacReplyWritingField: View {
 }
 #endif
 
+enum StudioRevisionRequestCopy {
+    static let heading = "Revision requests"
+    static let field = "Revision request"
+    static let send = "Send revision request"
+    static let ideaExample = "For example, focus this idea on one concrete claim."
+    static let draftExample = "For example, tighten the opening and keep the source links."
+}
+
 struct StudioWritingRequest: Identifiable {
     let id: String
     let text: String
@@ -1269,7 +1277,8 @@ struct StudioWritingAssistant: View {
                 .font(.headline)
             Text("Your Mac applies the request using its writing connection. Every change is kept in revision history.")
                 .font(.caption).foregroundStyle(palette.muted)
-            TextField("Ask for a brief or describe a change…", text: $prompt, axis: .vertical)
+            TextField(StudioRevisionRequestCopy.field, text: $prompt,
+                      prompt: Text(StudioRevisionRequestCopy.draftExample), axis: .vertical)
                 .lineLimit(3...6).textFieldStyle(.plain).padding(10)
                 .studioSurface(StudioRadius.control, fill: palette.well)
                 .accessibilityIdentifier("writing.prompt")
