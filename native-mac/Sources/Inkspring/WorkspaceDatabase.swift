@@ -15,6 +15,16 @@ struct WorkspaceRecord: Identifiable {
     let kind: String
     var fields: [String: Any]
 
+    init(kind: String, fields: [String: Any]) {
+        self.kind = kind
+        self.fields = fields
+        if kind == "idea" {
+            for key in ["platform", "format", "suggestedPlatforms", "platforms"] {
+                self.fields.removeValue(forKey: key)
+            }
+        }
+    }
+
     var id: String { self["id"] }
     var projectID: String { self["projectId"] }
     var referenceID: String? { self["referenceId"].isEmpty ? nil : self["referenceId"] }
@@ -139,10 +149,8 @@ struct WorkspaceRecord: Identifiable {
             fields["format"] = "post"
             fields["status"] = "draft"
         case "idea":
-            fields["kind"] = "work"
             fields["status"] = "draft"
             fields["date"] = Date.now.formatted(.iso8601.year().month().day().dateSeparator(.dash))
-            fields["suggestedPlatforms"] = ["x"]
         case "newsletter":
             fields["state"] = "draft"
             fields["sendEmail"] = true
@@ -265,8 +273,9 @@ final class WorkspaceDatabase {
     @discardableResult
     func put(_ input: WorkspaceRecord) throws -> WorkspaceRecord {
         guard ["project", "draft", "newsletter", "script", "article"].contains(input.kind) else {
-            try writeRecord(input)
-            return input
+            let record = input.kind == "idea" ? WorkspaceRecord(kind: input.kind, fields: input.fields) : input
+            try writeRecord(record)
+            return record
         }
         return try transaction {
             var record = input

@@ -897,11 +897,7 @@ enum PostBrowserFilter: String, CaseIterable {
 
     func matches(_ record: WorkspaceRecord, platform: String?, search: String) -> Bool {
         guard self == .ideas ? record.kind == "idea" : WorkspaceDraftType(record: record) != nil else { return false }
-        if let platform {
-            let suggestions = record.fields["suggestedPlatforms"] as? [String] ?? []
-            let platforms = self == .ideas ? (suggestions.isEmpty ? ["x"] : suggestions) : [ScheduleListing.channel(of: record)]
-            guard platforms.contains(platform) else { return false }
-        }
+        if self != .ideas, let platform, ScheduleListing.channel(of: record) != platform { return false }
         let matchingStatus = switch self {
         case .all: true
         case .draft: record.isLongForm ? ["draft", "synced", "syncing"].contains(record["state"])
@@ -910,8 +906,12 @@ enum PostBrowserFilter: String, CaseIterable {
         case .scheduling: ScheduleListing.section(for: record) == .ready
         }
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return matchingStatus && (query.isEmpty || [record.referenceID ?? "", record.title, record.body, record["subtitle"], WorkspaceDraftType(record: record)?.name ?? "", platformName(ScheduleListing.channel(of: record))]
-            .contains { $0.localizedCaseInsensitiveContains(query) })
+        var searchFields = [record.referenceID ?? "", record.title, record.body]
+        if self != .ideas {
+            searchFields += [record["subtitle"], WorkspaceDraftType(record: record)?.name ?? "",
+                             platformName(ScheduleListing.channel(of: record))]
+        }
+        return matchingStatus && (query.isEmpty || searchFields.contains { $0.localizedCaseInsensitiveContains(query) })
     }
 }
 
@@ -1117,8 +1117,8 @@ struct PostBrowser: View {
                 }
             }
             HStack(spacing: 8) {
-                if type == nil || type == .post {
-                    let channels = SocialPlatform.allCases.map(\.rawValue) + (type == nil && filter != .ideas ? ["substack", "youtube"] : [])
+                if filter != .ideas && (type == nil || type == .post) {
+                    let channels = SocialPlatform.allCases.map(\.rawValue) + (type == nil ? ["substack", "youtube"] : [])
                     StudioChoicePicker(title: "Filter by platform", selection: $platform,
                                        options: [nil] + channels.map(Optional.some),
                                        label: { $0.map(platformName) ?? "All platforms" },

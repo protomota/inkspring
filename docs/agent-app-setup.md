@@ -41,7 +41,7 @@ Source: [OpenAI's app-based MCP setup](https://learn.chatgpt.com/docs/extend/mcp
 
 ## Verify reading and writing
 
-For an authored post idea, ask the agent to use `save_idea` with the project ID, title, and text, then verify the returned ID with `get_idea`. The idea appears in **Post ideas → Open**. Local idea saving works while the Mac display is locked and does not require AI generation.
+For an authored post idea, ask the agent to use `save_idea` with the project ID, title, and text, then verify the returned ID with `get_idea`. The idea appears in **Post ideas → Open**. Platform and format are chosen when creating a draft. Local idea saving works while the Mac display is locked and does not require AI generation.
 
 In either agent app, send:
 

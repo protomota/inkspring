@@ -114,7 +114,7 @@ struct AgentMCP {
         .init(name: "list_ideas", summary: "Read saved ideas in a project.", fields: ["project_id": "string", "status": "string"]),
         .init(name: "get_idea", summary: "Read a saved idea in full by ID.",
               fields: ["idea_id": "string"], required: ["idea_id"]),
-        .init(name: "save_idea", summary: "Save a supplied title and text as one open post idea. No model, API key, or network call. Optional request_key makes identical creation retries idempotent.",
+        .init(name: "save_idea", summary: "Save a supplied title and text as one open post idea. Choose a platform only when creating a draft. No model, API key, or network call. Optional request_key makes identical creation retries idempotent.",
               fields: ["project_id": "string", "title": "string", "text": "string", "request_key": "string"],
               required: ["title", "text"], writes: true),
         .init(name: "edit_idea", summary: "Edit the text of an open idea.", fields: ["idea_id": "string", "text": "string"], required: ["idea_id", "text"], writes: true),
@@ -200,7 +200,7 @@ struct AgentMCP {
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": "inkspring", "title": "Inkspring",
                                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"],
-                "instructions": "Use save_idea for an open post idea and save_draft for a post draft. Both save supplied copy locally without a model or API key. Read before editing. Request generation only when the author wants it. Keep drafts unpublished until the author reviews them."
+                "instructions": "Use save_idea for an open post idea. Save only the idea; do not ask for or add a platform or draft format. Use save_draft for a post draft. Both save supplied copy locally without a model or API key. Read before editing. Request generation only when the author wants it. Keep drafts unpublished until the author reviews them."
             ])
         case "ping":
             return success(id, [:])

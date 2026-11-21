@@ -55,10 +55,12 @@ import Testing
     var idea = WorkspaceRecord.new("idea", projectID: workspace.projectID)
     idea["topic"] = "Legacy idea"
     idea["text"] = "An old angle"
-    idea.fields["suggestedPlatforms"] = nil
+    idea.fields["suggestedPlatforms"] = ["x"]
     idea = try workspace.save(idea)
-    #expect(PostBrowserFilter.ideas.matches(idea, platform: "x", search: "legacy"))
-    #expect(!PostBrowserFilter.ideas.matches(idea, platform: "linkedin", search: ""))
+    let reopenedIdea = try #require(Workspace(directory: folder).ideas.first { $0.id == idea.id })
+    #expect(reopenedIdea.fields["suggestedPlatforms"] == nil)
+    #expect(PostBrowserFilter.ideas.matches(reopenedIdea, platform: "linkedin", search: "legacy"))
+    #expect(!PostBrowserFilter.ideas.matches(reopenedIdea, platform: nil, search: "LinkedIn"))
     try workspace.updatePostText(idea, title: idea.title, text: "A better angle")
     let updatedIdea = try #require(workspace.ideas.first { $0.id == idea.id })
     #expect(updatedIdea.body == "A better angle")
@@ -499,6 +501,7 @@ import Testing
     #expect(accepted.full)
     let saved = try #require(workspace.ideas.first { $0.title == "Measured export speed" })
     #expect((saved.fields["source"] as? [String: String])?["referenceId"] == source.id)
+    #expect(saved.fields["suggestedPlatforms"] == nil)
 }
 
 @Test @MainActor func automaticIdeaChecksStopAtTheTargetWithoutLimitingManualIdeas() async throws {

@@ -29,6 +29,9 @@ private func ideaTool(_ agent: AgentMCP, _ name: String, _ arguments: [String: A
     #expect(saved["projectId"] as? String == projectID)
     #expect(saved["topic"] as? String == "An exact idea")
     #expect(saved["text"] as? String == body)
+    for key in ["platform", "format", "suggestedPlatforms", "platforms", "kind"] {
+        #expect(saved[key] == nil)
+    }
 
     let reopened = Workspace(directory: folder)
     let freshAgent = AgentMCP(workspace: reopened, credentialEnvironment: [:])
@@ -38,7 +41,9 @@ private func ideaTool(_ agent: AgentMCP, _ name: String, _ arguments: [String: A
     #expect(reopened.ideas.filter { $0.id == id && $0.isPendingPostIdea }.count == 1)
     let list = await ideaTool(freshAgent, "list_ideas", ["project_id": projectID, "status": "draft"])
     #expect((list["items"] as? [[String: Any]])?.contains { $0["id"] as? String == id } == true)
-    #expect(await ideaTool(freshAgent, "get_idea", ["idea_id": id])["text"] as? String == body)
+    let readback = await ideaTool(freshAgent, "get_idea", ["idea_id": id])
+    #expect(readback["text"] as? String == body)
+    #expect(readback["suggestedPlatforms"] == nil)
 
     var changed = args
     changed["text"] = "Different copy for the same key."

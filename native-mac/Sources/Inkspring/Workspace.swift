@@ -434,7 +434,6 @@ final class Workspace {
                 guard versions.values.contains(record.id) else { continue }
                 let remaining = versions.filter { $0.value != record.id }
                 idea.fields["versions"] = remaining
-                idea.fields["platforms"] = remaining.keys.sorted()
                 if remaining.isEmpty { idea["status"] = "draft"; idea["pickedAt"] = "" }
                 idea.markUpdated()
                 try database.put(idea)
