@@ -35,6 +35,7 @@ import Testing
         let reference = try #require(article.referenceID)
         draft["content"] = ["Here is the video.", XReplyArticle.attach(reference, to: "A follow-up.")]
             .joined(separator: XThreadText.separator)
+        draft.fields["videoThumbnail"] = ["file": "legacy-x-cover.png"]
     } else {
         draft["content"] += "\n\nhttps://newsletter.example.com/p/fixture"
     }
@@ -46,6 +47,9 @@ import Testing
         draft.fields["videoThumbnail"] = try workspace.attachImage(image)
     }
     draft = try workspace.save(draft)
+    if platform == .x {
+        #expect(workspace.videoThumbnailURL(draft) == nil)
+    }
     let slot = PostScheduling.fiveMinutesFromNow()
     draft = try workspace.scheduleDraft(draft, at: slot, linkedInAccount: account, customTime: true)
     try workspace.set("autoPost", to: true)

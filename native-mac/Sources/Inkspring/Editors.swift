@@ -1424,11 +1424,10 @@ struct DraftStudio: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             StudioMoreMenu(title: "\(kind.title) actions") {
-                if kind == .video {
+                if kind == .video, initial["platform"] != "x" {
                     let cover = switch initial["platform"] {
                     case "instagram": "Reel cover"
                     case "linkedin": "video thumbnail"
-                    case "x": "Media Studio cover"
                     default: "preview thumbnail"
                     }
                     Button("\(thumbnail == nil ? "Choose" : "Replace") \(cover)…", systemImage: "photo") {
@@ -1444,11 +1443,8 @@ struct DraftStudio: View {
                             markDirty()
                         }
                     }
-                    if initial["platform"] == "x" {
-                        StudioExternalLink("Set an X thumbnail in Media Studio", destination: URL(string: "https://studio.x.com/")!)
-                    }
                     Divider()
-                } else if let available {
+                } else if kind == .image, let available {
                     Button("Copy image") {
                         guard let image = NSImage(contentsOf: available), image.isValid else {
                             workspace.error = "The attached image couldn’t be opened."

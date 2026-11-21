@@ -314,7 +314,7 @@ final class Workspace {
     }
 
     func videoThumbnailURL(_ record: WorkspaceRecord) -> URL? {
-        guard record.fields["video"] is [String: Any] else { return nil }
+        guard record["platform"] != "x", record.fields["video"] is [String: Any] else { return nil }
         return storedImageURL(record.fields["videoThumbnail"])
     }
 

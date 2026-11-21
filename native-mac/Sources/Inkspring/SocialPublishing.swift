@@ -139,9 +139,6 @@ struct SocialPublishPlan {
         if draft.needsNativePostVideo && nativeVideo == nil {
             throw WorkspaceError("Attach the video file before publishing this post.")
         }
-        if platform == .x, nativeVideo != nil, draft.fields["videoThumbnail"] != nil {
-            throw WorkspaceError("X custom video covers require Media Studio. Use it to publish this video with its selected cover, or choose Use video frame in Video actions to publish from Inkspring.")
-        }
         if platform == .instagram, nativeVideo != nil, draft.fields["videoThumbnail"] != nil {
             guard let cover = options.instagramCover,
                   let attributes = try? cover.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),

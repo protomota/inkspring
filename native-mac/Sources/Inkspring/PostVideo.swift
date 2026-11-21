@@ -93,7 +93,7 @@ struct PostVideoUpload {
         }
         let reader = try VideoReader(video)
         let upload = base.appending(path: id)
-        let chunkSize: Int64 = 4 * 1024 * 1024
+        let chunkSize: Int64 = 3 * 1024 * 1024
         for (index, offset) in stride(from: 0, to: video.size, by: Int(chunkSize)).enumerated() {
             try Task.checkCancellation()
             let bytes = try reader.read(Int(min(chunkSize, video.size - offset)))
