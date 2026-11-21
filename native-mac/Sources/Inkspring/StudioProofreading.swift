@@ -208,6 +208,9 @@ private struct ProofreadUnavailable: LocalizedError {
 
 struct StudioProofreadAction: View {
     @Environment(\.studioPalette) private var palette
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
     @State private var task: Task<Void, Never>?
     @State private var review: ProofreadReview?
     @State private var message: String?
@@ -297,10 +300,10 @@ struct StudioProofreadAction: View {
         .frame(idealWidth: 430, maxWidth: 480)
         .background(palette.canvas)
         #if os(iOS)
-        if #available(iOS 18, *) {
-            content.presentationSizing(.fitted)
+        if #available(iOS 18, *), horizontalSizeClass == .regular {
+            content.presentationSizing(.fitted).presentationBackground(palette.canvas)
         } else {
-            content.presentationDetents([.medium, .large])
+            content.presentationDetents([.medium, .large]).presentationBackground(palette.canvas)
         }
         #else
         content
