@@ -34,7 +34,7 @@ extension Workspace {
         for id in draftIDs {
             if Task.isCancelled { return }
             refreshAfterExternalWrite()
-            if StudioWritingConnection(settings: settings) == .agent, settings["mcpEnabled"] as? Bool != true { return }
+            guard writingToolsAvailable || (model != nil && agentAccessEnabled) else { return }
             guard let draft = records.first(where: { $0.id == id && $0.acceptsRevisionComments }) else { continue }
             var comments: [(id: String, text: String)] = []
             var notes = ""

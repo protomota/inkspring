@@ -270,7 +270,7 @@ struct ScheduleView: View {
                                 Button("Review & publish…") { reviewPublication(draft, nil) { _ in tab = .history } }
                             }
                             Button("Record as posted…") { manuallyPosted = draft }
-                            if draft.scheduleStatus != "skipped" {
+                            if workspace.writingToolsAvailable, draft.scheduleStatus != "skipped" {
                                 Button("Rewrite with notes…") {
                                     revise(draft) { updated in
                                         if ScheduleListing.section(for: updated) == .ready { tab = .ready }

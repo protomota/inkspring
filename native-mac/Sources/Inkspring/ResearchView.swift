@@ -33,11 +33,13 @@ struct ResearchView: View {
                                 subtitle: "Find relevant posts and news, and save sources for your drafts.")
                     Spacer()
                     if searching { ProgressView().controlSize(.small) }
-                    Button(feed == nil ? "Find topics" : "Refresh topics", systemImage: feed == nil ? "magnifyingglass" : "arrow.clockwise") {
-                        Task { await find() }
+                    if workspace.writingToolsAvailable {
+                        Button(feed == nil ? "Find topics" : "Refresh topics", systemImage: feed == nil ? "magnifyingglass" : "arrow.clockwise") {
+                            Task { await find() }
+                        }
+                        .disabled(searching || workspace.project == nil)
+                        .modifier(PrimaryActionStyle())
                     }
-                    .disabled(searching || workspace.project == nil)
-                    .modifier(PrimaryActionStyle())
                 }
                 StudioTabs(selection: $platform, tabs: ResearchPlatform.allCases, label: { $0.title }, platform: { $0.rawValue })
                     .disabled(searching)

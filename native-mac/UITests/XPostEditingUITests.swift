@@ -114,6 +114,21 @@ final class WalkthroughTests: XCTestCase {
         }
     }
 
+    func testDisconnectedAgentStaysOutOfTheNewDraftMenu() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "--script-fixture", "--no-mcp-fixture"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let menu = app.buttons["writing.new"].firstMatch
+        if !menu.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(menu.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["assistant.open"].exists)
+        menu.tap()
+        XCTAssertTrue(app.buttons["New Substack newsletter"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["New X post or thread"].firstMatch.exists)
+        capture("New draft menu without an MCP connection", app)
+    }
+
     func testNewsletterCreationAndAskAIApplyBriefWithoutLeavingEditor() {
         continueAfterFailure = false
         let app = XCUIApplication()

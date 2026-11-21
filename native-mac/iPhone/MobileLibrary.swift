@@ -100,6 +100,8 @@ final class MobileLibrary {
                         revision: "pending-add", title: "", text: "", workspaceID: entry.workspaceID, account: entry.account))
     }
 
+    var canUseAgentFeatures: Bool { snapshot?.enabled == true && snapshot?.supportsAgentFeatures == true }
+
     func pendingChanges(for itemID: String) -> [CompanionLibraryOutbox.Entry] {
         outbox.entries.filter {
             $0.itemID == itemID && $0.workspaceID == snapshot?.workspaceID && $0.account == account
@@ -275,6 +277,7 @@ final class MobileLibrary {
 
     func saveChange(_ change: CompanionLibrary.Change, workspaceID: UUID) throws {
         guard let account, snapshot?.workspaceID == workspaceID else { throw CompanionScheduleError.changed }
+        guard !change.usesMacAgent || canUseAgentFeatures else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.isLongFormEdit, try JSONEncoder().encode(change).count > change.payloadLimit {
             throw CompanionLibraryError.invalid
@@ -640,6 +643,7 @@ final class MobileLibrary {
         if ProcessInfo.processInfo.arguments.contains("--script-fixture") {
             value.supportsScripts = true
             value.supportsWritingTools = true
+            value.supportsAgentFeatures = !ProcessInfo.processInfo.arguments.contains("--no-mcp-fixture")
             value.supportsXArticlePublishing = true
             value.xArticleAccountKey = "fixture:connected"
             value.xArticleAccountName = "@fixture"
@@ -862,19 +866,23 @@ private struct MobileNewsletterDetail: View {
                 if editingRevision != nil {
                     Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }
                         .accessibilityIdentifier("editor.find")
-                    MobileWritingTools(title: $scriptTitle, text: $markdown, presented: $showsWritingTools,
-                        agent: library.snapshot?.writingAgent ?? "agent", requests: writingRequests, reply: item.writingReply, error: item.writingError) { prompt in
-                            save()
-                            guard saveError == nil else { throw CompanionLibraryError.invalid }
-                            try library.saveChange(.init(action: .note, itemID: item.id, revision: editingRevision ?? item.revision,
-                                text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
-                        }
+                    if library.canUseAgentFeatures {
+                        MobileWritingTools(title: $scriptTitle, text: $markdown, presented: $showsWritingTools,
+                            agent: library.snapshot?.writingAgent ?? "agent", requests: writingRequests, reply: item.writingReply, error: item.writingError) { prompt in
+                                save()
+                                guard saveError == nil else { throw CompanionLibraryError.invalid }
+                                try library.saveChange(.init(action: .note, itemID: item.id, revision: editingRevision ?? item.revision,
+                                    text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
+                            }
+                    }
                     Button("Done") { save(ending: true) }.fontWeight(.semibold)
                 } else {
                     Menu {
                         if ["draft", "synced"].contains(item.status) {
                             Button("Edit Markdown", systemImage: "pencil", action: beginEditing).disabled(!canEdit)
-                            Button("Ask AI…", systemImage: "bubble.left.and.text.bubble.right") { beginEditing(); showsWritingTools = true }.disabled(!canEdit)
+                            if library.canUseAgentFeatures {
+                                Button("Ask AI…", systemImage: "bubble.left.and.text.bubble.right") { beginEditing(); showsWritingTools = true }.disabled(!canEdit)
+                            }
                         }
                         if library.snapshot?.supportsContentPlans == true && item.isTrashed != true {
                             Button(library.planText(item).isEmpty ? "Add outline" : "View outline", systemImage: "list.bullet.clipboard") { showsOutline = true }
@@ -1281,7 +1289,7 @@ struct MobileReviewView: View {
                                 .accessibilityIdentifier("script.new")
                         }
                         Section("Social posts") {
-                            if library.snapshot?.supportsXThreads == true {
+                            if library.canUseAgentFeatures, library.snapshot?.supportsXThreads == true {
                                 Button { creatingXDraft = true } label: { Label { Text("New X post or thread") } icon: { platformMenuIcon("x") } }
                                     .accessibilityIdentifier("x.newDraft")
                             }
@@ -1673,7 +1681,7 @@ private struct MobileXGeneration: View {
                         message = "Queued for your Mac. The generated draft will appear in Review."
                     } catch { message = error.localizedDescription }
                 }
-                .disabled(queued || library.snapshot?.supportsXThreads != true || projectID.isEmpty ||
+                .disabled(queued || !library.canUseAgentFeatures || library.snapshot?.supportsXThreads != true || projectID.isEmpty ||
                           title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                           title.utf16.count > 200 || brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                           brief.utf16.count > 10_000)
@@ -1746,17 +1754,19 @@ private struct MobileItemEditor: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if !isX { Button("Find", systemImage: "magnifyingglass") { findRequest += 1 }.accessibilityIdentifier("editor.find") }
-                MobileWritingTools(title: $title, text: $text, presented: $showsWritingTools,
-                    agent: library.snapshot?.writingAgent ?? "agent", requests: item.notes.enumerated().map { index, text in
-                        StudioWritingRequest(id: "saved-\(index)", text: text,
-                            state: (item.noteStates ?? []).indices.contains(index) && item.noteStates?[index] == "applied" ? "Applied" : "Waiting for Mac")
-                    } + library.pendingChanges(for: item.id).filter { $0.requestsWritingHelp == true }.map {
-                        StudioWritingRequest(id: $0.id.uuidString, text: $0.text, state: "Waiting for Mac")
-                    }, reply: item.writingReply, error: item.writingError) { prompt in
-                        guard save() else { throw CompanionLibraryError.invalid }
-                        try library.saveChange(.init(action: .note, itemID: item.id, revision: item.revision,
-                            text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
-                    }
+                if library.canUseAgentFeatures {
+                    MobileWritingTools(title: $title, text: $text, presented: $showsWritingTools,
+                        agent: library.snapshot?.writingAgent ?? "agent", requests: item.notes.enumerated().map { index, text in
+                            StudioWritingRequest(id: "saved-\(index)", text: text,
+                                state: (item.noteStates ?? []).indices.contains(index) && item.noteStates?[index] == "applied" ? "Applied" : "Waiting for Mac")
+                        } + library.pendingChanges(for: item.id).filter { $0.requestsWritingHelp == true }.map {
+                            StudioWritingRequest(id: $0.id.uuidString, text: $0.text, state: "Waiting for Mac")
+                        }, reply: item.writingReply, error: item.writingError) { prompt in
+                            guard save() else { throw CompanionLibraryError.invalid }
+                            try library.saveChange(.init(action: .note, itemID: item.id, revision: item.revision,
+                                text: prompt, requestsWritingHelp: true), workspaceID: workspaceID)
+                        }
+                }
                 Button("Done") { if save() { if let close { close() } else { dismiss() } } }
             }
         }
@@ -1981,7 +1991,7 @@ private struct MobileReviewDetail: View {
 
             }
             .listRowBackground(palette.card)
-            if item.kind == .idea, !inTrash, library.snapshot?.supportsXThreads == true {
+            if item.kind == .idea, !inTrash, library.canUseAgentFeatures, library.snapshot?.supportsXThreads == true {
                 Section {
                     Button("Draft for X", systemImage: "square.and.pencil") { generatingXDraft = true }
                 }
@@ -1993,7 +2003,7 @@ private struct MobileReviewDetail: View {
                     .accessibilityIdentifier("outline.view")
                     .listRowBackground(palette.card)
             }
-            if item.isTrashed != true {
+            if item.isTrashed != true, item.kind != .draft || library.canUseAgentFeatures || !item.notes.isEmpty {
             Section {
                 ForEach(Array(item.notes.enumerated()), id: \.offset) { index, text in
                     VStack(alignment: .leading, spacing: 4) {
@@ -2018,17 +2028,19 @@ private struct MobileReviewDetail: View {
                         }
                     }
                 }
-                TextField(item.kind == .draft ? "What should change?" : "Write a comment", text: $note, axis: .vertical)
-                    .lineLimit(2...5)
-                    .focused($editingNote)
-                if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button(item.kind == .draft ? "Add revision comment" : "Add comment") {
-                        if saveNote() { editingNote = false }
+                if item.kind != .draft || library.canUseAgentFeatures {
+                    TextField(item.kind == .draft ? "What should change?" : "Write a comment", text: $note, axis: .vertical)
+                        .lineLimit(2...5)
+                        .focused($editingNote)
+                    if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button(item.kind == .draft ? "Add revision comment" : "Add comment") {
+                            if saveNote() { editingNote = false }
+                        }
+                        .disabled(note.utf16.count > 1000)
                     }
-                    .disabled(note.utf16.count > 1000)
-                }
-                if note.utf16.count > 1000 {
-                    Text("Use up to 1,000 characters.").font(.footnote).foregroundStyle(.secondary)
+                    if note.utf16.count > 1000 {
+                        Text("Use up to 1,000 characters.").font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 if let savedNoteID {
                     let entry = library.pendingChanges(for: item.id).first { $0.id == savedNoteID }
@@ -2041,7 +2053,7 @@ private struct MobileReviewDetail: View {
             } header: {
                 Text(item.kind == .draft ? "Revision comments" : "Comments")
             } footer: {
-                if item.kind == .draft {
+                if item.kind == .draft, library.canUseAgentFeatures {
                     Text("Inkspring on your Mac checks for new comments every five minutes and applies them to editable, unscheduled drafts using your writing connection.")
                 }
             }

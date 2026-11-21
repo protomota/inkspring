@@ -24,10 +24,11 @@ extension Workspace {
             guard let previous = try await cloud.loadLibrary(workspaceID: id, account: account), previous.enabled else {
                 throw CompanionLibraryError.disabled
             }
-            let completed = try previous.pending.map(applyCompanionLibraryChange)
-            await generateMobileXDraft()
+            let ready = previous.pending.filter { !$0.usesMacAgent || agentConnected }
+            let completed = try ready.map(applyCompanionLibraryChange)
+            if agentConnected { await generateMobileXDraft() }
             await publishPendingXArticles()
-            scheduleChanged = zip(previous.pending, completed).contains { $0.0.action == .scheduleDraft && $0.1.error == nil }
+            scheduleChanged = zip(ready, completed).contains { $0.0.action == .scheduleDraft && $0.1.error == nil }
             try await publishCompanionLibrary(cloud, workspaceID: id, account: account,
                                               previous: previous, enabling: false, completed: completed)
         }
@@ -87,6 +88,7 @@ extension Workspace {
             snapshot.xArticleAccountName = account.username.isEmpty ? account.name : "@" + account.username
         }
         snapshot.supportsWritingTools = true
+        snapshot.supportsAgentFeatures = agentConnected
         snapshot.writingAgent = StudioWritingConnection(settings: settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: settings).writingProvider.rawValue
         snapshot.supportsContentPlans = true
         snapshot.postingWindows = Dictionary(uniqueKeysWithValues: SocialPlatform.allCases.filter { $0 != .tiktok }.map {
@@ -219,6 +221,7 @@ extension Workspace {
               library.supportsLinkedInArticles != snapshot.supportsLinkedInArticles ||
               library.xArticleAccountKey != snapshot.xArticleAccountKey || library.xArticleAccountName != snapshot.xArticleAccountName ||
               library.supportsWritingTools != snapshot.supportsWritingTools || library.writingAgent != snapshot.writingAgent ||
+              library.supportsAgentFeatures != snapshot.supportsAgentFeatures ||
               library.postingWindows != snapshot.postingWindows || library.postingTimeZone != snapshot.postingTimeZone ||
               library.projects != snapshot.projects || library.items != snapshot.items ||
               library.articles != snapshot.articles || library.scripts != snapshot.scripts || library.supportsScripts != snapshot.supportsScripts ||
@@ -237,6 +240,7 @@ extension Workspace {
         library.xArticleAccountKey = snapshot.xArticleAccountKey
         library.xArticleAccountName = snapshot.xArticleAccountName
         library.supportsWritingTools = snapshot.supportsWritingTools
+        library.supportsAgentFeatures = snapshot.supportsAgentFeatures
         library.writingAgent = snapshot.writingAgent
         library.supportsContentPlans = snapshot.supportsContentPlans
         library.postingWindows = snapshot.postingWindows

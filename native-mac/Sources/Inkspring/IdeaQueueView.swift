@@ -31,8 +31,10 @@ struct IdeaQueueView: View {
                     PageHeading(title: "Post ideas", subtitle: "Develop an angle, then turn it into a post when it’s ready.")
                     Spacer()
                     if busy { ProgressView().controlSize(.small) }
-                    Button("Refresh ideas", systemImage: "arrow.clockwise") { Task { await refresh() } }
-                        .disabled(busy || workspace.project == nil)
+                    if workspace.writingToolsAvailable {
+                        Button("Refresh ideas", systemImage: "arrow.clockwise") { Task { await refresh() } }
+                            .disabled(busy || workspace.project == nil)
+                    }
                     Button("New idea", systemImage: "plus", action: add)
                         .modifier(PrimaryActionStyle())
                 }
@@ -112,18 +114,20 @@ struct IdeaQueueView: View {
         }
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 7) {
-                draft
-                feedback
+                if workspace.writingToolsAvailable {
+                    draft
+                    feedback
+                }
                 Spacer(minLength: 0)
                 more
             }
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    draft
+                    if workspace.writingToolsAvailable { draft }
                     Spacer(minLength: 0)
                     more
                 }
-                feedback
+                if workspace.writingToolsAvailable { feedback }
             }
         }
     }

@@ -70,12 +70,8 @@ struct AgentSettings: View {
         result = nil
         failure = nil
         defer { checking = false }
-        let executable = command
-        let override = ProcessInfo.processInfo.environment["INKSPRING_NATIVE_WORKSPACE"]
         do {
-            let checked = try await Task.detached(priority: .userInitiated) {
-                try AgentConnectionCheck.run(command: executable, workspaceOverride: override)
-            }.value
+            let checked = try await workspace.verifyAgentConnection()
             if enabled { result = checked }
         } catch {
             if enabled { failure = error.localizedDescription }

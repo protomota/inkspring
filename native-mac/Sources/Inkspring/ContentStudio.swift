@@ -191,7 +191,7 @@ struct ContentStudio {
         let title = output["title"] as? String ?? ""
         revised["title"] = format == "reply" && title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Reply draft" : title
-        revised["content"] = body
+        revised["content"] = PostHashtags.addSuggestions(to: body, platform: platform, format: format)
         revised["title"] = String(revised.draftTitle.prefix(100))
         revised["status"] = "draft"
         revised["brief"] = brief
@@ -444,6 +444,7 @@ struct ContentStudio {
             }
             draft["platform"] = platform
             draft["format"] = platform == "instagram" ? "image" : platform == "x" ? style.rawValue : "post"
+            draft["content"] = PostHashtags.addSuggestions(to: draft.body, platform: platform, format: draft["format"])
             draft["ideaId"] = idea.id
             draft["brief"] = idea.body
             draft["mediaPlan"] = idea["mediaPlan"]

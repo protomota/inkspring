@@ -70,8 +70,10 @@ struct PostInlineEditor: View {
                     StudioCopyReference(reference: reference)
                 }
                 Spacer()
-                Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") { writingAssistantOpen.toggle() }
-                    .disabled(!current.acceptsRevisionComments).accessibilityIdentifier("writing.tools")
+                if workspace.writingToolsAvailable {
+                    Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") { writingAssistantOpen.toggle() }
+                        .disabled(!current.acceptsRevisionComments).accessibilityIdentifier("writing.tools")
+                }
                 Button("Revision history", systemImage: "clock.arrow.circlepath") { showingHistory = true }
                     .disabled(dirty)
                 Button("Save", action: save)
@@ -79,7 +81,7 @@ struct PostInlineEditor: View {
                     .keyboardShortcut("s")
                     .disabled(!dirty)
             }
-            if writingAssistantOpen {
+            if writingAssistantOpen, workspace.writingToolsAvailable {
                 ScrollView {
                 StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue,
                     requests: current.comments.enumerated().map { index, comment in
@@ -102,10 +104,12 @@ struct PostInlineEditor: View {
             if ["x", "linkedin", "instagram"].contains(current["platform"]), !["posting", "posted", "uncertain"].contains(current.scheduleStatus) {
                 videoAttachment
             }
-            StudioProofreadAction(document: .init(title: title, body: markdown),
-                                  check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
-                title = $0.title
-                markdown = $0.body
+            if workspace.agentConnected {
+                StudioProofreadAction(document: .init(title: title, body: markdown),
+                                      check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
+                    title = $0.title
+                    markdown = $0.body
+                }
             }
             DraftPostText(workspace: workspace, record: record, text: $markdown, format: $format, label: "Markdown", minHeight: 100)
                 .frame(maxHeight: .infinity)
@@ -436,12 +440,14 @@ struct RecordEditor: View {
                 StudioSegmentedControl(selection: $newsletterMode, options: ["Source", "Preview"], label: Text.init)
                     .accessibilityLabel("Document view")
                 Spacer()
-                Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") {
-                    writingAssistantOpen.toggle()
-                    if writingAssistantOpen { newsletterInspectorOpen = false }
+                if workspace.writingToolsAvailable {
+                    Button("Ask AI", systemImage: "bubble.left.and.text.bubble.right") {
+                        writingAssistantOpen.toggle()
+                        if writingAssistantOpen { newsletterInspectorOpen = false }
+                    }
+                    .buttonStyle(StudioIconButtonStyle()).help("Ask AI")
+                    .disabled(!canEditNewsletter).accessibilityIdentifier("writing.tools")
                 }
-                .buttonStyle(StudioIconButtonStyle()).help("Ask AI")
-                .disabled(!canEditNewsletter).accessibilityIdentifier("writing.tools")
                 Button("Find", systemImage: "magnifyingglass") { newsletterMode = "Source"; newsletterFindRequest += 1 }
                     .buttonStyle(StudioIconButtonStyle()).help("Find in document")
                     .keyboardShortcut("f", modifiers: .command).accessibilityIdentifier("editor.find")
@@ -491,7 +497,7 @@ struct RecordEditor: View {
             HStack(spacing: 0) {
                 newsletterCanvas
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if writingAssistantOpen {
+                if writingAssistantOpen, workspace.writingToolsAvailable {
                     StudioRule(axis: .vertical)
                     StudioScrollView {
                         StudioWritingAssistant(agent: StudioWritingConnection(settings: workspace.settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: workspace.settings).writingProvider.rawValue, requests: (latestNewsletter ?? record).comments.enumerated().map { index, comment in
@@ -563,11 +569,13 @@ struct RecordEditor: View {
                     DraftBodyField(text: value("body"), label: "Markdown", minHeight: 420,
                                    onFocusLost: { _ = saveNewsletter() }, findRequest: newsletterFindRequest,
                                    expandsWithDocument: true)
-                    StudioProofreadAction(document: .init(title: record["title"], subtitle: record["subtitle"], body: record["body"]),
-                                          check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
-                        record["title"] = $0.title
-                        record["subtitle"] = $0.subtitle
-                        record["body"] = $0.body
+                    if workspace.agentConnected {
+                        StudioProofreadAction(document: .init(title: record["title"], subtitle: record["subtitle"], body: record["body"]),
+                                              check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
+                            record["title"] = $0.title
+                            record["subtitle"] = $0.subtitle
+                            record["body"] = $0.body
+                        }
                     }
                     outlineLink
                 }
@@ -635,7 +643,7 @@ struct RecordEditor: View {
 
     private var newsletterSettings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if canEditNewsletter { newsletterAssistant }
+            if canEditNewsletter, workspace.writingToolsAvailable { newsletterAssistant }
             VStack(alignment: .leading, spacing: 9) {
                 Button("Import Markdown…", action: importMarkdown).disabled(!canEditNewsletter || newsletterUnavailable)
                 Button("Export Markdown…") {
@@ -1039,11 +1047,11 @@ struct DraftStudio: View {
                               prompt: draftPrompt("Original post text", color: palette.muted), axis: .vertical)
                         .studioInput()
                 }
-                generationControls
+                if workspace.writingToolsAvailable { generationControls }
                 StudioRule()
                 DraftTitleField(title: value("title"))
                 mediaSection
-                if !["posting", "posted"].contains(initial.scheduleStatus) {
+                if workspace.agentConnected, !["posting", "posted"].contains(initial.scheduleStatus) {
                     StudioProofreadAction(document: .init(title: initial["title"], body: initial.body),
                                           check: { try await ContentStudio.proofread($0, workspace: workspace) }) {
                         initial["title"] = $0.title
@@ -1051,7 +1059,7 @@ struct DraftStudio: View {
                     }
                 }
                 DraftPostText(workspace: workspace, record: initial, text: value("content"), format: value("format"), label: "Post text", minHeight: 260)
-                if !initial.body.isEmpty && !["posting", "posted"].contains(initial.scheduleStatus) {
+                if workspace.writingToolsAvailable, !initial.body.isEmpty, !["posting", "posted"].contains(initial.scheduleStatus) {
                     rewriteControls
                 }
                 StudioRule()
@@ -1139,9 +1147,6 @@ struct DraftStudio: View {
     }
 
     @ViewBuilder private var draftActions: some View {
-        Button(initial["status"] == "ready" ? "Move to draft" : "Mark as ready") {
-            save(status: initial["status"] == "ready" ? "draft" : "ready")
-        }
         if initial.fields["manualQuote"] as? Bool != true, !["posting", "posted"].contains(initial.scheduleStatus) {
             Button(["queued", "due"].contains(initial.scheduleStatus) ? "View schedule" : "Ready to schedule") {
                 save(toSchedule: true)
@@ -1313,12 +1318,12 @@ struct DraftStudio: View {
                 }
                 imageControls
                     .onAppear {
-                        if initial["imagePrompt"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, hasImageContext {
+                        if workspace.writingToolsAvailable, initial["imagePrompt"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, hasImageContext {
                             runGeneration("Writing image prompt…") { try await prepareImagePrompt() }
                         }
                     }
                     .onChange(of: hasImageContext) { _, hasContext in
-                        if hasContext, initial["imagePrompt"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if workspace.writingToolsAvailable, hasContext, initial["imagePrompt"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             runGeneration("Writing image prompt…") { try await prepareImagePrompt() }
                         }
                     }
@@ -1477,10 +1482,12 @@ struct DraftStudio: View {
                       prompt: draftPrompt("Optional direction for a new prompt", color: palette.muted))
                 .studioInput()
             HStack {
-                Button("Regenerate prompt", systemImage: "arrow.clockwise") {
-                    runGeneration("Writing image prompt…") { try await prepareImagePrompt(regenerate: true) }
+                if workspace.writingToolsAvailable {
+                    Button("Regenerate prompt", systemImage: "arrow.clockwise") {
+                        runGeneration("Writing image prompt…") { try await prepareImagePrompt(regenerate: true) }
+                    }
+                    .disabled(!hasImageContext)
                 }
-                .disabled(!hasImageContext)
                 Button("Generate image", systemImage: "sparkles") {
                     runGeneration {
                         try await prepareImagePrompt()
@@ -1494,7 +1501,7 @@ struct DraftStudio: View {
                                        "prompt": initial["imagePrompt"]], as: .image)
                     }
                 }
-                .disabled(!imageProviderConnected || (!hasImageContext && initial["imagePrompt"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                .disabled(!imageProviderConnected || ((!hasImageContext || !workspace.writingToolsAvailable) && initial["imagePrompt"].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
             }
         }
     }
@@ -1660,7 +1667,7 @@ struct DraftStudio: View {
         if !dirty { dirty = true; onDirty(true) }
     }
 
-    private func save(status: String? = nil, toSchedule: Bool = false) {
+    private func save(toSchedule: Bool = false) {
         workspace.perform {
             var draft = initial
             guard attachedKinds.count < 2 else {
@@ -1671,7 +1678,9 @@ struct DraftStudio: View {
             if draft["platform"] == "tiktok", draft["format"] == "video" {
                 _ = try TikTokVideo.coverTimestamp(for: draft)
             }
-            if let status { draft["status"] = status }
+            if draft["platform"] == "linkedin", isNewWriting {
+                draft["content"] = PostHashtags.addSuggestions(to: draft.body, platform: draft["platform"])
+            }
             draft.prepareDraftForSave()
             if toSchedule, !["queued", "due"].contains(draft.scheduleStatus) {
                 draft.fields["schedule"] = ["status": "ready", "pickedAt": WorkspaceRecord.timestamp, "slotAt": ""]
@@ -1846,10 +1855,73 @@ private struct DraftPostText: View {
                     guard article.isXArticle, article.projectID == record.projectID, let ref = article.referenceID else { return nil }
                     return XArticleChoice(id: ref, title: article.title)
                 })
+            } else if PostHashtags.separateField(on: record["platform"]) {
+                CaptionHashtagEditor(text: $text, platform: record["platform"], format: format, minHeight: minHeight)
+                    .id(record["platform"])
             } else {
                 DraftBodyField(text: $text, label: label, minHeight: minHeight)
             }
         }
+    }
+}
+
+private struct CaptionHashtagEditor: View {
+    @Binding var text: String
+    let platform: String
+    let format: String
+    let minHeight: CGFloat
+    @State private var managesSuggestions: Bool?
+    @State private var hashtagInput: String?
+
+    var body: some View {
+        DraftBodyField(text: caption, label: "Caption", minHeight: minHeight)
+        HStack(spacing: 10) {
+            draftFieldLabel("Hashtags")
+            Spacer()
+            Button("Suggest hashtags", systemImage: "sparkles") {
+                let copy = PostHashtags.split(text).caption
+                let tags = PostHashtags.suggestions(for: copy, platform: platform, format: format)
+                guard !tags.isEmpty else { return }
+                hashtagInput = nil
+                managesSuggestions = true
+                text = PostHashtags.join(copy, with: tags)
+            }
+            .disabled(PostHashtags.split(text).caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        TextField("Hashtags", text: hashtags, prompt: Text("#example, #yourtopic"))
+            .studioInput()
+            .help("Edit or remove the suggested hashtags. Separate tags with spaces or commas.")
+            .accessibilityIdentifier("post.hashtags")
+            .onChange(of: text) {
+                if let hashtagInput, PostHashtags.parse(hashtagInput) != PostHashtags.split(text).hashtags {
+                    self.hashtagInput = nil
+                }
+            }
+    }
+
+    private var caption: Binding<String> {
+        Binding(get: { PostHashtags.split(text).caption }, set: { updated in
+            let previous = PostHashtags.split(text)
+            let entered = PostHashtags.split(updated)
+            if !entered.hashtags.isEmpty {
+                managesSuggestions = false
+                hashtagInput = nil
+                text = PostHashtags.join(entered.caption, with: entered.hashtags)
+            } else if managesSuggestions ?? (previous.caption.isEmpty && previous.hashtags.isEmpty) {
+                managesSuggestions = true
+                text = PostHashtags.addSuggestions(to: updated, platform: platform, format: format)
+            } else {
+                text = PostHashtags.join(updated, with: previous.hashtags)
+            }
+        })
+    }
+
+    private var hashtags: Binding<String> {
+        Binding(get: { hashtagInput ?? PostHashtags.split(text).hashtags.joined(separator: " ") }, set: { input in
+            managesSuggestions = false
+            hashtagInput = input
+            text = PostHashtags.join(PostHashtags.split(text).caption, with: PostHashtags.parse(input))
+        })
     }
 }
 

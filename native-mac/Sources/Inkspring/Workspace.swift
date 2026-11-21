@@ -35,6 +35,7 @@ final class Workspace {
     var refreshingAnalytics: Set<SocialPlatform> = []
     private var lastIdeaQueueAttempt: [String: Date] = [:]
     var refreshingWorkSources = false
+    private(set) var verifiedAgentConnection: AgentConnectionCheck.Result?
     private(set) var database: WorkspaceDatabase?
     private var lastDataVersion: Int32?
 
@@ -64,6 +65,31 @@ final class Workspace {
     }
     var ideas: [WorkspaceRecord] { items("idea") }
     var sources: [WorkspaceRecord] { items("source") }
+    var agentAccessEnabled: Bool { settings["mcpEnabled"] as? Bool == true }
+    var agentConnected: Bool {
+        agentAccessEnabled && verifiedAgentConnection != nil && StudioChatAgent.selected.executable != nil
+    }
+    var writingToolsAvailable: Bool { StudioWritingConnection(settings: settings) == .api || agentConnected }
+
+    func verifyAgentConnection() async throws -> AgentConnectionCheck.Result {
+        guard agentAccessEnabled, let directory else {
+            throw WorkspaceError("Turn on agent access before testing the connection.")
+        }
+        let command = Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
+        let path = directory.path
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try AgentConnectionCheck.run(command: command, workspaceOverride: path)
+            }.value
+            try Task.checkCancellation()
+            guard agentAccessEnabled else { throw CancellationError() }
+            verifiedAgentConnection = result
+            return result
+        } catch {
+            if !Task.isCancelled { verifiedAgentConnection = nil }
+            throw error
+        }
+    }
 
     func items(_ kind: String) -> [WorkspaceRecord] {
         records.filter { $0.kind == kind && $0.projectID == projectID }
@@ -98,6 +124,7 @@ final class Workspace {
         self.records = records.filter { !inTrash($0) }
         trashedRecords = records.filter(inTrash)
         self.settings = settings
+        if !agentAccessEnabled { verifiedAgentConnection = nil }
         lastDataVersion = version
     }
 
@@ -110,6 +137,7 @@ final class Workspace {
         guard let database else { throw WorkspaceError("The workspace is unavailable.") }
         try database.set(key, to: value)
         settings[key] = value
+        if !agentAccessEnabled { verifiedAgentConnection = nil }
     }
 
     @discardableResult

@@ -45,6 +45,7 @@ struct WorkspaceWindow: View {
     @Environment(\.colorScheme) private var systemScheme
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(InkspringReview.activityKey) private var completedWriting = 0
+    @AppStorage("studioChatAgent") private var localAgent = StudioChatAgent.codex
     @State private var page: WorkspacePage = .workspace
     @State private var editor: EditorRoute?
     @State private var postBeingEdited: WorkspaceRecord?
@@ -140,6 +141,12 @@ struct WorkspaceWindow: View {
             }
         }
         .onChange(of: page) { _, _ in setPreviewExpanded(false) }
+        .task(id: workspace.agentAccessEnabled) {
+            if workspace.agentAccessEnabled { _ = try? await workspace.verifyAgentConnection() }
+        }
+        .onChange(of: workspace.agentConnected) {
+            if !workspace.agentConnected { showsAgentChat = false }
+        }
         .task(id: canShowSupportReminder) {
             guard canShowSupportReminder else { return }
             // Let existing sheets and the App Store review prompt take precedence.
@@ -397,10 +404,12 @@ struct WorkspaceWindow: View {
                 WorkspaceDraftMenu(create: createDraft)
             }
             Button("Ask Inkspring", systemImage: "sparkles") { navigate { showsOnDeviceAssistant = true } }
-            Button("Ask my agent", systemImage: "bubble.left.and.text.bubble.right") { showsAgentChat = true }
-                .disabled(workspace.project == nil)
-                .foregroundStyle(palette.text)
-                .keyboardShortcut("k", modifiers: [.command, .shift])
+            if workspace.agentConnected, localAgent.executable != nil {
+                Button("Ask my agent", systemImage: "bubble.left.and.text.bubble.right") { showsAgentChat = true }
+                    .disabled(workspace.project == nil)
+                    .foregroundStyle(palette.text)
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
+            }
         }
         .font(InkspringTypography.interface(12))
         .foregroundStyle(palette.muted)
@@ -843,12 +852,11 @@ private struct WorkspaceDraftMenu: View {
 
 enum PostBrowserFilter: String, CaseIterable {
     case all = "All drafts"
-    case working = "In progress"
+    case draft = "Draft"
     case ideas = "Post ideas"
     case scheduling = "Ready to schedule"
-    case sharing = "Ready to share"
 
-    func matches(_ record: WorkspaceRecord, platform: String?, search: String, library: Bool) -> Bool {
+    func matches(_ record: WorkspaceRecord, platform: String?, search: String) -> Bool {
         guard self == .ideas ? record.kind == "idea" : WorkspaceDraftType(record: record) != nil else { return false }
         if let platform {
             let suggestions = record.fields["suggestedPlatforms"] as? [String] ?? []
@@ -857,10 +865,10 @@ enum PostBrowserFilter: String, CaseIterable {
         }
         let matchingStatus = switch self {
         case .all: true
-        case .working: record.isLongForm ? ["draft", "synced"].contains(record["state"]) : record["status"] == "draft" && (library || record.schedule.isEmpty)
+        case .draft: record.isLongForm ? ["draft", "synced", "syncing"].contains(record["state"])
+            : !["queued", "due", "posting", "posted", "skipped", "uncertain"].contains(record.scheduleStatus)
         case .ideas: record["status"] == "draft"
         case .scheduling: ScheduleListing.section(for: record) == .ready
-        case .sharing: record["status"] == "ready"
         }
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return matchingStatus && (query.isEmpty || [record.referenceID ?? "", record.title, record.body, record["subtitle"], WorkspaceDraftType(record: record)?.name ?? "", platformName(ScheduleListing.channel(of: record))]
@@ -922,14 +930,13 @@ struct PostBrowser: View {
     @FocusState private var searchFocused: Bool
 
     private var statuses: [PostBrowserFilter] {
-        if library { return type == nil || type == .post ? [.all, .working, .sharing] : [.all, .working] }
-        if type == .script || type == .article { return [.all, .working] }
-        return [.all, .working, .scheduling]
+        if library || type == .script || type == .article { return [.all, .draft] }
+        return [.all, .draft, .scheduling]
     }
 
     private func records(for filter: PostBrowserFilter, query: String = "") -> [WorkspaceRecord] {
         let rows = (filter == .ideas ? workspace.ideas : workspace.workspaceDrafts).filter {
-            (type == nil || WorkspaceDraftType(record: $0) == type) && filter.matches($0, platform: platform, search: query, library: library)
+            (type == nil || WorkspaceDraftType(record: $0) == type) && filter.matches($0, platform: platform, search: query)
         }
         return rows
     }
@@ -1189,8 +1196,8 @@ struct PostBrowser: View {
         case "posting": "Posting"
         case "posted": "Posted"
         case "skipped": "Skipped"
-        case "ready", "failed", "removed", "manual": "Ready to schedule"
-        default: record["status"] == "ready" ? "Ready to share" : "In progress"
+        case "uncertain": "Check publishing"
+        default: "Draft"
         }
         let attachment = record.fields["video"] is [String: Any] ? " · Video"
             : record.fields["image"] is [String: Any] ? " · Image" : ""

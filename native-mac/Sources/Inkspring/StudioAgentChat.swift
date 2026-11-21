@@ -356,7 +356,7 @@ struct StudioAgentChatView: View {
     @State private var confirmsDeletion = false
     @State private var deletionTarget: UUID?
 
-    private var enabled: Bool { workspace.settings["mcpEnabled"] as? Bool == true }
+    private var enabled: Bool { workspace.agentConnected }
     private var canAsk: Bool {
         enabled && chat.task == nil && workspace.project != nil && workspace.database != nil && agent.executable != nil
     }

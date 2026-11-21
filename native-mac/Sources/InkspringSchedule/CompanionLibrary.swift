@@ -139,6 +139,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var xArticleAccountKey: String?
     public var xArticleAccountName: String?
     public var supportsWritingTools: Bool?
+    public var supportsAgentFeatures: Bool?
     public var writingAgent: String?
     public var newsletters: [Item]?
     public var hasMoreNewsletters: Bool?
@@ -435,6 +436,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
                 editsNewsletter == true && !title.isEmpty && restoresRevision != true && baseScriptTitle != nil
         }
 
+        public var usesMacAgent: Bool { requestsWritingHelp == true || generatesXDraft == true }
+
         public var postingHour: Date? {
             guard action == .scheduleDraft, text.utf8.count <= 32 else { return nil }
             return try? Date(text, strategy: .iso8601)
@@ -461,6 +464,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         guard change.publishesXArticle != true || supportsXArticlePublishing == true else { throw CompanionLibraryError.disabled }
         guard change.writingKind != "linkedin-article" else { throw CompanionLibraryError.disabled }
         guard !change.needsWritingTools || supportsWritingTools == true else { throw CompanionLibraryError.disabled }
+        guard !change.usesMacAgent || supportsAgentFeatures != false else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.xFormat != nil, change.text.contains(XThreadText.separator), supportsXParagraphs != true {
             throw CompanionLibraryError.disabled
@@ -497,6 +501,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         xArticleAccountKey = nil
         xArticleAccountName = nil
         supportsWritingTools = nil
+        supportsAgentFeatures = nil
         writingAgent = nil
         hasMoreNewsletters = nil
         fullText = nil
@@ -709,6 +714,7 @@ struct CompanionLibraryOutbox: Codable, Equatable {
                (change.publishesXArticle != true || library.supportsXArticlePublishing == true),
                change.writingKind != "linkedin-article",
                (!change.needsWritingTools || library.supportsWritingTools == true),
+               (!change.usesMacAgent || library.supportsAgentFeatures != false),
                (entry.action != .saveRevision || library.supportsRevisionHistory == true),
                (entry.xFormat == nil || library.supportsXThreads == true),
                (entry.xFormat == nil || !entry.text.contains(XThreadText.separator) || library.supportsXParagraphs == true),

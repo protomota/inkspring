@@ -60,8 +60,10 @@ struct VaultSettings: View {
                                 Text(note["text"] ?? "").textSelection(.enabled)
                             }
                         }
-                        Button("Suggest ideas from these notes") { Task { await suggest() } }
-                            .disabled(workspace.project == nil || busy)
+                        if workspace.writingToolsAvailable {
+                            Button("Suggest ideas from these notes") { Task { await suggest() } }
+                                .disabled(workspace.project == nil || busy)
+                        }
                     }
                     if busy { ProgressView().controlSize(.small) }
                 }
