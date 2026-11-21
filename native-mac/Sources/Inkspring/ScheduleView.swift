@@ -31,6 +31,9 @@ struct ScheduleView: View {
         let published = PublishedPostFeed.entries(in: workspace.records, projectID: projectFilter, channel: channelFilter)
         let publishedIDs = Set(published.map(\.id))
         let rows = tab == .history ? listing[.history].filter { !publishedIDs.contains($0.id) } : listing[tab]
+        let visibleFocus = focusDraftID.flatMap { id in
+            rows.contains { $0.id == id } || (tab == .history && publishedIDs.contains(id)) ? id : nil
+        }
         let totals = projectFilter == nil && channelFilter == nil ? listing : ScheduleListing(records: workspace.records)
         ScrollViewReader { proxy in
             StudioScrollView {
@@ -110,7 +113,11 @@ struct ScheduleView: View {
                 projectFilter = draft.projectID
                 channelFilter = nil
                 tab = section
+            }
+            .task(id: visibleFocus) {
+                guard let id = visibleFocus else { return }
                 await Task.yield()
+                guard !Task.isCancelled else { return }
                 proxy.scrollTo(id, anchor: .top)
                 focusDraftID = nil
             }
@@ -264,11 +271,13 @@ struct ScheduleView: View {
                 }
                 if !["posting", "posted"].contains(draft.scheduleStatus) {
                     Button("Edit draft") { open(draft) }
+                    if draft.offersPostNow {
+                        Button("Post now…", systemImage: "paperplane") {
+                            reviewPublication(draft, nil) { _ in tab = .history }
+                        }
+                    }
                     StudioFilterMenu(title: "Post actions", value: "Actions") {
                         if !draft.body.isEmpty {
-                            if draft.fields["manualQuote"] as? Bool != true {
-                                Button("Review & publish…") { reviewPublication(draft, nil) { _ in tab = .history } }
-                            }
                             Button("Record as posted…") { manuallyPosted = draft }
                             if workspace.writingToolsAvailable, draft.scheduleStatus != "skipped" {
                                 Button("Rewrite with notes…") {
@@ -520,8 +529,7 @@ struct ScheduleTimePage: View {
                             }
                         }
                     }
-                    StudioDateTimePicker(selection: usesCustomTime ? $postingTime : $preferredHour, includesMinute: usesCustomTime,
-                                         includesFiveMinuteShortcut: usesCustomTime)
+                    StudioDateTimePicker(selection: usesCustomTime ? $postingTime : $preferredHour, includesMinute: usesCustomTime)
                     if !usesCustomTime {
                         StudioLabeledChoice(title: "Posting minute", selection: $chosenMinute, options: Array(-1..<60),
                                             label: { $0 < 0 ? "Choose automatically" : String(format: "%02d", $0) })
@@ -567,7 +575,8 @@ struct ScheduleTimePage: View {
             if draft["platform"] == "tiktok" {
                 reviewPublication(draft, slot) { _ in scheduled() }
             } else {
-                try workspace.scheduleDraft(draft, at: slot, linkedin: selectedLinkedInDestination, customTime: usesCustomTime)
+                let result = try workspace.scheduleDraft(draft, at: slot, linkedin: selectedLinkedInDestination, customTime: usesCustomTime)
+                workspace.showPostResult(result)
                 scheduled()
                 close()
             }

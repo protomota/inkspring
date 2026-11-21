@@ -24,6 +24,7 @@ final class Workspace {
     var projectID = ""
     var error: String?
     var notice: String?
+    var postResultNotice: PostResultNotice?
     var scheduleReminderDraftID: String?
     var backupRegistrationError: String?
     var importingWorkspaceFolder = false
@@ -98,6 +99,12 @@ final class Workspace {
     func selectProject(_ id: String) {
         projectID = id
         perform { try set("selectedProjectID", to: id) }
+    }
+
+    func showPostResult(_ result: WorkspaceRecord) {
+        guard let result = PostResultNotice(result) else { return }
+        notice = nil
+        postResultNotice = result
     }
 
     func reload() throws {
@@ -865,6 +872,7 @@ extension Workspace {
             try database.put(receipt)
             var locked = draft
             var schedule = locked.schedule
+            if !automatic { schedule["slotAt"] = nil }
             schedule["status"] = "posting"
             locked.fields["schedule"] = schedule
             try database.put(locked)

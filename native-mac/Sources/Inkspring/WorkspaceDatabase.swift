@@ -80,6 +80,12 @@ struct WorkspaceRecord: Identifiable {
 
     var schedule: [String: Any] { fields["schedule"] as? [String: Any] ?? [:] }
     var scheduleStatus: String { schedule["status"] as? String ?? "" }
+    var offersPostNow: Bool {
+        kind == "draft" && fields["manualQuote"] as? Bool != true &&
+            !["posting", "posted", "uncertain"].contains(scheduleStatus) &&
+            SocialPlatform(rawValue: self["platform"]).map(SocialPublishPlan.supported.contains) == true &&
+            !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var comments: [[String: Any]] { fields["reviewComments"] as? [[String: Any]] ?? [] }
     var draftVersions: [String: String] { fields["versions"] as? [String: String] ?? [:] }
     var isPendingPostIdea: Bool { kind == "idea" && self["status"] == "draft" && draftVersions.isEmpty }

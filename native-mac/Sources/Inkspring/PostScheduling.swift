@@ -49,7 +49,8 @@ struct ScheduleListing {
         }
         guard item.kind == "draft" else { return nil }
         switch item.scheduleStatus {
-        case "queued", "due", "posting": return .scheduled
+        case "queued", "due": return .scheduled
+        case "posting": return (item.schedule["slotAt"] as? String).flatMap(scheduleDate) == nil ? nil : .scheduled
         case "posted", "skipped": return .history
         case "ready", "failed", "removed", "manual": return .ready
         default: return nil
@@ -64,6 +65,27 @@ struct ScheduleListing {
         if section == .scheduled { return (item.schedule["slotAt"] as? String).flatMap(scheduleDate) }
         let key = section == .ready ? "pickedAt" : item.scheduleStatus == "posted" ? "postedAt" : "skippedAt"
         return (item.schedule[key] as? String).flatMap(scheduleDate) ?? scheduleDate(item["updatedAt"])
+    }
+}
+
+struct PostResultNotice: Equatable {
+    let draftID: String
+    let message: String
+
+    init?(_ result: WorkspaceRecord) {
+        switch result.kind {
+        case "publication" where result["status"] == "published" && !result["draftId"].isEmpty:
+            draftID = result["draftId"]
+            message = "Published on \(platformName(result["platform"]))"
+        case "draft" where result.scheduleStatus == "queued":
+            draftID = result.id
+            message = "Post scheduled"
+        case "newsletter" where result["state"] == "published" || result["state"] == "scheduled":
+            draftID = result.id
+            message = result["state"] == "published" ? "Newsletter published" : "Newsletter scheduled"
+        default:
+            return nil
+        }
     }
 }
 

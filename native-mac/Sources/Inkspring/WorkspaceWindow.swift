@@ -200,7 +200,26 @@ struct WorkspaceWindow: View {
             Text("This draft has unsaved changes.")
         }
         .overlay(alignment: .bottomTrailing) {
-            if let notice = workspace.notice {
+            if let result = workspace.postResultNotice {
+                HStack(spacing: 12) {
+                    Label(result.message, systemImage: "checkmark.circle.fill")
+                        .accessibilityAddTraits(.updatesFrequently)
+                    Button("View Post") {
+                        navigate {
+                            workspace.postResultNotice = nil
+                            scheduleFocus = result.draftID
+                            page = .schedule
+                        }
+                    }
+                    .accessibilityIdentifier("post-result.view")
+                    Button("Dismiss", systemImage: "xmark") { workspace.postResultNotice = nil }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(StudioIconButtonStyle())
+                }
+                .padding(12)
+                .modifier(StatusGlass())
+                .padding(18)
+            } else if let notice = workspace.notice {
                 Button {
                     workspace.notice = nil
                 } label: {
@@ -445,7 +464,7 @@ struct WorkspaceWindow: View {
             ZStack {
                 PostBrowser(workspace: workspace, library: page == .library, edit: editPost, openInStudio: open,
                             openArticle: openXPostArticle,
-                            reviewPair: { reviewPublication($0, at: nil) { _ in } },
+                            postNow: { reviewPublication($0, at: nil) { _ in } },
                             returnedDocumentID: returnedDocumentID, postBeingEdited: postBeingEdited, back: { navigate() }, finishedEditing: {
                                 postBeingEdited = nil
                                 studioDirty = false
@@ -908,7 +927,7 @@ struct PostBrowser: View {
     let edit: (WorkspaceRecord) -> Void
     let openInStudio: (WorkspaceRecord) -> Void
     let openArticle: (WorkspaceRecord, WorkspaceRecord) -> Void
-    let reviewPair: (WorkspaceRecord) -> Void
+    let postNow: (WorkspaceRecord) -> Void
     let returnedDocumentID: String?
     let postBeingEdited: WorkspaceRecord?
     let back: () -> Void
@@ -1015,7 +1034,7 @@ struct PostBrowser: View {
                                     .id(selected.id)
                             } else {
                                 PostPreview(record: selected, workspace: workspace, edit: edit, openInStudio: openInStudio,
-                                        openArticle: openArticle, reviewPair: reviewPair, showSchedule: showSchedule,
+                                        openArticle: openArticle, postNow: postNow, showSchedule: showSchedule,
                                         expanded: expanded, togglePreview: togglePreview)
                                     .id(selected.id)
                             }
@@ -1219,7 +1238,7 @@ struct PostPreview: View {
     let edit: (WorkspaceRecord) -> Void
     let openInStudio: (WorkspaceRecord) -> Void
     let openArticle: (WorkspaceRecord, WorkspaceRecord) -> Void
-    let reviewPair: (WorkspaceRecord) -> Void
+    let postNow: (WorkspaceRecord) -> Void
     let showSchedule: (WorkspaceRecord) -> Void
     let expanded: Bool
     let togglePreview: () -> Void
@@ -1373,7 +1392,7 @@ struct PostPreview: View {
                     $0.isXArticle && $0.projectID == record.projectID && $0.id == record[key] && $0["state"] != "published"
                 }
                 let publish: (() -> Void)? = canCreate && allowsChanges && hasUnpublishedArticle
-                    ? { reviewPair(record) } : nil
+                    ? { postNow(record) } : nil
                 PostArticlePicker(workspace: workspace, projectID: record.projectID,
                                   articleID: articleBinding(key), openArticle: { openArticle($0, record) }, createArticle: create,
                                   xReplyArticles: replies, allowsChanges: allowsChanges, publishTogether: publish)
@@ -1418,6 +1437,11 @@ struct PostPreview: View {
 
     @ViewBuilder private var previewActions: some View {
         if !["posting", "posted"].contains(record.scheduleStatus) {
+            if record.offersPostNow {
+                Button("Post now…", systemImage: "paperplane") { postNow(record) }
+                    .modifier(PrimaryActionStyle())
+                    .accessibilityIdentifier("post.now")
+            }
             Button(record.kind == "idea" ? "Edit idea" : "Edit post", systemImage: "pencil") {
                 edit(record)
             }

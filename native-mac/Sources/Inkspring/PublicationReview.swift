@@ -29,7 +29,7 @@ struct PublicationReview: View {
             if publishing { ProgressView().controlSize(.small) }
             if let plan {
                 Button(xArticleReview != nil ? "Publish together on X" :
-                       scheduleAt == nil ? "Publish on \(plan.platform.name)" : "Schedule TikTok post") {
+                       scheduleAt == nil ? "Post now on \(plan.platform.name)" : "Schedule TikTok post") {
                     Task { await publish(plan) }
                 }
                 .modifier(PrimaryActionStyle())
@@ -201,7 +201,7 @@ struct PublicationReview: View {
         do {
             if let scheduleAt {
                 let scheduled = try workspace.scheduleDraft(draft, at: scheduleAt, tiktok: plan)
-                workspace.notice = "TikTok post scheduled"
+                workspace.showPostResult(scheduled)
                 completed(scheduled)
                 close()
                 return
@@ -210,7 +210,7 @@ struct PublicationReview: View {
             let receipt: WorkspaceRecord
             if let xArticleReview { receipt = try await publisher.publishXArticlePost(xArticleReview) }
             else { receipt = try await publisher.publish(plan) }
-            workspace.notice = "Published on \(plan.platform.name)"
+            workspace.showPostResult(receipt)
             completed(receipt)
             close()
         } catch {

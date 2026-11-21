@@ -1147,6 +1147,13 @@ struct DraftStudio: View {
     }
 
     @ViewBuilder private var draftActions: some View {
+        if initial.fields["manualQuote"] as? Bool != true,
+           let platform = SocialPlatform(rawValue: initial["platform"]), SocialPublishPlan.supported.contains(platform) {
+            Button("Post now…", systemImage: "paperplane") { openPublishReview() }
+                .modifier(PrimaryActionStyle())
+                .disabled(!initial.offersPostNow)
+                .accessibilityIdentifier("post.now")
+        }
         if initial.fields["manualQuote"] as? Bool != true, !["posting", "posted"].contains(initial.scheduleStatus) {
             Button(["queued", "due"].contains(initial.scheduleStatus) ? "View schedule" : "Ready to schedule") {
                 save(toSchedule: true)
@@ -1169,12 +1176,6 @@ struct DraftStudio: View {
             } label: {
                 StudioLinkOutLabel { Text("Open quote in X…") }
             }
-        }
-        if initial.fields["manualQuote"] as? Bool != true,
-           let platform = SocialPlatform(rawValue: initial["platform"]), SocialPublishPlan.supported.contains(platform) {
-            Button("Review & publish…",
-                   systemImage: "paperplane") { openPublishReview() }
-                .disabled(["posting", "posted"].contains(initial.scheduleStatus))
         }
     }
 

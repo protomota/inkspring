@@ -315,7 +315,9 @@ struct NewsletterSendPage: View {
                 Button(review.scheduledAt == nil ? "Publish newsletter" : "Schedule newsletter") {
                     self.review = nil
                     run {
-                        completed(try await service.commit(review))
+                        let result = try await service.commit(review)
+                        workspace.showPostResult(result)
+                        completed(result)
                         close()
                     }
                 }
