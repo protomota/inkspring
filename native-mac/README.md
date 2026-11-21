@@ -120,6 +120,10 @@ Turn on **library sync** in the same panel to review recent drafts and ideas, ed
 
 Use **New ideas** to write ideas manually or brainstorm with the on-device Apple Intelligence model on supported iPhone and iPad models running iOS or iPadOS 26 or later. Save the idea once and Inkspring syncs it to your project automatically. When iCloud is unavailable, Inkspring keeps the save and retries automatically while the app is open. Ideas saved in previous companion builds also join the sync queue.
 
+On iPhone and iPad, open a synced post idea and tap **Draft from post idea** above **Skip idea**. Choose X posts or threads, LinkedIn or Reddit posts, X or LinkedIn articles, Substack newsletters, or YouTube scripts. **Send to Claude on Mac** queues the request for Claude Code on the Mac. Keep Inkspring 1.0.48 or later open on your Mac, enable agent access, and sign in to Claude Code there. Drafts sync back to **Review**. LinkedIn articles are writing drafts you can copy. Nothing is scheduled or published by this action.
+
+For media, use **Review → New → New Instagram post** or **New TikTok video**. Choose a file and add an optional caption. TikTok accepts MP4 or MOV. Instagram also accepts JPEG and PNG. Each file can be up to 30 MB. Inkspring sends the attachment and caption to the Mac through your private iCloud and creates a draft for review.
+
 After restoring a workspace on a new Mac, turn on schedule sync there and confirm **Use this Mac for mobile sync** if iCloud still lists the old workspace. Transfer pauses automatic posting on the receiving Mac and waits for any send already in progress. Review the restored drafts before scheduling them again.
 
 ## Writing formats and Find

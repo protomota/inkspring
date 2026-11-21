@@ -71,6 +71,60 @@ public struct CloudScheduleStore {
         .init(recordName: "\(version.digest)-\(number)", zoneID: zone)
     }
 
+    private func mediaPart(_ number: Int, _ requestID: UUID, _ workspaceID: UUID) -> CKRecord.ID {
+        .init(recordName: "media-\(requestID.uuidString.lowercased())-\(number)", zoneID: textZone(workspaceID))
+    }
+
+    public func stageLibraryMedia(_ data: Data, change: CompanionLibrary.Change, workspaceID: UUID, account: String) async throws {
+        guard change.valid, let media = change.mediaDraft, media.matches(data) else { throw CompanionLibraryError.invalid }
+        try await verifyLibraryWorkspace(workspaceID, account: account)
+        let zone = textZone(workspaceID)
+        if try await fetchTextIndex(zone) == nil { _ = try await database.save(CKRecordZone(zoneID: zone)) }
+        let size = CompanionLibrary.TextVersion.partSize
+        for start in stride(from: 0, to: media.version.partCount, by: 2) {
+            try Task.checkCancellation()
+            try await requireAccount(account)
+            let batch = (start..<min(start + 2, media.version.partCount)).map { number in
+                let record = CKRecord(recordType: Self.recordType, recordID: mediaPart(number, change.id, workspaceID))
+                let offset = number * size
+                record["schedule"] = data.subdata(in: offset..<min(offset + size, data.count)) as CKRecordValue
+                return record
+            }
+            let result = try await database.modifyRecords(saving: batch, deleting: [], savePolicy: .changedKeys, atomically: true)
+            for record in batch {
+                guard let saved = result.saveResults[record.recordID] else { throw CompanionScheduleError.changed }
+                _ = try saved.get()
+            }
+        }
+    }
+
+    public func loadLibraryMedia(_ change: CompanionLibrary.Change, workspaceID: UUID, account: String) async throws -> Data {
+        guard change.valid, let media = change.mediaDraft else { throw CompanionLibraryError.invalid }
+        try await verifyLibraryWorkspace(workspaceID, account: account)
+        var data = Data()
+        for start in stride(from: 0, to: media.version.partCount, by: 2) {
+            try Task.checkCancellation()
+            let ids = (start..<min(start + 2, media.version.partCount)).map { mediaPart($0, change.id, workspaceID) }
+            let records = try await database.records(for: ids)
+            for id in ids {
+                guard let part = try records[id]?.get()["schedule"] as? Data,
+                      part.count <= CompanionLibrary.TextVersion.partSize,
+                      data.count + part.count <= media.byteCount else { throw CompanionLibraryError.invalid }
+                data.append(part)
+            }
+        }
+        try await requireAccount(account)
+        guard media.matches(data) else { throw CompanionLibraryError.invalid }
+        return data
+    }
+
+    public func deleteLibraryMedia(_ change: CompanionLibrary.Change, workspaceID: UUID, account: String) async throws {
+        guard change.valid, let media = change.mediaDraft else { return }
+        try await verifyLibraryWorkspace(workspaceID, account: account)
+        let ids = (0..<media.version.partCount).map { mediaPart($0, change.id, workspaceID) }
+        _ = try await database.modifyRecords(saving: [], deleting: ids, atomically: false)
+    }
+
     public func loadLibraryText(_ version: CompanionLibrary.TextVersion, workspaceID: UUID, account: String) async throws -> Data {
         try await verifyLibraryWorkspace(workspaceID, account: account)
         let zone = textZone(workspaceID)

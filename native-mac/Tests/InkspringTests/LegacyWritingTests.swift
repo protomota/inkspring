@@ -31,7 +31,7 @@ import Testing
     #expect(!workspace.records.contains { $0.id == archived.id })
     #expect(!workspace.trashedRecords.contains { $0.id == archived.id })
     let snapshot = workspace.makeCompanionLibrary(workspaceID: UUID())
-    #expect(snapshot.supportsLinkedInArticles == false)
+    #expect(snapshot.supportsLinkedInArticles == true)
     #expect(snapshot.articles?.map(\.id) == [xArticle.id])
     let backup = try database.snapshot()
     #expect(backup.records.first { $0.id == archived.id }?.body == archived.body)

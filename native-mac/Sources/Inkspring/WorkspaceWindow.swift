@@ -812,13 +812,18 @@ func platformName(_ value: String) -> String {
 
 enum WorkspaceDraftType: String, CaseIterable {
     case post = "draft", newsletter, article, script
+    case linkedInArticle = "linkedin-article"
 
     init?(record: WorkspaceRecord) {
-        self.init(rawValue: record.kind)
+        self.init(rawValue: record.isLinkedInWritingArticle ? "linkedin-article" : record.kind)
     }
 
     func makeRecord(projectID: String) -> WorkspaceRecord {
-        WorkspaceRecord.new(rawValue, projectID: projectID)
+        guard self == .linkedInArticle else { return WorkspaceRecord.new(rawValue, projectID: projectID) }
+        var draft = WorkspaceRecord.new("article", projectID: projectID)
+        draft["platform"] = "linkedin"
+        draft.fields["writingOnly"] = true
+        return draft
     }
 
     var name: String {
@@ -826,6 +831,7 @@ enum WorkspaceDraftType: String, CaseIterable {
         case .post: "Social post"
         case .newsletter: "Newsletter"
         case .article: "X article"
+        case .linkedInArticle: "LinkedIn article"
         case .script: "YouTube script"
         }
     }
@@ -834,7 +840,7 @@ enum WorkspaceDraftType: String, CaseIterable {
         switch self {
         case .post: "text.bubble"
         case .newsletter: "envelope"
-        case .article: "doc.richtext"
+        case .article, .linkedInArticle: "doc.richtext"
         case .script: "play.rectangle"
         }
     }

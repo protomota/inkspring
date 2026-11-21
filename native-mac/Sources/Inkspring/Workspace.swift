@@ -112,7 +112,7 @@ final class Workspace {
         let version = try database.dataVersion()
         let records = try database.records().compactMap { stored -> WorkspaceRecord? in
             // Keep retired writing in the database and full backups.
-            guard stored.kind != "article" || stored["platform"] != "linkedin" else { return nil }
+            guard stored.kind != "article" || stored["platform"] != "linkedin" || stored.isLinkedInWritingArticle else { return nil }
             guard stored.kind == "draft", !stored["linkedinArticleID"].isEmpty else { return stored }
             var post = stored
             post.fields["linkedinArticleID"] = nil
@@ -172,7 +172,7 @@ final class Workspace {
         }
         if ["script", "article"].contains(record.kind) {
             if record.kind == "script" { record["platform"] = "youtube" }
-            if record.kind == "article" {
+            if record.kind == "article", !record.isLinkedInWritingArticle {
                 guard record["platform"] == "x" || record["platform"].isEmpty else {
                     throw WorkspaceError("Choose X for an article draft.")
                 }

@@ -24,13 +24,30 @@ extension Workspace {
             guard let previous = try await cloud.loadLibrary(workspaceID: id, account: account), previous.enabled else {
                 throw CompanionLibraryError.disabled
             }
-            let ready = previous.pending.filter { !$0.usesMacAgent || agentConnected }
-            let completed = try ready.map(applyCompanionLibraryChange)
+            let ready = previous.pending.filter { $0.ideaDraftPlatforms == nil && $0.mediaDraft == nil && (!$0.usesMacAgent || agentConnected) }
+            var completed = try ready.map(applyCompanionLibraryChange)
+            var completedMedia: CompanionLibrary.Change?
+            if let request = previous.pending.first(where: { $0.mediaDraft != nil }) {
+                do {
+                    let data = try await cloud.loadLibraryMedia(request, workspaceID: id, account: account)
+                    completed.append(await createMobileMediaDraft(request, data: data))
+                    completedMedia = request
+                } catch CompanionLibraryError.invalid {
+                    completed.append(.init(id: request.id, error: "This attachment could not be read. Choose the file again on your device."))
+                    completedMedia = request
+                }
+            }
+            if let request = previous.pending.first(where: { $0.ideaDraftPlatforms != nil }) {
+                completed.append(await draftMobileIdea(request))
+            }
             if agentConnected { await generateMobileXDraft() }
             await publishPendingXArticles()
             scheduleChanged = zip(ready, completed).contains { $0.0.action == .scheduleDraft && $0.1.error == nil }
             try await publishCompanionLibrary(cloud, workspaceID: id, account: account,
                                               previous: previous, enabling: false, completed: completed)
+            if let completedMedia {
+                try await cloud.deleteLibraryMedia(completedMedia, workspaceID: id, account: account)
+            }
         }
         if scheduleChanged { await syncCompanion() }
     }
@@ -82,7 +99,7 @@ extension Workspace {
         snapshot.supportsXParagraphs = true
         snapshot.supportsRevisionHistory = true
         snapshot.supportsXArticlePublishing = true
-        snapshot.supportsLinkedInArticles = false
+        snapshot.supportsLinkedInArticles = true
         if let account = try? socialAccounts.savedAccount(.x) {
             snapshot.xArticleAccountKey = account.connectionKey
             snapshot.xArticleAccountName = account.username.isEmpty ? account.name : "@" + account.username
@@ -91,6 +108,8 @@ extension Workspace {
         snapshot.supportsAgentFeatures = agentConnected
         snapshot.writingAgent = StudioWritingConnection(settings: settings) == .agent ? StudioChatAgent.selected.rawValue : WritingProviders(settings: settings).writingProvider.rawValue
         snapshot.supportsContentPlans = true
+        snapshot.supportsClaudeIdeaDrafts = true
+        snapshot.supportsMediaDrafts = true
         snapshot.postingWindows = Dictionary(uniqueKeysWithValues: SocialPlatform.allCases.filter { $0 != .tiktok }.map {
             ($0.rawValue, postingWindow(for: $0.rawValue))
         })
@@ -142,6 +161,9 @@ extension Workspace {
                     if record.fields["mobileGenerationPending"] as? Bool == true {
                         item.generationStatus = record["generationError"].isEmpty ? "Waiting for your Mac to generate this draft." : record["generationError"]
                     }
+                } else {
+                    let writing = record.fields["mobileWritingVersions"] as? [String: String] ?? [:]
+                    item.draftedIdeaPlatforms = Set(record.draftVersions.keys).union(writing.keys).sorted()
                 }
                 item.writingReply = record["notesReply"].isEmpty ? nil : record["notesReply"]
                 item.writingError = record["writingRequestError"].isEmpty ? nil : record["writingRequestError"]
@@ -216,6 +238,8 @@ extension Workspace {
               library.supportsXReplyArticles != snapshot.supportsXReplyArticles ||
               library.supportsXThreads != snapshot.supportsXThreads ||
               library.supportsXParagraphs != snapshot.supportsXParagraphs ||
+              library.supportsClaudeIdeaDrafts != snapshot.supportsClaudeIdeaDrafts ||
+              library.supportsMediaDrafts != snapshot.supportsMediaDrafts ||
               library.supportsRevisionHistory != snapshot.supportsRevisionHistory ||
               library.supportsXArticlePublishing != snapshot.supportsXArticlePublishing ||
               library.supportsLinkedInArticles != snapshot.supportsLinkedInArticles ||
@@ -234,6 +258,8 @@ extension Workspace {
         library.supportsXReplyArticles = snapshot.supportsXReplyArticles
         library.supportsXThreads = snapshot.supportsXThreads
         library.supportsXParagraphs = snapshot.supportsXParagraphs
+        library.supportsClaudeIdeaDrafts = snapshot.supportsClaudeIdeaDrafts
+        library.supportsMediaDrafts = snapshot.supportsMediaDrafts
         library.supportsRevisionHistory = snapshot.supportsRevisionHistory
         library.supportsXArticlePublishing = snapshot.supportsXArticlePublishing
         library.supportsLinkedInArticles = snapshot.supportsLinkedInArticles
@@ -262,7 +288,9 @@ extension Workspace {
             let id = change.id.uuidString.lowercased()
             var newsletterRevisions = settings["companionNewsletterRevisions"] as? [String: String] ?? [:]
             if savedIDs.contains(id) { return .init(id: change.id, newsletterRevision: newsletterRevisions[id]) }
-            guard change.valid else { return .init(id: change.id, error: "Invalid mobile change.") }
+            guard change.valid, change.ideaDraftPlatforms == nil, change.mediaDraft == nil else {
+                return .init(id: change.id, error: "Invalid mobile change.")
+            }
             if let error = try applyLibraryAction(change, id: id) { return .init(id: change.id, error: error) }
             let retainedIDs = Array((savedIDs + [id]).suffix(160))
             if change.action == .editDraft || change.createsScript == true {
@@ -356,13 +384,17 @@ extension Workspace {
         }
         if change.createsScript == true {
             guard projects.contains(where: { $0.id == change.itemID }) else { return "This project no longer exists on your Mac." }
-            guard change.writingKind != "linkedin-article" else { return "This writing format is unavailable." }
-            let recordKind = change.writingKind ?? "script"
+            let linkedInArticle = change.writingKind == "linkedin-article"
+            let recordKind = linkedInArticle ? "article" : change.writingKind ?? "script"
             if records.contains(where: { $0.id == id && $0.kind == recordKind }) { return nil }
             var script = WorkspaceRecord.new(recordKind, projectID: change.itemID)
             script["id"] = id
             script["title"] = change.title
             script["body"] = change.text
+            if linkedInArticle {
+                script["platform"] = "linkedin"
+                script.fields["writingOnly"] = true
+            }
             try save(script)
             return nil
         }
@@ -452,6 +484,67 @@ extension Workspace {
             break
         }
         return nil
+    }
+
+    func createMobileMediaDraft(_ change: CompanionLibrary.Change, data: Data) async -> CompanionLibrary.Result {
+        do {
+            try reload()
+            let draftID = change.id.uuidString.lowercased()
+            if (records + trashedRecords).contains(where: { $0.id == draftID }) ||
+                (settings["libraryDeletedIDs"] as? [String] ?? []).contains(draftID) { return .init(id: change.id) }
+            guard change.valid, let media = change.mediaDraft, data.count == media.byteCount,
+                  CompanionLibrary.TextVersion(data: data) == media.version,
+                  projects.contains(where: { $0.id == change.itemID }) else {
+                throw WorkspaceError("Choose an existing project and a supported attachment.")
+            }
+            let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let file = folder.appending(path: media.fileName)
+            try data.write(to: file, options: .atomic)
+            var draft = WorkspaceRecord.new("draft", projectID: change.itemID)
+            draft["id"] = draftID
+            draft["title"] = "\(platformName(media.platform)) \(media.isVideo ? "video" : "post")"
+            draft["platform"] = media.platform
+            draft["format"] = media.isVideo ? "video" : "image"
+            draft["content"] = change.text
+            if media.isVideo { draft.setDraftMedia(try await attachVideo(file), as: .video) }
+            else { draft.setDraftMedia(try attachImage(file), as: .image) }
+            try save(draft)
+            return .init(id: change.id)
+        } catch {
+            return .init(id: change.id, error: error.localizedDescription)
+        }
+    }
+
+    func draftMobileIdea(_ change: CompanionLibrary.Change, model: ContentStudio.Model? = nil) async -> CompanionLibrary.Result {
+        do {
+            try reload()
+            guard change.valid, let platforms = change.ideaDraftPlatforms else {
+                throw WorkspaceError("Invalid post idea request.")
+            }
+            let requestID = change.id.uuidString.lowercased()
+            if (records + trashedRecords).contains(where: {
+                $0.id == change.itemID && ($0.fields["mobileIdeaDraftRequests"] as? [String])?.contains(requestID) == true
+            }) { return .init(id: change.id) }
+            guard let idea = records.first(where: { $0.id == change.itemID && $0.kind == "idea" && $0["status"] == "draft" }),
+                  idea["updatedAt"] == change.revision else {
+                throw WorkspaceError("This idea changed on your Mac. Reopen it before trying again.")
+            }
+            guard agentAccessEnabled else {
+                throw WorkspaceError("Enable agent access in Inkspring → Settings → AI agents on your Mac, then try again.")
+            }
+            guard model != nil || StudioChatAgent.claude.executable != nil else {
+                throw WorkspaceError("Install and sign in to Claude Code on your Mac, then try again.")
+            }
+            let claude = model ?? StudioChatAgent.claude.writingModel(workspace: self, providers: WritingProviders(settings: settings))
+            _ = try await ContentStudio(workspace: self, model: claude)
+                .pick(idea, platforms: platforms, xFormat: change.xFormat ?? "post", mobileRequestID: requestID)
+            return .init(id: change.id)
+        } catch {
+            return .init(id: change.id, error: error.localizedDescription)
+        }
     }
 
     func generateMobileXDraft(model: ContentStudio.Model? = nil) async {

@@ -1,6 +1,7 @@
 import CloudKit
 import CryptoKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private extension CompanionLibrary.Item {
     var revisionDate: Date? {
@@ -101,6 +102,10 @@ final class MobileLibrary {
     }
 
     var canUseAgentFeatures: Bool { snapshot?.enabled == true && snapshot?.supportsAgentFeatures == true }
+
+    var pendingMediaDrafts: [CompanionLibraryOutbox.Entry] {
+        outbox.entries.filter { $0.mediaDraft != nil && $0.workspaceID == snapshot?.workspaceID && $0.account == account }
+    }
 
     func pendingChanges(for itemID: String) -> [CompanionLibraryOutbox.Entry] {
         outbox.entries.filter {
@@ -252,7 +257,7 @@ final class MobileLibrary {
         let ids = Set((remote + (snapshot?.newsletters ?? [])).map(\.id))
         let local = outbox.entries.filter {
             $0.createsScript == true && $0.account == account && $0.workspaceID == snapshot?.workspaceID
-                && $0.writingKind != "linkedin-article" && !ids.contains($0.id.uuidString.lowercased())
+                && !ids.contains($0.id.uuidString.lowercased())
         }.map { entry in
             CompanionLibrary.Item(id: entry.id.uuidString.lowercased(), revision: "pending-add", kind: mobileWritingKind(entry.writingKind),
                 projectID: entry.itemID ?? "", title: entry.title, body: entry.text, shortened: false,
@@ -278,6 +283,10 @@ final class MobileLibrary {
     func saveChange(_ change: CompanionLibrary.Change, workspaceID: UUID) throws {
         guard let account, snapshot?.workspaceID == workspaceID else { throw CompanionScheduleError.changed }
         guard !change.usesMacAgent || canUseAgentFeatures else { throw CompanionLibraryError.disabled }
+        guard change.ideaDraftPlatforms == nil || snapshot?.supportsClaudeIdeaDrafts == true else {
+            throw CompanionLibraryError.macUpdateForIdeaDrafts
+        }
+        guard change.mediaDraft == nil || snapshot?.supportsMediaDrafts == true else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
         if change.isLongFormEdit, try JSONEncoder().encode(change).count > change.payloadLimit {
             throw CompanionLibraryError.invalid
@@ -295,7 +304,34 @@ final class MobileLibrary {
                         title: change.title, text: change.text, workspaceID: workspaceID, account: account,
                         afterTrash: afterTrash, publishesXArticle: change.publishesXArticle, xArticleAccountKey: change.xArticleAccountKey, requestsWritingHelp: change.requestsWritingHelp, writingKind: change.writingKind, baseScriptTitle: change.baseScriptTitle, editsScript: change.editsScript, createsScript: change.createsScript, editsNewsletter: change.editsNewsletter, afterNewsletterEdit: predecessor,
                         baseNewsletterText: change.baseNewsletterText, xFormat: change.xFormat, generatesXDraft: change.generatesXDraft,
-                        restoresRevision: change.restoresRevision, subtitle: change.subtitle, contentOperation: change.contentOperation, basePlan: change.basePlan, initialPlan: change.initialPlan))
+                        restoresRevision: change.restoresRevision, subtitle: change.subtitle, contentOperation: change.contentOperation, basePlan: change.basePlan, initialPlan: change.initialPlan,
+                        ideaDraftPlatforms: change.ideaDraftPlatforms, mediaDraft: change.mediaDraft))
+    }
+
+    private func mediaOutboxURL(_ id: UUID) -> URL {
+        URL.applicationSupportDirectory.appending(path: "Inkspring/Media Outbox/\(id.uuidString.lowercased())")
+    }
+
+    func queueMediaDraft(file: URL, platform: String, caption: String, projectID: String) throws {
+        guard let snapshot else { throw CompanionScheduleError.changed }
+        let opened = file.startAccessingSecurityScopedResource()
+        defer { if opened { file.stopAccessingSecurityScopedResource() } }
+        let attributes = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard attributes.isRegularFile == true, let size = attributes.fileSize,
+              (1...CompanionLibrary.MediaDraft.limit).contains(size) else { throw CompanionLibraryError.invalid }
+        let data = try Data(contentsOf: file, options: .mappedIfSafe)
+        let name = file.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        var change = CompanionLibrary.Change(action: .note, itemID: projectID, title: name, text: caption)
+        change.mediaDraft = .init(platform: platform, fileName: name, data: data)
+        guard change.valid else { throw CompanionLibraryError.invalid }
+        let destination = mediaOutboxURL(change.id)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: destination, options: .atomic)
+        do { try saveChange(change, workspaceID: snapshot.workspaceID) }
+        catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
     }
 
     private func queue(_ entry: CompanionLibraryOutbox.Entry) throws {
@@ -305,6 +341,12 @@ final class MobileLibrary {
         if entry.action == .editDraft {
             next.queueNewsletterEdit(entry)
         } else {
+            if entry.ideaDraftPlatforms != nil {
+                next.entries.removeAll {
+                    $0.ideaDraftPlatforms != nil && $0.itemID == entry.itemID && $0.workspaceID == entry.workspaceID
+                        && $0.account == entry.account && $0.error != nil
+                }
+            }
             if [.editDraft, .editIdea, .trashItem, .restoreItem, .deleteItem, .scheduleDraft].contains(entry.action) {
                 next.entries.removeAll {
                     $0.action == entry.action && $0.contentOperation == entry.contentOperation
@@ -315,7 +357,8 @@ final class MobileLibrary {
             next.entries.append(entry)
         }
         try persist(next)
-        if (entry.isLongFormEdit || entry.requestsWritingHelp == true || entry.publishesXArticle == true) && busy {
+        if (entry.isLongFormEdit || entry.requestsWritingHelp == true || entry.publishesXArticle == true
+            || entry.ideaDraftPlatforms != nil || entry.mediaDraft != nil) && busy {
             newsletterRefreshPending = true
         } else {
             Task { await refresh() }
@@ -354,11 +397,15 @@ final class MobileLibrary {
         var next = outbox
         try queueHistory(in: incoming, account: account, outbox: &next)
         let changes = next.prepare(for: incoming, account: account)
+        let completedMedia = outbox.entries.filter { entry in
+            entry.mediaDraft != nil && incoming.results.contains { $0.id == entry.requestID && $0.error == nil }
+        }
         if next != outbox { defaults.set(try JSONEncoder().encode(next), forKey: Self.outboxKey) }
         if snapshot != incoming || next != outbox {
             // Clearing an acknowledged local edit must replace the displayed text in the same update.
             state = LibraryState(snapshot: incoming, outbox: next)
         }
+        for entry in completedMedia { try? FileManager.default.removeItem(at: mediaOutboxURL(entry.id)) }
         return changes
     }
 
@@ -543,9 +590,14 @@ final class MobileLibrary {
             }
             guard revision == accountRevision else { return }
             let changes = try acceptSnapshot(completed, account: key)
-            if !changes.isEmpty {
+            let ready = Array(changes.prefix(max(0, 24 - incoming.pending.count)))
+            if !ready.isEmpty {
+                for change in ready where change.mediaDraft != nil {
+                    let data = try Data(contentsOf: mediaOutboxURL(change.id), options: .mappedIfSafe)
+                    try await cloud.stageLibraryMedia(data, change: change, workspaceID: incoming.workspaceID, account: key)
+                }
                 _ = try await cloud.updateLibrary(workspaceID: incoming.workspaceID, account: key) { library in
-                    for change in changes.prefix(max(0, 24 - library.pending.count)) {
+                    for change in ready.prefix(max(0, 24 - library.pending.count)) {
                         do { try library.enqueue(change) }
                         catch CompanionLibraryError.full { break }
                     }
@@ -624,6 +676,8 @@ final class MobileLibrary {
         value.supportsXParagraphs = true
         value.supportsRevisionHistory = true
         value.supportsContentPlans = true
+        value.supportsClaudeIdeaDrafts = !ProcessInfo.processInfo.arguments.contains("--old-idea-draft-mac-fixture")
+        value.supportsMediaDrafts = true
         if ProcessInfo.processInfo.arguments.contains("--x-thread-fixture") {
             var draft = CompanionLibrary.Item(id: "x-followup-demo", revision: "2026-11-18T16:00:00.000Z", kind: .draft,
                 projectID: "studio", title: "I started a cult", body: ["We build useful tools and give them away.", "Read more: https://newsletter.protomota.com/", "Join us: https://protomota.com/discord"].joined(separator: XThreadText.separator),
@@ -781,7 +835,7 @@ private struct MobileNewsletterDetail: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         metadataHeader
-                        if item.kind == .article { articlePublishing }
+                        if item.kind == .article, item.reviewPlatform == "x-article" { articlePublishing }
                         Divider()
                         if !hasFullText || (showsMacVersion && item.shortened) {
                             Text("Waiting for the full text to sync.").font(.footnote).foregroundStyle(palette.muted)
@@ -832,7 +886,7 @@ private struct MobileNewsletterDetail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(palette.iconAccent)
         .toolbar(editingRevision == nil ? .visible : .hidden, for: .tabBar)
-        .navigationTitle(item.kind == .article ? "X article" : item.kind == .script ? "YouTube script" : "Newsletter")
+        .navigationTitle(item.kind == .newsletter ? "Newsletter" : reviewPlatformName(item.reviewPlatform == "youtube" ? "youtube-script" : item.reviewPlatform))
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: markdown + "\0" + scriptTitle) {
             guard let editingRevision, let recoveryKey, markdown != editingBaseMarkdown || scriptTitle != baseScriptTitle else { return }
@@ -1127,6 +1181,8 @@ struct MobileReviewView: View {
     @State private var deleteItem: CompanionLibrary.Item?
     @State private var actionError: String?
     @State private var creatingXDraft = false
+    @State private var mediaPlatform: String?
+    @State private var creatingMediaDraft = false
     @State private var scriptError: String?
     @State private var askingInkspring = false
 
@@ -1247,6 +1303,17 @@ struct MobileReviewView: View {
                             .listRowBackground(Color.clear)
                         }
                         Section {
+                            if filter == "Drafts" {
+                                ForEach(library.pendingMediaDrafts) { request in
+                                    if let media = request.mediaDraft, (projectFilter == nil || request.itemID == projectFilter),
+                                       (platformFilter == nil || media.platform == platformFilter) {
+                                        Label(request.error ?? "\(reviewPlatformName(media.platform)) draft queued for your Mac.",
+                                              systemImage: request.error == nil ? "clock" : "exclamationmark.icloud")
+                                            .font(.footnote)
+                                            .listRowBackground(palette.card)
+                                    }
+                                }
+                            }
                             if items.isEmpty {
                                 Text(emptyMessage)
                                     .foregroundStyle(.secondary)
@@ -1285,6 +1352,9 @@ struct MobileReviewView: View {
                                 .accessibilityIdentifier("newsletter.new")
                             Button { createWriting("article") } label: { Label { Text("New X article") } icon: { platformMenuIcon("x") } }
                                 .accessibilityIdentifier("article.new")
+                            if library.snapshot?.supportsClaudeIdeaDrafts == true, library.snapshot?.supportsLinkedInArticles == true {
+                                Button { createWriting("linkedin-article") } label: { Label { Text("New LinkedIn article") } icon: { platformMenuIcon("linkedin") } }
+                            }
                             Button { createWriting("script") } label: { Label { Text("New YouTube script") } icon: { platformMenuIcon("youtube") } }
                                 .accessibilityIdentifier("script.new")
                         }
@@ -1292,6 +1362,14 @@ struct MobileReviewView: View {
                             if library.canUseAgentFeatures, library.snapshot?.supportsXThreads == true {
                                 Button { creatingXDraft = true } label: { Label { Text("New X post or thread") } icon: { platformMenuIcon("x") } }
                                     .accessibilityIdentifier("x.newDraft")
+                            }
+                            if library.snapshot?.supportsMediaDrafts == true {
+                                Button("New Instagram post", systemImage: "photo") {
+                                    mediaPlatform = "instagram"; creatingMediaDraft = true
+                                }
+                                Button("New TikTok video", systemImage: "video") {
+                                    mediaPlatform = "tiktok"; creatingMediaDraft = true
+                                }
                             }
                         }
                     } label: { Text("New") }.accessibilityIdentifier("writing.new")
@@ -1303,7 +1381,16 @@ struct MobileReviewView: View {
             }
             .alert("Couldn’t create draft", isPresented: Binding(get: { scriptError != nil }, set: { if !$0 { scriptError = nil } })) { Button("OK") { scriptError = nil } } message: { Text(scriptError ?? "") }
             .navigationDestination(isPresented: $creatingXDraft) {
-                MobileXGeneration(library: library, idea: nil)
+                MobileXGeneration(library: library)
+            }
+            .sheet(isPresented: $creatingMediaDraft) {
+                if let mediaPlatform {
+                    NavigationStack {
+                        MobileMediaDraftForm(platform: mediaPlatform, library: library,
+                                             initialProject: projectFilter ?? library.snapshot?.projects.first?.id ?? "")
+                            .toolbar { Button("Done") { creatingMediaDraft = false } }
+                    }
+                }
             }
         } detail: {
             Group {
@@ -1620,10 +1707,14 @@ struct MobileReviewView: View {
 }
 
 private extension CompanionLibrary.Item {
-    var reviewPlatform: String { kind == .article ? "x-article" : platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    var reviewPlatform: String {
+        let channel = platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return kind == .article ? (channel == "linkedin" ? "linkedin-article" : "x-article") : channel
+    }
 }
 
 private func mobileWritingKind(_ kind: String?) -> CompanionLibrary.Item.Kind {
+    if kind == "linkedin-article" { return .article }
     return kind.flatMap(CompanionLibrary.Item.Kind.init(rawValue:)) ?? .script
 }
 
@@ -1631,6 +1722,7 @@ private func mobileWritingPlatform(_ kind: String?) -> String {
     switch kind {
     case "newsletter": "substack"
     case "article": "x"
+    case "linkedin-article": "linkedin"
     default: "youtube"
     }
 }
@@ -1641,7 +1733,9 @@ private func reviewPlatformName(_ platform: String) -> String {
     case "linkedin": "LinkedIn"
     case "tiktok": "TikTok"
     case "youtube": "YouTube"
+    case "youtube-script": "YouTube script"
     case "x-article": "X article"
+    case "linkedin-article": "LinkedIn article"
     default: platform.capitalized
     }
 }
@@ -1649,7 +1743,6 @@ private func reviewPlatformName(_ platform: String) -> String {
 private struct MobileXGeneration: View {
     @Environment(\.studioPalette) private var palette
     let library: MobileLibrary
-    let idea: CompanionLibrary.Item?
     @State private var projectID = ""
     @State private var title = ""
     @State private var brief = ""
@@ -1660,7 +1753,7 @@ private struct MobileXGeneration: View {
     var body: some View {
         Form {
             Section {
-                if idea == nil, let projects = library.snapshot?.projects {
+                if let projects = library.snapshot?.projects {
                     Picker("Project", selection: $projectID) {
                         ForEach(projects) { Text($0.name).tag($0.id) }
                     }
@@ -1674,8 +1767,7 @@ private struct MobileXGeneration: View {
                 Button("Generate on my Mac", systemImage: "sparkles") {
                     guard let snapshot = library.snapshot else { return }
                     do {
-                        try library.saveChange(.init(action: .addIdea, itemID: idea?.id ?? projectID,
-                                                     revision: idea?.revision ?? "", title: title, text: brief,
+                        try library.saveChange(.init(action: .addIdea, itemID: projectID, title: title, text: brief,
                                                      xFormat: format, generatesXDraft: true), workspaceID: snapshot.workspaceID)
                         queued = true
                         message = "Queued for your Mac. The generated draft will appear in Review."
@@ -1695,9 +1787,155 @@ private struct MobileXGeneration: View {
         .scrollContentBackground(.hidden).background(palette.canvas)
         .navigationTitle("Draft for X").navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            projectID = idea?.projectID ?? library.snapshot?.projects.first?.id ?? ""
-            title = idea?.title ?? ""
-            brief = idea?.body ?? ""
+            projectID = library.snapshot?.projects.first?.id ?? ""
+        }
+    }
+}
+
+private struct MobileIdeaDraftPicker: View {
+    @Environment(\.studioPalette) private var palette
+    let item: CompanionLibrary.Item
+    let library: MobileLibrary
+    let workspaceID: UUID
+    @State private var chosen: Set<String> = []
+    @State private var format = XPostStyle.post
+    @State private var message: String?
+    @State private var queued = false
+
+    private var compatibleMac: Bool { library.snapshot?.supportsClaudeIdeaDrafts == true }
+
+    var body: some View {
+        Form {
+            Section("Drafts to create") {
+                ForEach(CompanionLibrary.ideaDraftPlatforms, id: \.self) { platform in
+                    if item.draftedIdeaPlatforms?.contains(platform) == true {
+                        Label("\(ideaDraftLabel(platform)) draft exists", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(palette.muted)
+                    } else {
+                        Button {
+                            if chosen.contains(platform) { chosen.remove(platform) }
+                            else { chosen.insert(platform) }
+                        } label: {
+                            HStack {
+                                Label(ideaDraftLabel(platform), systemImage: platform.hasSuffix("-article") || platform == "substack" ? "doc.richtext" : "text.bubble")
+                                Spacer()
+                                Image(systemName: chosen.contains(platform) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(chosen.contains(platform) ? palette.iconAccent : palette.muted)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(minHeight: 35)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(chosen.contains(platform) ? .isSelected : [])
+                        .accessibilityIdentifier("idea.draft.platform.\(platform)")
+                    }
+                }
+                if chosen.contains("x") {
+                    Picker("X post type", selection: $format) {
+                        ForEach(XPostStyle.allCases) { Text($0.title).tag($0) }
+                    }
+                    .accessibilityIdentifier("idea.draft.xFormat")
+                }
+            }
+            .disabled(queued)
+            .listRowBackground(palette.card)
+
+            Section {
+                Button {
+                    queueDrafts()
+                } label: {
+                    Label("Send to Claude on Mac", systemImage: "paperplane")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(queued || chosen.isEmpty || !compatibleMac)
+                .accessibilityIdentifier("idea.draft.send")
+                if let message { Text(message).font(.callout) }
+            } footer: {
+                Text(compatibleMac
+                     ? "Claude Code on your Mac creates one draft per selection. Find them in Review."
+                     : "Update and open Inkspring on your Mac, then refresh here to send post ideas to Claude.")
+            }
+            .listRowBackground(palette.card)
+        }
+        .scrollContentBackground(.hidden)
+        .background(palette.canvas)
+        .navigationTitle("Draft from post idea").navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func queueDrafts() {
+        var change = CompanionLibrary.Change(action: .note, itemID: item.id, revision: item.revision,
+                                             xFormat: chosen.contains("x") ? format.rawValue : nil)
+        change.ideaDraftPlatforms = CompanionLibrary.ideaDraftPlatforms.filter(chosen.contains)
+        do {
+            try library.saveChange(change, workspaceID: workspaceID)
+            queued = true
+            message = "Queued for Claude on your Mac."
+        } catch { message = error.localizedDescription }
+    }
+
+    private func ideaDraftLabel(_ platform: String) -> String {
+        switch platform {
+        case "x": "X post or thread"
+        case "linkedin": "LinkedIn post"
+        case "reddit": "Reddit post"
+        case "substack": "Substack article or newsletter"
+        case "youtube": "YouTube script"
+        default: reviewPlatformName(platform)
+        }
+    }
+}
+
+private struct MobileMediaDraftForm: View {
+    @Environment(\.studioPalette) private var palette
+    let platform: String
+    let library: MobileLibrary
+    let initialProject: String
+    @State private var projectID = ""
+    @State private var caption = ""
+    @State private var importing = false
+    @State private var selected: URL?
+    @State private var message: String?
+    @State private var queued = false
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Project", selection: $projectID) {
+                    ForEach(library.snapshot?.projects ?? []) { Text($0.name).tag($0.id) }
+                }
+                Button(selected?.lastPathComponent ?? (platform == "tiktok" ? "Choose a video" : "Choose a photo or video"),
+                       systemImage: platform == "tiktok" ? "video" : "photo") { importing = true }
+                TextField("Caption (optional)", text: $caption, axis: .vertical).lineLimit(2...4)
+            } footer: {
+                Text("MP4 or MOV video up to 30 MB. Instagram also accepts PNG and JPEG.")
+            }
+            .listRowBackground(palette.card)
+            .disabled(queued)
+
+            Section {
+                Button("Save draft on Mac", systemImage: "square.and.pencil") {
+                    guard let selected else { return }
+                    do {
+                        try library.queueMediaDraft(file: selected, platform: platform, caption: caption, projectID: projectID)
+                        queued = true
+                        message = "Queued for your Mac. The draft will appear in Review."
+                    } catch { message = error.localizedDescription }
+                }
+                .disabled(selected == nil || projectID.isEmpty || queued || caption.utf16.count > 2_200)
+                if let message { Text(message).font(.callout) }
+            }
+            .listRowBackground(palette.card)
+        }
+        .scrollContentBackground(.hidden)
+        .background(palette.canvas)
+        .navigationTitle(platform == "tiktok" ? "New TikTok video" : "New Instagram post")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { if projectID.isEmpty { projectID = initialProject } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: platform == "tiktok" ? [.mpeg4Movie, .quickTimeMovie] : [.mpeg4Movie, .quickTimeMovie, .png, .jpeg]) { result in
+            do { selected = try result.get(); message = nil }
+            catch { message = error.localizedDescription }
         }
     }
 }
@@ -1832,7 +2070,7 @@ private struct MobileReviewDetail: View {
     @State private var showsOutline = false
     @State private var editingDraft = false
     @State private var choosingSchedule = false
-    @State private var generatingXDraft = false
+    @State private var draftingIdea = false
     @State private var needsMacUpdate = false
     @State private var confirmDeletion = false
     @State private var editBodyFirst = false
@@ -1846,6 +2084,15 @@ private struct MobileReviewDetail: View {
 
     private var pendingEdit: CompanionLibraryOutbox.Entry? {
         library.pendingChanges(for: item.id).last { [.editDraft, .editIdea].contains($0.action) }
+    }
+
+    private var ideaDraftRequest: CompanionLibraryOutbox.Entry? {
+        library.pendingChanges(for: item.id).last { $0.ideaDraftPlatforms != nil }
+    }
+
+    private var hasPendingIdeaDraft: Bool {
+        (ideaDraftRequest.map { $0.error == nil } ?? false)
+            || library.snapshot?.pending.contains { $0.itemID == item.id && $0.ideaDraftPlatforms != nil } == true
     }
 
     private var inTrash: Bool { item.isTrashed == true }
@@ -1991,12 +2238,6 @@ private struct MobileReviewDetail: View {
 
             }
             .listRowBackground(palette.card)
-            if item.kind == .idea, !inTrash, library.canUseAgentFeatures, library.snapshot?.supportsXThreads == true {
-                Section {
-                    Button("Draft for X", systemImage: "square.and.pencil") { generatingXDraft = true }
-                }
-                .listRowBackground(palette.card)
-            }
             if !library.planText(item).isEmpty {
                 Button("View outline", systemImage: "list.bullet.clipboard") { showsOutline = true }
                     .font(.callout)
@@ -2020,7 +2261,7 @@ private struct MobileReviewDetail: View {
                         }
                     }
                 }
-                ForEach(library.pendingChanges(for: item.id).filter { $0.action == .note }) { entry in
+                ForEach(library.pendingChanges(for: item.id).filter { $0.action == .note && $0.ideaDraftPlatforms == nil }) { entry in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(entry.text)
                         if let error = entry.error {
@@ -2076,6 +2317,21 @@ private struct MobileReviewDetail: View {
             }
             if item.isTrashed != true, item.kind == .idea, ["draft", "skipped"].contains(item.status) {
                 Section {
+                    if item.status == "draft" {
+                        Button { draftingIdea = true } label: {
+                            Label("Draft from post idea", systemImage: "square.and.pencil")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(hasPendingChange || hasPendingIdeaDraft || item.revision == "pending-add"
+                                  || CompanionLibrary.ideaDraftPlatforms.allSatisfy { item.draftedIdeaPlatforms?.contains($0) == true })
+                        .accessibilityIdentifier("idea.draft.open")
+                        if let error = ideaDraftRequest?.error {
+                            Label(error, systemImage: "exclamationmark.icloud").font(.footnote)
+                        } else if hasPendingIdeaDraft {
+                            Label("Queued for Claude on your Mac.", systemImage: "clock").font(.footnote)
+                        }
+                    }
                     Button(item.status == "draft" ? "Skip idea" : "Restore idea") {
                         save(.init(action: item.status == "draft" ? .skipIdea : .restoreIdea,
                                    itemID: item.id, revision: item.revision))
@@ -2098,8 +2354,11 @@ private struct MobileReviewDetail: View {
                 moreActions
             }
         }
-        .navigationDestination(isPresented: $generatingXDraft) {
-            MobileXGeneration(library: library, idea: item)
+        .sheet(isPresented: $draftingIdea) {
+            NavigationStack {
+                MobileIdeaDraftPicker(item: item, library: library, workspaceID: workspaceID)
+                    .toolbar { Button("Done") { draftingIdea = false } }
+            }
         }
         .sheet(isPresented: $choosingSchedule) {
             if let postingWindow {

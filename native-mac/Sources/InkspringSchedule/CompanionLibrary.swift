@@ -160,11 +160,15 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     public var supportsXParagraphs: Bool?
     public var supportsRevisionHistory: Bool?
     public var supportsContentPlans: Bool?
+    public var supportsClaudeIdeaDrafts: Bool?
+    public var supportsMediaDrafts: Bool?
     public var postingWindows: [String: CompanionPostingWindow]?
     public var postingTimeZone: String?
     public var updatedAt = Date.now
 
     public init(workspaceID: UUID) { self.workspaceID = workspaceID }
+
+    public static let ideaDraftPlatforms = ["x", "linkedin", "reddit", "x-article", "linkedin-article", "substack", "youtube"]
 
     public struct Project: Codable, Equatable, Identifiable, Sendable {
         public let id: String
@@ -173,6 +177,7 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
     }
 
     public struct Item: Codable, Equatable, Identifiable, Sendable {
+        public var draftedIdeaPlatforms: [String]?
         public var publicationStatus: String?
         public var publicationURL: String?
         public var publicationError: String?
@@ -300,6 +305,34 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         articles = completedArticles
     }
 
+    public struct MediaDraft: Codable, Equatable, Sendable {
+        public static let limit = 30_000_000
+        public let platform: String
+        public let fileName: String
+        public let byteCount: Int
+        public let version: TextVersion
+
+        public init(platform: String, fileName: String, data: Data) {
+            self.platform = platform
+            self.fileName = fileName
+            byteCount = data.count
+            version = TextVersion(data: data)
+        }
+
+        public var isVideo: Bool { ["mp4", "mov"].contains(fileExtension) }
+        public var fileExtension: String { URL(fileURLWithPath: fileName).pathExtension.lowercased() }
+
+        var valid: Bool {
+            ((platform == "tiktok" && isVideo) || (platform == "instagram" && (isVideo || ["png", "jpg", "jpeg"].contains(fileExtension))))
+                && !fileName.isEmpty && fileName.utf8.count <= 200 && !fileName.contains("/")
+                && !fileName.contains("\\") && !fileName.contains("\0")
+                && (1...Self.limit).contains(byteCount)
+                && version.partCount == (byteCount - 1) / TextVersion.partSize + 1
+        }
+
+        func matches(_ data: Data) -> Bool { data.count == byteCount && TextVersion(data: data) == version }
+    }
+
     public struct Change: Codable, Equatable, Identifiable, Sendable {
         public enum Action: String, Codable, Sendable {
             case addIdea, note, skipIdea, restoreIdea, editDraft, editIdea, trashItem, restoreItem, deleteItem, scheduleDraft, saveRevision
@@ -329,6 +362,8 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         public var contentOperation: CompanionContentOperation?
         public var basePlan: String?
         public var initialPlan: String?
+        public var ideaDraftPlatforms: [String]?
+        public var mediaDraft: MediaDraft?
 
         public init(id: UUID = UUID(), action: Action, itemID: String, revision: String = "",
                     title: String = "", text: String = "", editsNewsletter: Bool? = nil,
@@ -358,6 +393,24 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         }
 
         public var valid: Bool {
+            if let mediaDraft {
+                return action == .note && mediaDraft.valid && title == mediaDraft.fileName
+                    && (1...200).contains(itemID.utf8.count) && revision.isEmpty
+                    && text.utf16.count <= 2_200 && !text.contains("\0")
+                    && ideaDraftPlatforms == nil && !isLongFormEdit && createsScript != true && generatesXDraft != true
+                    && writesOnlyMedia
+            }
+            if let platforms = ideaDraftPlatforms {
+                return action == .note && (1...CompanionLibrary.ideaDraftPlatforms.count).contains(platforms.count)
+                    && Set(platforms).count == platforms.count && platforms.allSatisfy(CompanionLibrary.ideaDraftPlatforms.contains)
+                    && !itemID.isEmpty && itemID.utf8.count <= 200 && !revision.isEmpty && revision.utf8.count <= 100
+                    && (platforms.contains("x") ? xFormat.flatMap(XPostStyle.init(rawValue:)) != nil : xFormat == nil)
+                    && title.isEmpty && text.isEmpty && !isLongFormEdit && createsScript != true && generatesXDraft != true
+                    && requestsWritingHelp != true && publishesXArticle != true && xArticleAccountKey == nil
+                    && historySnapshot == nil && restoresRevision != true && writingKind == nil
+                    && contentOperation == nil && initialPlan == nil && basePlan == nil
+                    && baseNewsletterText == nil && baseScriptTitle == nil && subtitle == nil
+            }
             if let initialPlan {
                 guard initialPlan.utf16.count <= ContentPlan.limit, !initialPlan.contains("\0"),
                       (action == .addIdea && generatesXDraft != true && createsScript != true || contentOperation.map({ [.createDraft, .createNewsletter].contains($0) }) == true) else { return false }
@@ -436,6 +489,13 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
             }
         }
 
+        private var writesOnlyMedia: Bool {
+            requestsWritingHelp != true && publishesXArticle != true && xArticleAccountKey == nil
+                && historySnapshot == nil && restoresRevision != true && writingKind == nil && xFormat == nil
+                && contentOperation == nil && initialPlan == nil && basePlan == nil
+                && baseNewsletterText == nil && baseScriptTitle == nil && subtitle == nil
+        }
+
         public var needsWritingTools: Bool {
             requestsWritingHelp == true || createsScript == true && writingKind == "newsletter" ||
                 editsNewsletter == true && !title.isEmpty && restoresRevision != true && baseScriptTitle != nil
@@ -465,9 +525,11 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
 
     public mutating func enqueue(_ change: Change) throws {
         guard enabled else { throw CompanionLibraryError.disabled }
+        guard change.ideaDraftPlatforms == nil || supportsClaudeIdeaDrafts == true else { throw CompanionLibraryError.disabled }
+        guard change.mediaDraft == nil || supportsMediaDrafts == true else { throw CompanionLibraryError.disabled }
         guard (change.createsScript != true && change.editsScript != true) || supportsScripts == true else { throw CompanionLibraryError.disabled }
         guard change.publishesXArticle != true || supportsXArticlePublishing == true else { throw CompanionLibraryError.disabled }
-        guard change.writingKind != "linkedin-article" else { throw CompanionLibraryError.disabled }
+        guard change.writingKind != "linkedin-article" || supportsLinkedInArticles == true else { throw CompanionLibraryError.disabled }
         guard !change.needsWritingTools || supportsWritingTools == true else { throw CompanionLibraryError.disabled }
         guard !change.usesMacAgent || supportsAgentFeatures != false else { throw CompanionLibraryError.disabled }
         guard change.valid else { throw CompanionLibraryError.invalid }
@@ -518,19 +580,22 @@ public struct CompanionLibrary: Codable, Equatable, Sendable {
         supportsNewsletterEdits = nil
         supportsItemManagement = nil
         supportsContentPlans = nil
+        supportsClaudeIdeaDrafts = nil
+        supportsMediaDrafts = nil
         postingWindows = nil
         postingTimeZone = nil
     }
 }
 
 public enum CompanionLibraryError: LocalizedError {
-    case disabled, invalid, full
+    case disabled, invalid, full, macUpdateForIdeaDrafts
 
     public var errorDescription: String? {
         switch self {
         case .disabled: "Turn on library sync in Inkspring on your Mac."
         case .invalid: "Check the text and try again."
         case .full: "There are changes waiting for your Mac. Open Inkspring on your Mac to sync them."
+        case .macUpdateForIdeaDrafts: "Update and open Inkspring on your Mac to draft from an idea."
         }
     }
 }
@@ -569,6 +634,8 @@ struct CompanionLibraryOutbox: Codable, Equatable {
         var contentOperation: CompanionContentOperation?
         var basePlan: String?
         var initialPlan: String?
+        var ideaDraftPlatforms: [String]?
+        var mediaDraft: CompanionLibrary.MediaDraft?
 
         var requestID: UUID { retryID ?? id }
         var movesToTrash: Bool { action == .trashItem || action == .skipIdea }
@@ -582,6 +649,8 @@ struct CompanionLibraryOutbox: Codable, Equatable {
             change.contentOperation = contentOperation
             change.basePlan = basePlan
             change.initialPlan = initialPlan
+            change.ideaDraftPlatforms = ideaDraftPlatforms
+            change.mediaDraft = mediaDraft
             // Keep the existing edit limit even when the original plus the edit exceed one record.
             if baseNewsletterText != nil, let size = try? JSONEncoder().encode(change).count, size > change.payloadLimit {
                 return .init(id: requestID, action: action, itemID: itemID, revision: revision, title: title, text: text,
@@ -717,10 +786,12 @@ struct CompanionLibraryOutbox: Codable, Equatable {
                entry.revision != "pending-add",
                (entry.action != .editDraft || library.supportsDraftEdits == true),
                (change.publishesXArticle != true || library.supportsXArticlePublishing == true),
-               change.writingKind != "linkedin-article",
+               (change.writingKind != "linkedin-article" || library.supportsClaudeIdeaDrafts == true && library.supportsLinkedInArticles == true),
                (!change.needsWritingTools || library.supportsWritingTools == true),
                (!change.usesMacAgent || library.supportsAgentFeatures != false),
                (entry.action != .saveRevision || library.supportsRevisionHistory == true),
+               (entry.ideaDraftPlatforms == nil || library.supportsClaudeIdeaDrafts == true),
+               (entry.mediaDraft == nil || library.supportsMediaDrafts == true),
                (entry.xFormat == nil || library.supportsXThreads == true),
                (entry.xFormat == nil || !entry.text.contains(XThreadText.separator) || library.supportsXParagraphs == true),
                (entry.editsNewsletter != true || library.supportsNewsletterEdits == true),

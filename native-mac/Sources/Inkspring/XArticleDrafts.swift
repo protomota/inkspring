@@ -3,6 +3,7 @@ import InkspringSchedule
 
 extension WorkspaceRecord {
     var isXArticle: Bool { kind == "article" && (self["platform"] == "x" || self["platform"].isEmpty) }
+    var isLinkedInWritingArticle: Bool { kind == "article" && self["platform"] == "linkedin" && fields["writingOnly"] as? Bool == true }
 }
 
 extension Workspace {

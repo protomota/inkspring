@@ -1,6 +1,69 @@
 import XCTest
 
 final class WalkthroughTests: XCTestCase {
+    func testIdeaDraftButtonSelectsTextFormatsAndQueuesForClaude() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let review = app.buttons["Review"].firstMatch
+        if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        review.tap()
+        app.buttons["Ideas"].firstMatch.tap()
+        let idea = app.staticTexts["Show the unfinished work"].firstMatch
+        XCTAssertTrue(idea.waitForExistence(timeout: 8))
+        idea.tap()
+        let draft = app.buttons["idea.draft.open"].firstMatch
+        for _ in 0..<4 where !draft.isHittable { app.swipeUp() }
+        XCTAssertTrue(draft.isHittable, app.debugDescription)
+        XCTAssertTrue(app.buttons["Skip idea"].exists)
+        capture("Draft button above Skip idea", app)
+        draft.tap()
+        let x = app.buttons["idea.draft.platform.x"].firstMatch
+        XCTAssertTrue(x.waitForExistence(timeout: 5), app.debugDescription)
+        x.tap()
+        for platform in ["linkedin-article", "substack"] {
+            let option = app.buttons["idea.draft.platform.\(platform)"].firstMatch
+            for _ in 0..<4 where !option.isHittable { app.swipeUp() }
+            XCTAssertTrue(option.isHittable, app.debugDescription)
+            option.tap()
+        }
+        XCTAssertFalse(app.buttons["idea.draft.platform.instagram"].exists)
+        XCTAssertFalse(app.buttons["idea.draft.platform.tiktok"].exists)
+        capture("Text formats selected for Claude", app)
+        let send = app.buttons["idea.draft.send"].firstMatch
+        for _ in 0..<5 where !send.isHittable { app.swipeUp() }
+        XCTAssertTrue(send.isHittable && send.isEnabled, app.debugDescription)
+        send.tap()
+        let queued = app.staticTexts["Queued for Claude on your Mac."].firstMatch
+        for _ in 0..<3 where !queued.isHittable { app.swipeUp() }
+        XCTAssertTrue(queued.waitForExistence(timeout: 5), app.debugDescription)
+        capture("Request queued for Claude on Mac", app)
+    }
+
+    func testMediaDraftsStartWithMediaAndCaption() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--library-fixture", "-inkspring.mobile.theme", "warm-paper"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        let review = app.buttons["Review"].firstMatch
+        if !review.waitForExistence(timeout: 3), app.buttons["ToggleSidebar"].exists { app.buttons["ToggleSidebar"].tap() }
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        review.tap()
+        for (title, picker) in [("New TikTok video", "Choose a video"), ("New Instagram post", "Choose a photo or video")] {
+            app.buttons["writing.new"].firstMatch.tap()
+            app.buttons[title].firstMatch.tap()
+            XCTAssertTrue(app.buttons[picker].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Caption (optional)").firstMatch.exists)
+            XCTAssertFalse(app.staticTexts["Hashtags"].exists)
+            capture(title, app)
+            app.buttons["Done"].firstMatch.tap()
+        }
+    }
+
     func testPlanPreviewEditSaveAndAssistant() {
         continueAfterFailure = false
         let app = XCUIApplication()

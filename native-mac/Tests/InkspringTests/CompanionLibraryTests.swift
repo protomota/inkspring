@@ -4,6 +4,70 @@ import Foundation
 import Testing
 @testable import Inkspring
 
+@Test @MainActor func mobileIdeaRequestCreatesTextAndLongFormDraftsOnce() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let mac = Workspace(directory: folder)
+    var idea = WorkspaceRecord.new("idea", projectID: mac.projectID)
+    idea["topic"] = "Signal and noise"
+    idea["text"] = "Write about deliberate publishing."
+    idea = try mac.save(idea)
+    var request = CompanionLibrary.Change(action: .note, itemID: idea.id, revision: idea["updatedAt"], xFormat: "post")
+    request.ideaDraftPlatforms = ["x", "linkedin", "reddit", "x-article", "linkedin-article", "substack", "youtube"]
+    #expect(request.valid)
+    let workspaceID = UUID()
+    var oldMac = CompanionLibrary(workspaceID: workspaceID)
+    oldMac.enabled = true
+    #expect(throws: CompanionLibraryError.self) { try oldMac.enqueue(request) }
+    var snapshot = CompanionLibrary(workspaceID: workspaceID)
+    snapshot.enabled = true
+    snapshot.supportsClaudeIdeaDrafts = true
+    try snapshot.enqueue(request)
+    #expect(try JSONDecoder().decode(CompanionLibrary.self, from: JSONEncoder().encode(snapshot)).pending == [request])
+    #expect(await mac.draftMobileIdea(request).error != nil)
+    try mac.set("mcpEnabled", to: true)
+    try mac.set("writingConnection", to: "api")
+    let model = ContentStudio.Model(provider: "agent", name: "Claude",
+        draft: { _, _ in throw WorkspaceError("Unexpected alternate writing route.") },
+        object: { _, _ in
+            ["title": "Signal and noise", "subtitle": "Make something useful", "body": "## Signal\n\nBring value.", "text": "Bring value."]
+        }, prompt: { _ in throw WorkspaceError("No image prompt expected.") },
+        image: { _ in throw WorkspaceError("No image expected.") }, imageProvider: "unused")
+    #expect(await mac.draftMobileIdea(request, model: model).error == nil)
+    #expect(await mac.draftMobileIdea(request, model: model).error == nil)
+    let generated = mac.records.filter { $0["ideaId"] == idea.id }
+    #expect(generated.count == 7)
+    #expect(generated.allSatisfy { $0["model"] == "Claude" && !$0.isPublishedContent })
+    #expect(generated.filter { $0.kind == "draft" }.map { $0["platform"] }.sorted() == ["linkedin", "reddit", "x"])
+    #expect(generated.contains { $0.isLinkedInWritingArticle })
+    #expect(generated.contains { $0.kind == "newsletter" && $0.fields["sendEmail"] as? Bool == false })
+    let updated = try #require(mac.records.first { $0.id == idea.id })
+    let writing = try #require(updated.fields["mobileWritingVersions"] as? [String: String])
+    #expect(Set(updated.draftVersions.keys).union(writing.keys) == Set(request.ideaDraftPlatforms ?? []))
+    #expect(generated.contains { $0.kind == "newsletter" && $0.body == "## Signal\n\nBring value." })
+}
+
+@Test @MainActor func mobileMediaDraftImportsCaptionAndRequiresVideoForTikTok() async throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let mac = Workspace(directory: folder)
+    let image = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2bkAAAAASUVORK5CYII="))
+    var request = CompanionLibrary.Change(action: .note, itemID: mac.projectID, title: "image.png", text: "A short caption.")
+    request.mediaDraft = .init(platform: "tiktok", fileName: "image.png", data: image)
+    #expect(!request.valid)
+    request.mediaDraft = .init(platform: "instagram", fileName: "image.png", data: image)
+    #expect(request.valid)
+    #expect(await mac.createMobileMediaDraft(request, data: image).error == nil)
+    #expect(await mac.createMobileMediaDraft(request, data: image).error == nil)
+    let matched = mac.records.filter { $0.id == request.id.uuidString.lowercased() }
+    let draft = try #require(matched.first)
+    #expect(matched.count == 1)
+    #expect(draft.body == "A short caption.")
+    #expect(draft["platform"] == "instagram")
+    #expect(mac.imageURL(draft) != nil)
+    #expect(draft.schedule.isEmpty)
+}
+
 @Test @MainActor func mobileNewsletterEditPreservesMarkdownAndRejectsOutdatedRevisions() throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
