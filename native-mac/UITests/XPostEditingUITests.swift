@@ -676,6 +676,22 @@ final class WalkthroughTests: XCTestCase {
         capture("Linked article open for editing", app)
     }
 
+    func testReviewWriteIdeaOpensTheComposerBeforeMacSetup() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--unpaired-fixture", "-inkspring.mobile.theme", "warm-paper", "-inkspring.mobile.completedWelcome", "YES"]
+        app.launchEnvironment["INKSPRING_FIXTURE_ID"] = UUID().uuidString
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your writing workspace"].waitForExistence(timeout: 8))
+        let writeIdea = app.buttons["Write an idea"].firstMatch
+        XCTAssertTrue(writeIdea.isHittable)
+        XCTAssertGreaterThanOrEqual(writeIdea.frame.height, 44)
+        capture("Write an idea button", app)
+        writeIdea.tap()
+        XCTAssertTrue(app.textFields["idea.new.title"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+        capture("New ideas composer", app)
+    }
+
     func testFirstLaunchSavesAnIdeaBeforeMacSetup() {
         continueAfterFailure = false
         let app = XCUIApplication()

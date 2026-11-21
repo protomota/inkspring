@@ -1369,7 +1369,7 @@ struct MobileReviewView: View {
                         Text("Your drafts will appear here when your Mac library syncs. In the meantime, you can save ideas on this device.")
                             .foregroundStyle(palette.muted)
                         Button("Write an idea", systemImage: "square.and.pencil", action: writeIdea)
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(MobilePrimaryActionStyle(fillsWidth: false))
                         Button("Mac setup guide", systemImage: "desktopcomputer", action: openSetup)
                         Button("Check sync in Settings", systemImage: "icloud", action: openSettings)
                     }.frame(maxWidth: 480, alignment: .leading).padding(24)
@@ -1899,9 +1899,10 @@ private struct MobileXGeneration: View {
     }
 }
 
-private struct MobileIdeaDraftActionStyle: ButtonStyle {
+private struct MobilePrimaryActionStyle: ButtonStyle {
     @Environment(\.studioPalette) private var palette
     @Environment(\.isEnabled) private var isEnabled
+    var fillsWidth = true
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: StudioRadius.card)
@@ -1913,7 +1914,7 @@ private struct MobileIdeaDraftActionStyle: ButtonStyle {
             .foregroundStyle(foreground)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: 48)
             .background(isEnabled ? palette.primaryAction : palette.well, in: shape)
             .overlay {
                 if isEnabled && configuration.isPressed {
@@ -1978,7 +1979,7 @@ private struct MobileIdeaDraftPicker: View {
                 } label: {
                     Label("Send to Claude", systemImage: "paperplane")
                 }
-                .buttonStyle(MobileIdeaDraftActionStyle())
+                .buttonStyle(MobilePrimaryActionStyle())
                 .disabled(chosen.isEmpty || !compatibleMac)
                 .accessibilityIdentifier("idea.draft.send")
                 Text(message ?? (compatibleMac
@@ -2117,7 +2118,7 @@ private struct MobileQuickXComposer: View {
                 editingPost = false
                 confirming = true
             }
-            .buttonStyle(MobileIdeaDraftActionStyle())
+            .buttonStyle(MobilePrimaryActionStyle())
             .disabled(!canPost)
             .accessibilityIdentifier("quickX.review")
             Text("Your Mac publishes this as a single post to \(accountName).")
@@ -2740,7 +2741,7 @@ struct MobileReviewDetail: View {
                         } label: {
                             Label("Draft from post idea", systemImage: "square.and.pencil")
                         }
-                        .buttonStyle(MobileIdeaDraftActionStyle())
+                        .buttonStyle(MobilePrimaryActionStyle())
                         .disabled(hasPendingChange || hasPendingIdeaDraft || item.revision == "pending-add"
                                   || CompanionLibrary.ideaDraftPlatforms.allSatisfy { item.draftedIdeaPlatforms?.contains($0) == true })
                         .accessibilityIdentifier("idea.draft.open")
