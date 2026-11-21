@@ -10,12 +10,13 @@ struct InkspringCompanion: App {
 
 private struct MobileHome: View {
     private enum Tab: CaseIterable {
-        case review, ideas, schedule, settings
+        case review, ideas, schedule, published, settings
         var title: String {
             switch self {
             case .review: "Review"
             case .ideas: "New ideas"
             case .schedule: "Schedule"
+            case .published: "Published"
             case .settings: "Settings"
             }
         }
@@ -24,6 +25,7 @@ private struct MobileHome: View {
             case .review: "tray"
             case .ideas: "lightbulb"
             case .schedule: "calendar"
+            case .published: "paperplane"
             case .settings: "gearshape"
             }
         }
@@ -33,6 +35,7 @@ private struct MobileHome: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("inkspring.mobile.theme") private var theme = StudioTheme.defaultPreference
     @State private var library = MobileLibrary()
+    @State private var schedule = MobileSchedule()
     @State private var tips = MobileTipStore()
     @StateObject private var technicalSupport = InkspringSupportStore()
     @State private var tab = Self.startingTab
@@ -90,7 +93,9 @@ private struct MobileHome: View {
         .tint(palette.accent)
         .onReceive(NotificationCenter.default.publisher(for: .CKAccountChanged)) { _ in
             library.accountChanged()
+            schedule.accountChanged()
             Task { await library.refresh() }
+            if isShowingSchedule { Task { await schedule.refresh() } }
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
@@ -100,7 +105,20 @@ private struct MobileHome: View {
                 catch { return }
             }
         }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                if isShowingSchedule { await schedule.refresh() }
+                do { try await Task.sleep(for: .seconds(30)) }
+                catch { return }
+            }
+        }
+        .onChange(of: tab) { _, _ in
+            if isShowingSchedule { Task { await schedule.refresh() } }
+        }
     }
+
+    private var isShowingSchedule: Bool { tab == .schedule || tab == .published }
 
     private func mainLayout(palette: StudioPalette) -> some View {
         GeometryReader { geometry in
@@ -147,9 +165,12 @@ private struct MobileHome: View {
             MobileIdeasView(library: library, isSelected: tab == .ideas)
                 .tabItem { tabLabel(.ideas, palette: palette) }
                 .tag(Tab.ideas)
-            CompanionScheduleView(library: library, isSelected: tab == .schedule)
+            CompanionScheduleView(library: library, schedule: schedule, destination: .schedule)
                 .tabItem { tabLabel(.schedule, palette: palette) }
                 .tag(Tab.schedule)
+            CompanionScheduleView(library: library, schedule: schedule, destination: .published)
+                .tabItem { tabLabel(.published, palette: palette) }
+                .tag(Tab.published)
             MobileSettingsView(theme: $theme, library: library, openSetup: { reviewingSetup = true })
                 .tabItem { tabLabel(.settings, palette: palette) }
                 .tag(Tab.settings)
@@ -222,31 +243,34 @@ private struct MobileWelcomeView: View {
 }
 
 private struct CompanionScheduleView: View {
-    private enum Feed: String, CaseIterable { case scheduled = "Scheduled", published = "Published" }
+    enum Destination: String {
+        case schedule = "Schedule"
+        case published = "Published"
+
+        var icon: String { self == .published ? "paperplane" : "calendar.badge.clock" }
+        var syncHelp: String {
+            if self == .published {
+                return "Turn on schedule sync in Inkspring on your Mac to see what went out. Use the same Apple Account on both devices."
+            }
+            return "Turn on schedule sync in Inkspring on your Mac. Use the same Apple Account on both devices."
+        }
+    }
 
     let library: MobileLibrary
-    let isSelected: Bool
+    let schedule: MobileSchedule
+    let destination: Destination
     @Environment(\.mobileWideLayout) private var wideLayout
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.studioPalette) private var palette
-    @State private var state = CompanionScheduleViewState()
-    @State private var cloudStore: CloudScheduleStore?
     @State private var candidate: CompanionPost?
     @State private var message: String?
-    @State private var feed = Feed.scheduled
+    private var state: CompanionScheduleViewState { schedule.state }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Schedule view", selection: $feed) {
-                    ForEach(Feed.allCases, id: \.self) { section in Text(section.rawValue).tag(section) }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                if feed == .published, let schedule = state.schedule {
-                    publishedFeed(schedule)
-                } else if feed == .scheduled, state.schedule != nil || !library.pendingSchedules.isEmpty {
+            Group {
+                if destination == .published, let snapshot = state.schedule {
+                    publishedFeed(snapshot)
+                } else if destination == .schedule, state.schedule != nil || !library.pendingSchedules.isEmpty {
                     let days = Dictionary(grouping: (state.schedule?.posts ?? []).sorted { $0.scheduledAt < $1.scheduledAt }) {
                         Calendar.current.startOfDay(for: $0.scheduledAt)
                     }
@@ -298,23 +322,23 @@ private struct CompanionScheduleView: View {
                     ProgressView("Checking iCloud…").frame(maxHeight: .infinity)
                 } else {
                     ContentUnavailableView {
-                        Label("Schedule unavailable", systemImage: "calendar.badge.clock")
+                        Label("\(destination.rawValue) unavailable", systemImage: destination.icon)
                     } description: {
-                        Text(state.error ?? "Turn on schedule sync in Inkspring on your Mac. Use the same Apple Account on both devices.")
+                        Text(state.error ?? destination.syncHelp)
                     } actions: {
-                        Button("Check again") { Task { await refresh() } }.buttonStyle(.bordered)
+                        Button("Check again") { Task { await schedule.refresh() } }.buttonStyle(.bordered)
                     }
                 }
             }
             .frame(maxWidth: 760)
             .mobileCanvas()
-            .navigationTitle("Schedule")
+            .navigationTitle(destination.rawValue)
             .navigationBarTitleDisplayMode(wideLayout ? .inline : .automatic)
             .toolbar(wideLayout ? .hidden : .visible, for: .tabBar)
-            .refreshable { await refresh() }
+            .refreshable { await schedule.refresh() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await refresh() } }
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await schedule.refresh() } }
                         .disabled(state.busy)
                 }
             }
@@ -322,7 +346,7 @@ private struct CompanionScheduleView: View {
                 get: { candidate != nil }, set: { if !$0 { candidate = nil } }
             ), titleVisibility: .visible, presenting: candidate) { post in
                 Button("Cancel scheduled post", role: .destructive) {
-                    Task { await cancel(post) }
+                    Task { message = await schedule.cancel(post) }
                 }
                 Button("Keep post", role: .cancel) {}
             } message: { post in
@@ -334,32 +358,9 @@ private struct CompanionScheduleView: View {
                 Text(message ?? "")
             }
         }
-        .task {
-            await refresh()
-#if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--schedule-offline-fixture") {
-                await refresh()
-            }
-#endif
-        }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(30)) } catch { return }
-                await refresh()
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active, !state.loading, !state.busy { Task { await refresh() } }
-        }
-        .onChange(of: isSelected) { _, selected in
-            if selected { Task { await refresh() } }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .CKAccountChanged)) { _ in
-            state = CompanionScheduleViewState()
+        .onChange(of: state.account) { _, _ in
             candidate = nil
             message = nil
-            Task { await refresh() }
         }
     }
 
@@ -385,7 +386,7 @@ private struct CompanionScheduleView: View {
                                       systemImage: "arrow.up.right")
                             }
                             .buttonStyle(.bordered)
-                            .accessibilityIdentifier("schedule.open.\(post.id).\(index)")
+                            .accessibilityIdentifier("published.open.\(post.id).\(index)")
                         }
                         if post.links.isEmpty { Text("No post link saved").font(.caption).foregroundStyle(.secondary) }
                     }
@@ -400,7 +401,7 @@ private struct CompanionScheduleView: View {
                     .listRowBackground(Color.clear)
             }
             if schedule.hasOlderPublications == true {
-                Text("Older posts are available in Schedule on your Mac.")
+                Text("Older posts are available in Published on your Mac.")
                     .font(.footnote).foregroundStyle(.secondary).listRowBackground(Color.clear)
             }
         }
@@ -440,7 +441,19 @@ private struct CompanionScheduleView: View {
         }
     }
 
-    private func refresh() async {
+}
+
+@MainActor
+@Observable
+private final class MobileSchedule {
+    private(set) var state = CompanionScheduleViewState()
+    private var cloudStore: CloudScheduleStore?
+
+    func accountChanged() {
+        state = CompanionScheduleViewState()
+    }
+
+    func refresh() async {
         guard let token = state.begin(.refresh) else { return }
         do {
 #if DEBUG
@@ -456,9 +469,7 @@ private struct CompanionScheduleView: View {
 #endif
             let store = cloud()
             let account = try await store.accountKey()
-            let sameAccount = state.account == account
             guard state.confirmAccount(account, for: token) else { return }
-            if !sameAccount { candidate = nil }
             let snapshot = try await store.load(confirmedAccount: account)
             state.complete(snapshot, for: token)
         } catch {
@@ -466,25 +477,27 @@ private struct CompanionScheduleView: View {
         }
     }
 
-    private func cancel(_ post: CompanionPost) async {
+    func cancel(_ post: CompanionPost) async -> String? {
         guard let schedule = state.schedule, let account = state.account,
-              let token = state.begin(.cancel) else { return }
+              let token = state.begin(.cancel) else { return nil }
         do {
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--schedule-fixture") {
                 var fixture = schedule
                 try fixture.cancel(post)
                 state.complete(fixture, for: token)
-                return
+                return nil
             }
 #endif
             let updated = try await cloud().update(workspaceID: schedule.workspaceID, expectedAccount: account) { try $0.cancel(post) }
             state.complete(updated, for: token)
+            return nil
         } catch {
-            guard state.isCurrent(token) else { return }
-            state.fail(error.localizedDescription, keepSchedule: temporary(error), for: token)
-            message = error.localizedDescription
+            guard state.isCurrent(token) else { return nil }
+            let message = error.localizedDescription
+            state.fail(message, keepSchedule: temporary(error), for: token)
             await refresh()
+            return message
         }
     }
 
