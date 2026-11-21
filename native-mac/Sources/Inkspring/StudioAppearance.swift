@@ -224,7 +224,6 @@ struct StudioPalette {
     // Match OpenTalon's action colors for native themes.
     var iconAccent: Color { shade(0xb9603a, 0x61d9e3, 0x056370) }
     var primaryAction: Color { shade(0xa94d28, 0x61d9e3, 0x056370) }
-    var ideaCreationTint: Color { shade(0x245a91, 0x61d9e3, 0x125ca2) }
     var accentText: Color { shade(0xfffdf9, 0x1e1f25, 0xffffff) }
     var danger: Color { shade(0xb44036, 0xf18d85, 0xba413a) }
     var success: Color { shade(0x356641, 0x87c697, 0x246b45) }
@@ -273,14 +272,14 @@ struct StudioNewIdeaButton: View {
     @ViewBuilder private var surface: some View {
         let icon = Image(systemName: "plus")
             .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(palette.ideaCreationTint)
+            .foregroundStyle(palette.primaryAction)
             .frame(width: 44, height: 44)
             .contentShape(Circle())
         if #available(macOS 26, iOS 26, *), !reduceTransparency {
-            icon.glassEffect(.regular.tint(palette.ideaCreationTint.opacity(0.38)).interactive(), in: .circle)
+            icon.glassEffect(.regular.tint(palette.primaryAction.opacity(0.38)).interactive(), in: .circle)
         } else {
-            icon.background(palette.ideaCreationTint.opacity(0.12), in: Circle())
-                .overlay { Circle().strokeBorder(palette.ideaCreationTint.opacity(0.35)).allowsHitTesting(false) }
+            icon.background(palette.primaryAction.opacity(0.12), in: Circle())
+                .overlay { Circle().strokeBorder(palette.primaryAction.opacity(0.35)).allowsHitTesting(false) }
         }
     }
 }
