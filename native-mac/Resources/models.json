@@ -1,0 +1,144 @@
+{
+  "checkedAt": "2026-10-19",
+  "sources": {
+    "anthropic": "https://platform.claude.com/docs/en/models/overview",
+    "openai": "https://developers.openai.com/api/docs/models",
+    "gemini": "https://ai.google.dev/gemini-api/docs/models"
+  },
+  "defaults": {
+    "provider": "anthropic",
+    "anthropicModel": "claude-sonnet-5-5",
+    "openaiModel": "gpt-6.1-sol",
+    "openaiImageModel": "gpt-image-2.6-sunburst",
+    "geminiModel": "gemini-4-hydrogen",
+    "imageProvider": "openai",
+    "geminiImageModel": "gemini-nano-banana-2.1",
+    "anthropicWorkspaceId": ""
+  },
+  "anthropic": [
+    {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "description": "Balanced"
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "description": "Fast and economical"
+    },
+    {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "description": "Advanced"
+    },
+    {
+      "id": "claude-fable-5-2",
+      "name": "Claude Fable 5.2",
+      "description": "Deep reasoning"
+    }
+  ],
+  "openaiImage": [
+    {
+      "id": "gpt-image-2.6-sunburst",
+      "name": "GPT Image 2.6 Sunburst",
+      "description": "Detailed image generation"
+    },
+    {
+      "id": "gpt-image-2.6-flare",
+      "name": "GPT Image 2.6 Flare",
+      "description": "Fast iteration"
+    },
+    {
+      "id": "gpt-image-2",
+      "name": "GPT Image 2",
+      "description": "Single images"
+    }
+  ],
+  "openai": [
+    {
+      "id": "gpt-6.2-astra",
+      "name": "GPT-6.2 Astra",
+      "description": "Deep reasoning"
+    },
+    {
+      "id": "gpt-6.2-sol",
+      "name": "GPT-6.2 Sol",
+      "description": "Balanced"
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "description": "Balanced"
+    },
+    {
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "description": "Fast and economical"
+    },
+    {
+      "id": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "description": "Deep reasoning"
+    }
+  ],
+  "geminiCheckedAt": "2026-11-23",
+  "gemini": [
+    {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen",
+      "description": "Everyday writing"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "name": "Gemini 4 Carbon",
+      "description": "Deep reasoning"
+    },
+    {
+      "id": "gemini-4-neon",
+      "name": "Gemini 4 Neon",
+      "description": "Fast advanced reasoning"
+    },
+    {
+      "id": "gemini-4-argon",
+      "name": "Gemini 4 Argon",
+      "description": "Efficient reasoning"
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "description": "Balanced"
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "name": "Gemini 3.5 Flash-Lite",
+      "description": "Fast and economical"
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "name": "Gemini 3.1 Pro",
+      "description": "Advanced \u00b7 preview"
+    }
+  ],
+  "geminiImage": [
+    {
+      "id": "gemini-nano-banana-2.1",
+      "name": "Nano Banana 2.1",
+      "description": "Balanced"
+    },
+    {
+      "id": "gemini-3.1-flash-image",
+      "name": "Nano Banana 2",
+      "description": "Fast"
+    },
+    {
+      "id": "gemini-3.1-flash-lite-image",
+      "name": "Nano Banana 2 Lite",
+      "description": "Economical"
+    },
+    {
+      "id": "gemini-3-pro-image",
+      "name": "Nano Banana Pro",
+      "description": "Advanced"
+    }
+  ]
+}

@@ -1,0 +1,232 @@
+import InkspringSchedule
+import SwiftUI
+
+struct PublicationReview: View {
+    @Environment(\.studioPalette) private var palette
+    let draft: WorkspaceRecord
+    let workspace: Workspace
+    var scheduleAt: Date? = nil
+    var quickX = false
+    let completed: (WorkspaceRecord) -> Void
+    let close: () -> Void
+    @State private var plan: SocialPublishPlan?
+    @State private var xArticleReview: XArticlePostReview?
+    @State private var message: String?
+    @State private var publishing = false
+    @State private var reviewing = false
+    @State private var options = SocialPublishOptions()
+    @State private var tiktok = TikTokReviewOptions()
+    @State private var creator: TikTokCreator?
+    @State private var r2: R2Configuration?
+
+    private var needsOptions: Bool { ["instagram", "reddit", "tiktok"].contains(draft["platform"]) }
+    private var isTikTokVideo: Bool { draft["format"] == "video" }
+
+
+    var body: some View {
+        StudioEditorPage(title: scheduleAt == nil ? "Review & publish" : "Review & schedule") {
+            Button("Close", role: .cancel, action: close).disabled(publishing)
+                .keyboardShortcut(.cancelAction)
+            if publishing { ProgressView().controlSize(.small) }
+            if let plan {
+                Button(xArticleReview != nil ? "Publish together on X" :
+                       scheduleAt == nil ? "Post now on \(plan.platform.name)" : "Schedule TikTok post") {
+                    Task { await publish(plan) }
+                }
+                .modifier(PrimaryActionStyle())
+                .disabled(publishing || message != nil)
+            } else if needsOptions {
+                Button("Review") { Task { await review() } }
+                    .modifier(PrimaryActionStyle())
+                    .disabled(reviewing || draft["platform"] == "tiktok" && (creator == nil || !tiktok.consent))
+            }
+        } content: {
+            StudioScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let scheduleAt {
+                        Label(scheduleAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
+                    }
+                    if let plan {
+                        StudioPlatformLabel(name: plan.platform.rawValue, title: "\(plan.platform.name) · \(plan.accountName)")
+                        if let xArticleReview {
+                            ForEach(xArticleReview.articles, id: \.articleID) { article in
+                                DisclosureGroup("X article · " + article.title) {
+                                    NewsletterPreview(title: "", subtitle: "", markdown: article.body, cover: nil)
+                                }
+                            }
+                            Text("Inkspring publishes the article to get its URL, then sends the post and replies with the article link.")
+                                .font(.callout).foregroundStyle(palette.muted)
+                        }
+                        if let tiktok = plan.tiktok {
+                            Text(TikTokCreator.privacyLabels[tiktok.privacy] ?? tiktok.privacy)
+                                .font(.headline)
+                            if tiktok.branded { Text("Branded content") }
+                        }
+                        if let subreddit = plan.subreddit { Text("r/" + subreddit).font(.headline) }
+                        if let hosting = plan.r2 {
+                            Label("R2 bucket: " + hosting.bucket, systemImage: "externaldrive")
+                        }
+                        if let image = plan.publicImage { Text(image.absoluteString).lineLimit(2).textSelection(.enabled) }
+                        Group {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if let tiktok = plan.tiktok, !isTikTokVideo, !tiktok.title.isEmpty {
+                                    Text(tiktok.title).font(.headline)
+                                }
+                                ForEach(Array((plan.tiktok.map { [$0.caption] } ?? plan.posts).enumerated()), id: \.offset) { _, post in
+                                    Text(xArticleReview == nil ? post :
+                                         post.replacingOccurrences(of: XPostArticleLinks.pendingURL, with: "[X article link]"))
+                                        .textSelection(.enabled)
+                                    if plan.posts.count > 1 { Divider() }
+                                }
+                                if let video = plan.nativeVideo {
+                                    Label(video.name, systemImage: "video")
+                                }
+                                if let cover = plan.instagramCover {
+                                    Label("Reel cover", systemImage: "photo")
+                                    AttachedMedia(url: cover)
+                                }
+                                if let thumbnail = plan.linkedInThumbnail {
+                                    Label("LinkedIn video thumbnail", systemImage: "photo")
+                                    AttachedMedia(url: thumbnail.url)
+                                }
+                                if let time = plan.tiktok?.coverTimestampMS {
+                                    Label("Cover frame at \(Double(time) / 1000, specifier: "%.3f") seconds", systemImage: "photo")
+                                }
+                                AttachedMedia(url: plan.nativeVideo?.url ?? plan.image)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else if reviewing {
+                        ProgressView("Checking the connected account…")
+                    } else if needsOptions {
+                        if draft["platform"] == "instagram" {
+                            if draft.needsNativePostVideo {
+                                Text(r2 == nil ? "Set up R2 under Settings → Storage & backups → Instagram media hosting."
+                                    : "Inkspring uploads the attached MP4 through your R2 bucket. Instagram processes it before publishing the Reel.")
+                                    .foregroundStyle(palette.muted)
+                            } else if r2 != nil, workspace.mediaURL(draft) != nil {
+                                Toggle("Host the attached image in my R2 bucket", isOn: $options.useR2)
+                            }
+                            if !options.useR2 && !draft.needsNativePostVideo {
+                                TextField("Public HTTPS JPEG URL", text: $options.imageURL)
+                                    .studioInput()
+                            }
+                        } else if draft["platform"] == "tiktok" {
+                            if let creator {
+                                tikTokFields(creator)
+                            } else if message == nil {
+                                ProgressView("Loading TikTok posting options…")
+                            }
+                        } else {
+                            TextField("Subreddit (r/example)", text: $options.subreddit)
+                                .studioInput()
+                            TextField("Flair ID (optional)", text: $options.flair)
+                                .studioInput()
+                        }
+                    }
+                    if let message { Text(message).foregroundStyle(.red).textSelection(.enabled) }
+                }
+                .frame(maxWidth: 920, alignment: .leading)
+                .studioPage()
+            }
+        }
+        .task {
+            if draft["platform"] == "instagram" {
+                r2 = try? R2Profile.saved()?.configuration
+            } else if draft["platform"] == "tiktok" {
+                tiktok.title = String(draft.title.prefix(90))
+                tiktok.caption = draft.body
+                do { creator = try await SocialPublisher(workspace: workspace).tikTokCreator() }
+                catch { message = error.localizedDescription }
+            } else if !needsOptions {
+                await review()
+            }
+        }
+    }
+
+    private func tikTokFields(_ creator: TikTokCreator) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(creator.name, systemImage: "person.crop.circle")
+            AttachedMedia(url: workspace.mediaURL(draft))
+            if !isTikTokVideo {
+                TextField("Photo title", text: $tiktok.title).studioInput()
+                if !creator.usesManagedMedia {
+                    TextField("Image URL on your verified domain", text: $options.imageURL)
+                        .studioInput()
+                }
+            }
+            TextField("Caption", text: $tiktok.caption, axis: .vertical)
+                .studioInput()
+                .lineLimit(2...5)
+            StudioLabeledChoice(title: "Who can see this post?", selection: $tiktok.privacy,
+                                options: [""] + creator.privacy,
+                                label: { $0.isEmpty ? "Choose privacy" : TikTokCreator.privacyLabels[$0] ?? $0 })
+            Toggle("Allow viewer replies", isOn: $tiktok.comment).disabled(creator.commentDisabled)
+            if isTikTokVideo {
+                Toggle("Allow Duet", isOn: $tiktok.duet).disabled(creator.duetDisabled)
+                Toggle("Allow Stitch", isOn: $tiktok.stitch).disabled(creator.stitchDisabled)
+                Toggle("AI-generated content", isOn: $tiktok.aiGenerated)
+            }
+            Toggle("Promotes my own brand", isOn: $tiktok.yourBrand)
+            Toggle("Branded content", isOn: $tiktok.branded)
+            Toggle("I agree to TikTok’s Music Usage Confirmation", isOn: $tiktok.consent)
+            HStack {
+                StudioExternalLink("Music Usage Confirmation", destination: URL(string: "https://www.tiktok.com/legal/page/global/music-usage-confirmation/en")!)
+                if tiktok.branded {
+                    StudioExternalLink("Branded Content Policy", destination: URL(string: "https://www.tiktok.com/legal/page/global/bc-policy/en")!)
+                }
+            }
+        }
+    }
+
+    private func review() async {
+        guard !reviewing else { return }
+        reviewing = true
+        message = nil
+        defer { reviewing = false }
+        if draft["platform"] == "tiktok" { options.tiktok = tiktok }
+        let publisher = SocialPublisher(workspace: workspace)
+        do {
+            if scheduleAt == nil, draft["platform"] == "x",
+               !draft["xArticleID"].isEmpty || draft.body.contains(XReplyArticle.prefix),
+               let paired = try await publisher.reviewXArticlePost(draft) {
+                xArticleReview = paired
+                plan = paired.post
+            } else {
+                plan = try await publisher.review(draft, options: options)
+            }
+        }
+        catch { message = error.localizedDescription }
+    }
+
+    private func publish(_ plan: SocialPublishPlan) async {
+        guard !publishing else { return }
+        publishing = true
+        defer { publishing = false }
+        do {
+            if let scheduleAt {
+                let scheduled = try workspace.scheduleDraft(draft, at: scheduleAt, tiktok: plan)
+                workspace.showPostResult(scheduled)
+                completed(scheduled)
+                close()
+                return
+            }
+            let publisher = SocialPublisher(workspace: workspace)
+            let receipt: WorkspaceRecord
+            if quickX {
+                let saved = try workspace.save(draft)
+                let fresh = try await publisher.review(saved)
+                guard fresh.accountID == plan.accountID, fresh.posts == plan.posts, fresh.replyID == nil else {
+                    throw WorkspaceError("The X account or post changed. Review the post before trying again.")
+                }
+                receipt = try await publisher.publish(fresh)
+            } else if let xArticleReview { receipt = try await publisher.publishXArticlePost(xArticleReview) }
+            else { receipt = try await publisher.publish(plan) }
+            workspace.showPostResult(receipt)
+            completed(receipt)
+            close()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+}

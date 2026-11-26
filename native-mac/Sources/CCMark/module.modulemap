@@ -1,0 +1,5 @@
+module CCMark [system] {
+    header "shim.h"
+    link "cmark-gfm"
+    export *
+}
