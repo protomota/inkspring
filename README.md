@@ -4,7 +4,7 @@
 
 <p align="center"><strong>Craft, schedule and post your social posts from your Mac.</strong><br>Research an idea, shape the post for X, LinkedIn, Reddit and Substack, and decide when it goes out.</p>
 
-<p align="center"><a href="https://inkspring.ai/download"><strong>Download for Mac</strong></a> · <a href="#build-it-yourself">Build it yourself</a> · <a href="https://inkspring.ai">Visit Inkspring</a> · <a href="LICENSE">MIT license</a></p>
+<p align="center"><a href="https://inkspring.ai/download"><strong>Download for Mac</strong></a> · <a href="#build-it-yourself">Build it yourself</a> · <a href="https://inkspring.ai">Visit Inkspring</a> · <a href="LICENSE">public domain (Unlicense)</a></p>
 
 ## Your social posts, crafted on Mac
 
@@ -51,9 +51,9 @@ For iPhone and iPad, open [InkspringCompanion.xcodeproj](native-mac/InkspringCom
 
 [Native build and usage guide](native-mac/README.md) · [Validation guide](VALIDATION.md)
 
-## Open source under MIT
+## Open source, public domain (Unlicense)
 
-Inkspring is free, and its source is open under the [MIT license](LICENSE). Use it, change it, ship it, sell it. Your posts remain yours. Third-party components keep their own licenses.
+Inkspring is free, and its source is open under the [public domain (Unlicense)](LICENSE). Use it, change it, ship it, sell it. Your posts remain yours. Third-party components keep their own licenses.
 
 [Website](https://inkspring.ai) · [Send feedback](https://protomota.com/apps?app=inkspring#feedback)
 
@@ -63,7 +63,7 @@ Inkspring is free, and its source is open under the [MIT license](LICENSE). Use 
   <a href="https://protomota.com"><img src="docs/readme/protomota-logo.png" width="40" height="40" alt="Protomota"></a>
 </p>
 
-<p align="center"><strong>Made by <a href="https://protomota.com">Protomota</a>.</strong> Free apps, open source under MIT.</p>
+<p align="center"><strong>Made by <a href="https://protomota.com">Protomota</a>.</strong> Free apps, open source and public domain (Unlicense).</p>
 
 <p align="center">
   <a href="https://opentalon.ai">OpenTalon</a> ·

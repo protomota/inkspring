@@ -973,7 +973,7 @@ private struct InkspringCopyright: View {
     @Environment(\.studioPalette) private var palette
 
     var body: some View {
-        Text("© 2026 Protomota")
+        Text("A Project ATOM project")
             .font(InkspringTypography.interface(12))
             .foregroundStyle(palette.muted)
     }
